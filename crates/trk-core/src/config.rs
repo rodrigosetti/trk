@@ -472,14 +472,15 @@ pub fn check_schema(schema: &Schema) -> Vec<Diagnostic> {
         d.push(Diagnostic::error(Some(file), msg))
     };
 
-    // Shared fields must be exactly the issue columns.
+    // Shared fields are defined for every issue type and may use a common
+    // issue column or the JSON fields object for storage.
     for col in SHARED_COLUMNS {
         match schema.fields.get(*col) {
             Some(f) if f.shared => {}
             Some(_) => err(
                 &mut d,
                 "fields.toml",
-                format!("field '{col}' is an issue column and must be `shared = true`"),
+                format!("field '{col}' is shared and must be `shared = true`"),
             ),
             None => err(
                 &mut d,
@@ -494,7 +495,7 @@ pub fn check_schema(schema: &Schema) -> Vec<Diagnostic> {
                 &mut d,
                 "fields.toml",
                 format!(
-                    "field '{}' is marked shared but is not an issue column ({})",
+                    "field '{}' is marked shared but is not a shared field ({})",
                     f.name,
                     SHARED_COLUMNS.join(", ")
                 ),

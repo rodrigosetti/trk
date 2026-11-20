@@ -71,6 +71,68 @@ fn create(s: &mut Store, ty: &str, extra: &[Assign]) -> String {
 }
 
 #[test]
+fn priority_orders_ready_without_changing_eligibility_and_records_edits() {
+    let (_d, mut s) = setup();
+    let old = create(&mut s, "research", &[]);
+    s.opts.now = Some(ts("2026-11-20T11:00:00Z"));
+    let recent = create(&mut s, "research", &[]);
+    s.opts.now = Some(ts("2026-11-20T12:00:00Z"));
+    let urgent = create(&mut s, "research", &[set("priority", "P0")]);
+
+    s.write(HUMAN, false, |c| {
+        c.edit(&old, &[set("title", "Edited after creation")])?;
+        Ok(())
+    })
+    .unwrap();
+    let ready: Vec<String> = s
+        .read(None, |c| c.list("ready", None, None, None))
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ready, [urgent.clone(), old.clone(), recent.clone()]);
+
+    let explicitly_sorted: Vec<String> = s
+        .read(None, |c| c.list("ready", None, Some("-created"), None))
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        explicitly_sorted,
+        [urgent.clone(), recent.clone(), old.clone()]
+    );
+    let edited = s
+        .write(HUMAN, false, |c| c.edit(&old, &[set("priority", "P1")]))
+        .unwrap();
+    assert_eq!(edited["priority"]["to"], "P1");
+    let events = s.read(None, |c| c.log(&old)).unwrap();
+    assert!(
+        events.iter().any(|event| {
+            event.op == "set" && event.payload["changes"]["priority"]["to"] == "P1"
+        })
+    );
+
+    let prerequisite = create(&mut s, "research", &[]);
+    s.write(HUMAN, false, |c| {
+        c.edit(&urgent, &[set("priority", "P0")])?;
+        c.dep_add(&prerequisite, "blocks", &urgent)
+    })
+    .unwrap();
+    let (is_ready, impact) = s
+        .read(None, |c| {
+            let target = c.show(&urgent, With::default())?;
+            let source = c.show(&prerequisite, With::default())?;
+            Ok((
+                target["derived"]["ready"].as_bool().unwrap(),
+                source["derived"]["unblocks_higher_priority"].clone(),
+            ))
+        })
+        .unwrap();
+    assert!(!is_ready, "P0 must not bypass a blocking dependency");
+    assert_eq!(impact, json!([{"id": urgent, "priority": "P0"}]));
+}
+#[test]
 fn seed_config_is_valid() {
     let schema = seed().compile().unwrap();
     let errors: Vec<_> = check_schema(&schema)

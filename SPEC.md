@@ -95,6 +95,8 @@ Six issue types share one table and one set of shared fields. Each type adds its
 | `owner` | actor | optional; who is accountable (distinct from the claimant) |
 | `links` | list of {kind, url, note} | free-form evidence |
 | `tags` | list of text |  |
+| `priority` | enum | shared and editable; P0 urgent/exceptional, P1 high, P2 normal (default), P3 low; changes are recorded in event history |
+
 | `notes` | append-only log | stored as events, see Notes |
 | `created_by`, `created_at`, `updated_at`, `closed_at` | system | written by the tool |
 
@@ -140,6 +142,8 @@ A gate rule says that an issue of type T cannot enter status S unless every inco
 | `decision` | closed (decided) | approves | approved |
 
 An issue is **ready** when it is `open`, has no active claim, and every incoming `blocks` source is closed. An issue is **gated** when an outgoing transition is held back by a gate rule.
+`trk ready` orders eligible work by priority (P0 to P3), then creation time ascending, then ID. This order only ranks work already eligible: priority does not bypass blockers, claims, gates or required fields, and does not preempt active work. A blocking prerequisite reports `derived.unblocks_higher_priority` when it protects open work with a higher authored priority; it does not inherit or change that priority. Priorities are project-relative; any cross-project queue requires an explicit policy.
+
 
 ### Actors
 

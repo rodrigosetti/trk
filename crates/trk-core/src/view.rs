@@ -179,11 +179,46 @@ impl Ctx<'_> {
     pub fn derived(&self, issue: &Issue, ty: &TypeDef, claim: &Option<Claim>) -> Result<Value> {
         let blocked_by = self.blocked_by(&issue.id)?;
         let ready = issue.status_category == "open" && claim.is_none() && blocked_by.is_empty();
+        let source_priority = issue
+            .fields
+            .get("priority")
+            .and_then(Value::as_str)
+            .unwrap_or("P2");
+        let source_rank = source_priority
+            .strip_prefix('P')
+            .and_then(|rank| rank.parse::<i64>().ok())
+            .unwrap_or(2);
+        let mut st = self.conn.prepare(
+            "SELECT d.dst, json_extract(b.fields, '$.priority')
+             FROM dep d
+             JOIN dep_kind k ON k.name = d.kind AND k.blocks_ready = 1
+             JOIN issue_view b ON b.id = d.dst
+             WHERE d.src = ?1 AND b.status_category <> 'closed'
+             ORDER BY d.dst",
+        )?;
+        let unblocks: Vec<Value> = st
+            .query_map([&issue.id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .filter_map(|row| match row {
+                Ok((id, priority))
+                    if priority
+                        .strip_prefix('P')
+                        .and_then(|rank| rank.parse::<i64>().ok())
+                        .is_some_and(|rank| rank < source_rank) =>
+                {
+                    Some(Ok(json!({"id": id, "priority": priority})))
+                }
+                Ok(_) => None,
+                Err(e) => Some(Err(e)),
+            })
+            .collect::<std::result::Result<_, _>>()?;
         let mut d = json!({
             "ready": ready,
             "blocked_by": blocked_by,
             "gates_unmet": self.gates_unmet(issue, ty)?,
             "next": self.next_map(issue, ty)?,
+            "unblocks_higher_priority": unblocks,
         });
         if issue.ty == "milestone" || ty.requirements.iter().any(|r| matches!(&r.kind, ReqKind::InEdgesClosed { dep_kind, .. } if dep_kind == "blocks")) {
             let (total, closed): (i64, i64) = self.conn.query_row(
@@ -307,6 +342,15 @@ impl Ctx<'_> {
         limit: Option<usize>,
     ) -> Result<Vec<Value>> {
         let terms = query::parse(q)?;
+        let ready = terms.iter().any(|term| {
+            matches!(
+                term,
+                query::Term::Flag {
+                    flag: query::Flag::Ready,
+                    negated: false
+                }
+            )
+        });
         let compiled = query::compile(&terms, &self.schema, self)?;
         let mut sql = format!(
             "SELECT {ISSUE_COLS} FROM issue_view i WHERE {}",
@@ -319,7 +363,7 @@ impl Ctx<'_> {
         }
         sql.push_str(&format!(
             " ORDER BY {}",
-            query::order_by(sort, &self.schema)?
+            query::order_by(sort, &self.schema, ready)?
         ));
         if let Some(n) = limit {
             sql.push_str(&format!(" LIMIT {n}"));

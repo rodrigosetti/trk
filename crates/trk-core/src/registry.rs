@@ -11,8 +11,11 @@ use serde_json::Value;
 
 use crate::error::{Code, Error, Result};
 
-/// Shared fields: stored as columns on `issue`.
-pub const SHARED_COLUMNS: &[&str] = &["title", "context", "outcome", "owner", "links", "tags"];
+/// Shared field names; the stored representation may be an issue column or a
+/// value in the JSON `fields` object.
+pub const SHARED_COLUMNS: &[&str] = &[
+    "title", "context", "outcome", "owner", "links", "tags", "priority",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]

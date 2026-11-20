@@ -15,7 +15,10 @@ use crate::error::{Code, Error, Result, bad_args, not_found};
 use crate::model::*;
 use crate::registry::*;
 
-const MIGRATIONS: &[M<'static>] = &[M::up(include_str!("schema_v1.sql"))];
+const MIGRATIONS: &[M<'static>] = &[
+    M::up(include_str!("schema_v1.sql")),
+    M::up(include_str!("schema_v2.sql")),
+];
 
 pub const ISSUE_COLS: &str = "i.id, i.project_id, i.type, i.status, i.resolution, i.title, i.context, \
      i.outcome, i.owner, i.links, i.tags, i.fields, i.created_by, i.created_at, i.updated_at, \
