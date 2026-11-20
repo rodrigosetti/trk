@@ -133,7 +133,10 @@ fn launch_spec_for_omp() {
     assert_eq!(spec.argv[0], "omp");
     assert_eq!(spec.argv[spec.argv.len() - 1], "Do it's thing");
     let i = spec.argv.iter().position(|a| a == "--tools").unwrap();
-    assert_eq!(spec.argv[i + 1], "read,grep,glob,lsp,todo,mcp__trk_get_task,mcp__trk_add_note");
+    assert_eq!(
+        spec.argv[i + 1],
+        "read,grep,glob,lsp,todo,mcp__trk_get_task,mcp__trk_add_note"
+    );
     let mcp = &spec.files["/wt/orch-abc/.omp/mcp.json"];
     let v: serde_json::Value = serde_json::from_str(mcp).unwrap();
     assert_eq!(
@@ -156,7 +159,11 @@ fn launch_spec_for_omp() {
     assert!(spec.shell_command.ends_with("'Do it'\\''s thing'"));
     // trk run sessions do not see the global trk skill.
     assert!(spec.files["/state/u1/omp.yml"].contains("ignoredSkills: [trk]"));
-    assert!(spec.argv.windows(2).any(|w| w[0] == "--config" && w[1] == "/state/u1/omp.yml"));
+    assert!(
+        spec.argv
+            .windows(2)
+            .any(|w| w[0] == "--config" && w[1] == "/state/u1/omp.yml")
+    );
     assert!(!spec.send_briefing);
     assert!(profiles["opencode"].sends_briefing());
 }

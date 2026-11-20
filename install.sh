@@ -3,13 +3,11 @@
 #
 #   ./install.sh          build in release mode and install to ~/.cargo/bin/trk
 #
-# Also installs the `trk` agent skill to ~/.agents/skills/trk (read by omp
-# and Codex), linked from ~/.claude/skills/trk for Claude Code. The skill is
-# copied, not linked, so it always matches the installed binary.
+# The agent skill is installed separately, per repository, with
+# `trk skill install` (or `trk skill install --global`).
 #
 # First install: writes the default config (~/.config/trk) and applies it.
-# Upgrade: replaces the binary and the skill (the database migrates itself on
-# next use), then lists default-config files that differ from yours, since trk
+# Upgrade: replaces the binary (the database migrates itself on next use), then lists default-config files that differ from yours, since trk
 # never overwrites your config.
 set -euo pipefail
 
@@ -29,28 +27,12 @@ case ":$PATH:" in
   *) echo "warning: $(dirname "$BIN") is not on your PATH; add it to use \`trk\`" >&2 ;;
 esac
 
-# The agent skill: ~/.agents/skills/trk, plus a link for Claude Code.
-SKILLS="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}"
-if [ -L "$SKILLS/trk" ]; then
-  echo "==> $SKILLS/trk is a symlink (development setup); left alone"
-else
-  mkdir -p "$SKILLS"
-  rm -rf "$SKILLS/trk.new"
-  cp -R skills/trk "$SKILLS/trk.new"
-  rm -rf "$SKILLS/trk"
-  mv "$SKILLS/trk.new" "$SKILLS/trk"
-  echo "==> installed the trk skill at $SKILLS/trk"
+# Agent skills are installed per repository with `trk skill install`; their
+# files come from the binary, so copies installed earlier may now be stale.
+if "$BIN" skill status --global --format json 2>/dev/null | grep -q '"state": "outdated"'; then
+  echo "==> the global trk skill is older than this build: run \`trk skill install --global\`"
 fi
-if [ -d "$HOME/.claude" ]; then
-  link="$HOME/.claude/skills/trk"
-  mkdir -p "$HOME/.claude/skills"
-  if [ -L "$link" ] || [ ! -e "$link" ]; then
-    ln -sfn "$SKILLS/trk" "$link"
-    echo "==> linked $link for Claude Code"
-  else
-    echo "warning: $link exists and is not a symlink; left alone" >&2
-  fi
-fi
+echo "    (refresh project skills with \`trk skill install\` in each repository; see \`trk skill status\`)"
 
 if [ ! -d "$CONFIG/types" ]; then
   echo "==> first install: writing the default config to $CONFIG"

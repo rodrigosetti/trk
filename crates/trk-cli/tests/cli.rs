@@ -605,3 +605,153 @@ fn mcp_server_over_stdio() {
     let follow = e.ok(&["list", &format!("dep:discovered-from={id}")]);
     assert_eq!(follow[0]["created_by"], actor);
 }
+
+#[test]
+fn skill_install_project_and_global() {
+    let e = Env::new();
+    let home = e.dir.path().join("home");
+    std::fs::create_dir_all(home.join(".claude")).unwrap();
+    let skill = |args: &[&str]| -> Value {
+        let out = e
+            .cmd()
+            .env("HOME", &home)
+            .arg("--json")
+            .arg("skill")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"].clone()
+    };
+    let repo = e.repo();
+
+    // Project-local by default: skill files, a Claude Code link, kept out of git.
+    let v = skill(&["install"]);
+    assert_eq!(v["scope"], "project");
+    assert_eq!(v["state"], "current");
+    let installed = std::fs::read_to_string(repo.join(".agents/skills/trk/SKILL.md")).unwrap();
+    assert!(installed.starts_with("---\nname: trk\n"));
+    assert!(
+        repo.join(".agents/skills/trk/references/reference.md")
+            .exists()
+    );
+    let link = repo.join(".claude/skills/trk");
+    assert_eq!(
+        std::fs::read_link(&link).unwrap(),
+        PathBuf::from("../../.agents/skills/trk")
+    );
+    assert!(link.join("SKILL.md").exists(), "the relative link resolves");
+    let status = StdCommand::new("git")
+        .current_dir(&repo)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(
+        status.stdout.is_empty(),
+        "skill is excluded from git: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+
+    // Worktrees made by `trk run` do not contain it.
+    let id = e.ok(&["create", "code-change", "-t", "x", "-f", "context=c"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let spec = e.ok(&["run", &id, "--harness", "omp", "--print"]);
+    let wt = PathBuf::from(spec["worktree"].as_str().unwrap());
+    assert!(wt.exists() && !wt.join(".agents").exists() && !wt.join(".claude").exists());
+
+    // Status notices edits; install refreshes.
+    std::fs::write(repo.join(".agents/skills/trk/SKILL.md"), "stale").unwrap();
+    let st = skill(&["status"]);
+    assert_eq!(st[0]["scope"], "project");
+    assert_eq!(st[0]["state"], "outdated");
+    assert_eq!(st[1]["scope"], "global");
+    assert_eq!(st[1]["state"], "missing");
+    assert_eq!(skill(&["install"])["state"], "current");
+
+    // Uninstall removes the files, the link and the excludes.
+    skill(&["uninstall"]);
+    assert!(!repo.join(".agents/skills/trk").exists() && !link.is_symlink());
+    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    assert!(!exclude.contains(".agents/skills/trk"), "{exclude}");
+
+    // --global goes to ~/.agents/skills/trk with an absolute Claude Code link.
+    let v = skill(&["install", "--global"]);
+    assert_eq!(v["scope"], "global");
+    assert!(home.join(".agents/skills/trk/SKILL.md").exists());
+    assert_eq!(
+        std::fs::read_link(home.join(".claude/skills/trk")).unwrap(),
+        home.join(".agents/skills/trk")
+    );
+    assert!(v["warnings"][0].as_str().unwrap().contains("trk run"));
+
+    // --dir targets any skills directory, without links.
+    let other = e.dir.path().join("other-skills");
+    skill(&["install", "--dir", other.to_str().unwrap()]);
+    assert!(other.join("trk/SKILL.md").exists());
+}
+
+#[test]
+fn run_warns_when_the_repo_tracks_the_skill() {
+    let e = Env::new();
+    let repo = e.repo();
+    let out = e
+        .cmd()
+        .env("HOME", e.dir.path())
+        .args(["--json", "skill", "install"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    for args in [
+        vec!["add", "-f", ".agents/skills/trk"],
+        vec![
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "track skill",
+        ],
+    ] {
+        assert!(
+            StdCommand::new("git")
+                .current_dir(&repo)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let out = e
+        .cmd()
+        .env("HOME", e.dir.path())
+        .args(["--json", "skill", "install"])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["data"]["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("tracked in git"),
+        "{v:#}"
+    );
+    let id = e.ok(&["create", "code-change", "-t", "x", "-f", "context=c"])["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let out = e
+        .cmd()
+        .args(["--json", "run", &id, "--harness", "omp", "--print"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("tracked in this repo"));
+}

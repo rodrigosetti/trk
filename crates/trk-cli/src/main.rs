@@ -5,6 +5,7 @@ mod env;
 mod render;
 mod run;
 mod seed;
+mod skill;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -259,6 +260,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RepoCmd,
     },
+    /// Install the agent skill that teaches agent sessions to use the trk CLI
+    Skill {
+        #[command(subcommand)]
+        cmd: SkillCmd,
+    },
     /// Resolved actor, project, config and database
     Whoami,
     /// Consistent copy via VACUUM INTO
@@ -315,6 +321,47 @@ enum SchemaCmd {
     },
     /// Add an expression index for a hot custom field
     Index { field: String },
+}
+
+#[derive(Args, Clone)]
+struct SkillScope {
+    /// ~/.agents/skills/trk (and ~/.claude/skills/trk) instead of this repository
+    #[arg(long, conflicts_with = "dir")]
+    global: bool,
+    /// Another skills directory; the skill goes in DIR/trk
+    #[arg(long, value_name = "DIR")]
+    dir: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum SkillCmd {
+    /// Install or refresh the skill (default: in this repository, kept out of git)
+    Install {
+        #[command(flatten)]
+        scope: SkillScope,
+    },
+    /// Remove an installed skill
+    Uninstall {
+        #[command(flatten)]
+        scope: SkillScope,
+    },
+    /// Where the skill is installed and whether it matches this binary
+    Status {
+        #[command(flatten)]
+        scope: SkillScope,
+    },
+}
+
+impl SkillScope {
+    fn scope(&self) -> skill::Scope {
+        if self.dir.is_some() {
+            skill::Scope::Dir
+        } else if self.global {
+            skill::Scope::Global
+        } else {
+            skill::Scope::Project
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -834,6 +881,15 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
                     serde_json::to_value(rs)?,
                 ))
             }
+        },
+        Cmd::Skill { cmd } => match cmd {
+            SkillCmd::Install { scope } => {
+                skill::install(&env, scope.scope(), scope.dir.as_deref())
+            }
+            SkillCmd::Uninstall { scope } => {
+                skill::uninstall(&env, scope.scope(), scope.dir.as_deref())
+            }
+            SkillCmd::Status { scope } => skill::status(&env, scope.global, scope.dir.as_deref()),
         },
         Cmd::Whoami => whoami(&env),
         Cmd::Backup { path } => {

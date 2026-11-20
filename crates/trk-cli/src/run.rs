@@ -179,35 +179,6 @@ fn ensure_worktree(checkout: &Path, path: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
-/// Keep files trk writes into a worktree out of git.
-fn exclude(worktree: &Path, file: &Path) {
-    let Ok(rel) = file.strip_prefix(worktree) else {
-        return;
-    };
-    let Some(common) = git(worktree, &["rev-parse", "--git-common-dir"]) else {
-        return;
-    };
-    let common = if Path::new(&common).is_absolute() {
-        PathBuf::from(common)
-    } else {
-        worktree.join(common)
-    };
-    let ex = common.join("info/exclude");
-    let line = format!("/{}", rel.to_string_lossy());
-    let current = std::fs::read_to_string(&ex).unwrap_or_default();
-    if current.lines().any(|l| l == line) {
-        return;
-    }
-    let _ = std::fs::create_dir_all(ex.parent().unwrap());
-    let mut s = current;
-    if !s.is_empty() && !s.ends_with('\n') {
-        s.push('\n');
-    }
-    s.push_str(&line);
-    s.push('\n');
-    let _ = std::fs::write(&ex, s);
-}
-
 fn trk_bin() -> String {
     std::env::current_exe()
         .ok()
@@ -299,9 +270,20 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let session_dir = state_dir().join("sessions").join(&uuid);
     let cwd = worktree.clone().unwrap_or_else(|| session_dir.clone());
 
+    let mut warnings: Vec<String> = vec![];
     if !a.dry_run {
         if let (Some(co), Some(wt)) = (&checkout, &worktree) {
             ensure_worktree(co, wt, &branch)?;
+            // Agents reach trk through MCP only; a committed skill would reach them anyway.
+            for rel in [".agents/skills/trk", ".claude/skills/trk"] {
+                if wt.join(rel).exists() {
+                    let w = format!(
+                        "{rel} is tracked in this repo, so the session will see the trk CLI skill"
+                    );
+                    eprintln!("warning: {w}");
+                    warnings.push(w);
+                }
+            }
         }
         std::fs::create_dir_all(&session_dir)?;
     }
@@ -394,8 +376,10 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             std::fs::create_dir_all(d)?;
         }
         std::fs::write(&p, content)?;
-        if let Some(wt) = &worktree {
-            exclude(wt, &p);
+        if let Some(wt) = &worktree
+            && let Ok(rel) = p.strip_prefix(wt)
+        {
+            crate::env::git_exclude(wt, &format!("/{}", rel.to_string_lossy()));
         }
     }
     if a.print {
@@ -457,7 +441,8 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     Ok(Out::Text(
         text,
         json!({"issue": id, "agent": agent_name, "harness": hname, "actor": actor, "terminal": terminal,
-               "worktree": wt_str, "session_dir": spec.session_dir, "launcher_output": output, "briefing_sent": sent}),
+               "worktree": wt_str, "session_dir": spec.session_dir, "launcher_output": output, "briefing_sent": sent,
+               "warnings": warnings}),
     ))
 }
 

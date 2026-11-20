@@ -200,7 +200,13 @@ pub fn expand_tool_lists(s: &str, tools: &[String]) -> String {
         match after.find('}') {
             Some(j) => {
                 let prefix = &after[..j];
-                out.push_str(&tools.iter().map(|t| format!("{prefix}{t}")).collect::<Vec<_>>().join(","));
+                out.push_str(
+                    &tools
+                        .iter()
+                        .map(|t| format!("{prefix}{t}"))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
                 rest = &after[j + 1..];
             }
             None => {
@@ -333,7 +339,10 @@ pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
             .cloned()
             .unwrap_or_default()
     };
-    let extra: Vec<String> = extra.iter().map(|x| expand_tool_lists(x, &input.tools)).collect();
+    let extra: Vec<String> = extra
+        .iter()
+        .map(|x| expand_tool_lists(x, &input.tools))
+        .collect();
     let mut argv = vec![subst(&input.profile.command, &vars)];
     let pos = input
         .profile

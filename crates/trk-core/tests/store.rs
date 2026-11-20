@@ -462,10 +462,21 @@ fn supersede_requires_edge_and_derived_next() {
     let old = create(&mut s, "decision", &[]);
     let new = create(&mut s, "decision", &[]);
     let v = s.read(None, |c| c.show(&old, With::default())).unwrap();
-    assert_eq!(v["derived"]["next"]["proposed"], json!([]), "decisions can be open-ended");
-    assert_eq!(v["derived"]["next"]["closed"]["superseded"], json!(["record_url", "outcome", "edge:supersedes"]));
+    assert_eq!(
+        v["derived"]["next"]["proposed"],
+        json!([]),
+        "decisions can be open-ended"
+    );
+    assert_eq!(
+        v["derived"]["next"]["closed"]["superseded"],
+        json!(["record_url", "outcome", "edge:supersedes"])
+    );
     let fields = [set("record_url", "https://x"), set("outcome", "replaced")];
-    let e = s.write(HUMAN, false, |c| c.close(&old, "superseded", &fields, false)).unwrap_err();
+    let e = s
+        .write(HUMAN, false, |c| {
+            c.close(&old, "superseded", &fields, false)
+        })
+        .unwrap_err();
     assert_eq!(e.to_json()["missing_edges"], json!(["supersedes"]));
     s.write(HUMAN, false, |c| {
         c.dep_add(&old, "supersedes", &new)?;
@@ -474,25 +485,43 @@ fn supersede_requires_edge_and_derived_next() {
     .unwrap();
     // Operations may be irreversible: claiming needs no rollback plan.
     let op = create(&mut s, "operation", &[]);
-    s.write(HUMAN, false, |c| c.claim(&op, ClaimOpts::default())).unwrap();
+    s.write(HUMAN, false, |c| c.claim(&op, ClaimOpts::default()))
+        .unwrap();
 }
 
 #[test]
 fn min_items_requirement() {
     let (_d, mut s) = setup();
     let mut schema = seed().compile().unwrap();
-    schema.types.get_mut("decision").unwrap().requirements.push(trk_core::registry::Requirement {
-        to_status: "proposed".into(),
-        resolution: None,
-        kind: trk_core::registry::ReqKind::MinItems { field: "options".into(), n: 2 },
-    });
-    s.write(HUMAN, false, |c| c.apply(&schema, &[], &[], None).map(|_| ())).unwrap();
+    schema
+        .types
+        .get_mut("decision")
+        .unwrap()
+        .requirements
+        .push(trk_core::registry::Requirement {
+            to_status: "proposed".into(),
+            resolution: None,
+            kind: trk_core::registry::ReqKind::MinItems {
+                field: "options".into(),
+                n: 2,
+            },
+        });
+    s.write(HUMAN, false, |c| {
+        c.apply(&schema, &[], &[], None).map(|_| ())
+    })
+    .unwrap();
     let id = create(&mut s, "decision", &[]);
-    let one = ClaimOpts { assigns: vec![set("options", "only one")], ..Default::default() };
+    let one = ClaimOpts {
+        assigns: vec![set("options", "only one")],
+        ..Default::default()
+    };
     let e = s.write(HUMAN, false, |c| c.claim(&id, one)).unwrap_err();
     assert_eq!(e.code(), Code::RequirementsUnmet);
     assert_eq!(e.to_json()["min_items"][0]["have"], 1);
-    let two = ClaimOpts { assigns: vec![set("options", "SQLite, Dolt")], ..Default::default() };
+    let two = ClaimOpts {
+        assigns: vec![set("options", "SQLite, Dolt")],
+        ..Default::default()
+    };
     s.write(HUMAN, false, |c| c.claim(&id, two)).unwrap();
 }
 

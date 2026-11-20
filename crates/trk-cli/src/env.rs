@@ -27,7 +27,7 @@ pub struct GitInfo {
     pub branch: Option<String>,
 }
 
-fn home() -> PathBuf {
+pub fn home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
@@ -93,6 +93,51 @@ pub fn git_info(dir: &Path) -> Option<GitInfo> {
         remote,
         branch,
     })
+}
+
+/// `<git common dir>/info/exclude` for the repository at `dir`.
+fn exclude_file(dir: &Path) -> Option<PathBuf> {
+    let common = git(dir, &["rev-parse", "--git-common-dir"])?;
+    let common = if Path::new(&common).is_absolute() {
+        PathBuf::from(common)
+    } else {
+        dir.join(common)
+    };
+    Some(common.join("info/exclude"))
+}
+
+/// Add a pattern to the repository's `.git/info/exclude` (shared by its worktrees).
+pub fn git_exclude(dir: &Path, pattern: &str) {
+    let Some(ex) = exclude_file(dir) else { return };
+    let current = std::fs::read_to_string(&ex).unwrap_or_default();
+    if current.lines().any(|l| l == pattern) {
+        return;
+    }
+    let _ = std::fs::create_dir_all(ex.parent().unwrap());
+    let mut s = current;
+    if !s.is_empty() && !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s.push_str(pattern);
+    s.push('\n');
+    let _ = std::fs::write(&ex, s);
+}
+
+/// Remove a pattern added by [`git_exclude`].
+pub fn git_unexclude(dir: &Path, pattern: &str) {
+    let Some(ex) = exclude_file(dir) else { return };
+    let Ok(current) = std::fs::read_to_string(&ex) else {
+        return;
+    };
+    if !current.lines().any(|l| l == pattern) {
+        return;
+    }
+    let kept: Vec<&str> = current.lines().filter(|l| *l != pattern).collect();
+    let mut s = kept.join("\n");
+    if !s.is_empty() {
+        s.push('\n');
+    }
+    let _ = std::fs::write(&ex, s);
 }
 
 pub fn hostname() -> Option<String> {
