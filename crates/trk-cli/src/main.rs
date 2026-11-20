@@ -24,7 +24,7 @@ use crate::render::{Format, Out, Renderer};
 #[derive(Parser)]
 #[command(
     name = "trk",
-    version,
+    version = env!("TRK_VERSION"),
     about = "A local issue tracker and agent launcher",
     max_term_width = 100
 )]
@@ -1190,6 +1190,7 @@ fn whoami(env: &Env) -> Result<Out> {
     let repo = env.current_repo(&store)?;
     let (applied, counts) = store.read(None, |c| Ok((c.last_schema_event()?, c.counts()?)))?;
     let data = json!({
+        "version": env!("TRK_VERSION"),
         "actor": env.actor,
         "project": project,
         "repo": repo,

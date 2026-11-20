@@ -4,12 +4,22 @@ A local issue tracker and agent launcher in one Rust binary. All repositories sh
 database; humans use the CLI, agents work through a per-issue MCP server, and `trk run <ID>` starts
 an agent session on one issue in a persistent terminal (`hc`). See [SPEC.md](SPEC.md) for the design.
 
-## Build
+## Install and upgrade
 
 ```sh
-cargo build --release          # target/release/trk
-cargo test --workspace         # unit, store, agent and end-to-end tests
+./install.sh
 ```
+
+This builds a release binary and installs it to `~/.cargo/bin/trk`. The first time, it also runs
+`trk init`: the default config goes to `~/.config/trk/` and the database to
+`~/Library/Application Support/trk/trk.db` on macOS (`$XDG_DATA_HOME/trk/trk.db` elsewhere).
+
+To upgrade after changing or pulling this checkout, run `./install.sh` again. It replaces the binary
+(the database migrates itself on next use), never overwrites your config, lists the default-config
+files in `seed/` that differ from yours, and shows `trk schema plan`. `trk --version` prints the
+commit the binary was built from. Running agent sessions keep the binary they started with.
+
+For development: `cargo build` and `cargo test --workspace`.
 
 ## Quick start
 
