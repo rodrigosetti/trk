@@ -2,6 +2,7 @@
 
 mod editor;
 mod env;
+mod herdr;
 mod render;
 mod run;
 mod seed;

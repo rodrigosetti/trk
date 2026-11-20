@@ -13,10 +13,13 @@ agent_lease = "30m"
 # Where `trk run` creates git worktrees (default: <data dir>/worktrees).
 # worktrees = "~/trk-worktrees"
 
-# All of trk's knowledge of the launcher. Placeholders: {name} (terminal
-# name), {cwd}, {shell_command} (cd + env + harness argv), {text}.
+# Launcher templates. Placeholders: {name} (terminal name), {cwd},
+# {shell_command} (cd + env + harness argv), {text}.
 [launcher]
 start      = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
+# Opt into a new tab in the launching terminal's Herdr space. No space:
+# headless. UI lookup/placement failure: warn, keep the independent session.
+herdr      = true
 attach     = ["hc", "attach", "{name}"]
 send       = ["hc", "send", "{name}", "{text}"]
 # Seconds to wait before sending the briefing to harnesses that take it by `send`.

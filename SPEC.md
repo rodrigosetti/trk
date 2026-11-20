@@ -255,16 +255,23 @@ Related commands: `trk attach <ID>` and `trk send <ID>` (only when their launche
 
 ### Launcher
 
-All of trk's knowledge of `hc` is three templates in `config.toml`:
+The launcher uses three command templates in `config.toml`, plus an optional Herdr integration:
 
 ```toml
 [launcher]
-start  = ["hc", "run", "--bg", "--name", "{name}", "--", "sh", "-c", "{shell_command}"]
+start  = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
+herdr  = true
 attach = ["hc", "attach", "{name}"]
 send   = ["hc", "send", "{name}", "{text}"]
 ```
 
-`{shell_command}` changes into the worktree and sets the environment, because `hc`'s working-directory and environment options are not documented. Replacing `hc` with tmux or a plain process is a config change.
+`{shell_command}` changes into the worktree and sets the environment; `--cwd` also sets the terminal's launch folder. `--no-parent` keeps the session independent of the launching terminal.
+
+`herdr = true` enables hc-specific placement after start: resolve `$HC_TERMINAL_ID` with `hc get --json`, verify its `herdr.space` exists in `herdr-app ls`, then label the new terminal with that space only. Omitting `herdr.tab` requests a new tab without replacing a pane. trk observes `herdr-app ls` for up to two seconds; only a direct pane in a different tab in that space counts as visible. This does not require the tab to be selected.
+
+Without `HC_TERMINAL_ID` or without a space label, launch stays headless. An unresolved terminal, unavailable UI, missing space, failed label command or unconfirmed placement produces a warning, not a failed launch: the running session and claim remain intact. JSON returns `placement.status` (`visible`, `headless`, `failed`) with pane/tab/space IDs or a reason; pretty output includes the placement result. A timed-out placement may appear later. No new space is created or focused as a fallback.
+
+The integration defaults to off when omitted. Replacing hc with tmux or a plain process is a config change: replace the templates and remove `herdr` (or set it to false). Existing installations must opt in explicitly; upgrades do not overwrite user configuration.
 
 ### Harness profiles
 

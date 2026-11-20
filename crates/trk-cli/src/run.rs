@@ -1,5 +1,4 @@
-//! `trk run` and friends. All of trk's knowledge of the launcher is the
-//! three command templates in `[launcher]`.
+//! `trk run` and friends: launcher templates and optional Herdr UI placement.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +23,9 @@ pub struct Launcher {
     pub send: Option<Vec<String>>,
     #[serde(default)]
     pub send_delay: Option<u64>,
+    /// Opt into Herdr UI placement after a successful hc start.
+    #[serde(default)]
+    pub herdr: bool,
 }
 
 pub fn launcher(env: &Env) -> Result<Launcher> {
@@ -423,6 +425,11 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             Error::new(Code::Internal, format!("launcher start failed: {output}")).with_issue(&id),
         );
     }
+    let placement = l.herdr.then(|| crate::herdr::place(&terminal));
+    if let Some(warning) = placement.as_ref().and_then(|p| p.warning()) {
+        eprintln!("warning: {warning}");
+        warnings.push(warning);
+    }
     let mut sent = false;
     if spec.send_briefing
         && let Some(send) = &l.send
@@ -435,13 +442,17 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         }
         sent = ok;
     }
-    let text = format!(
+    let mut text = format!(
         "Started {agent_name} ({hname}) on {id} in terminal {terminal}\n  actor    {actor}\n  cwd      {cwd_s}\n  attach   trk attach {id}\n  steer    trk send {id} \"…\"  or  trk note {id} --to-agent \"…\"",
     );
+    if let Some(placement) = &placement {
+        text.push_str(&format!("\n  ui       {}", placement.description()));
+    }
     Ok(Out::Text(
         text,
         json!({"issue": id, "agent": agent_name, "harness": hname, "actor": actor, "terminal": terminal,
                "worktree": wt_str, "session_dir": spec.session_dir, "launcher_output": output, "briefing_sent": sent,
+               "placement": placement,
                "warnings": warnings}),
     ))
 }

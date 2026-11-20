@@ -78,6 +78,18 @@ The agent for a run is `--agent`, else the issue's `agent` field, else the type'
 The harness is `--harness`, else the agent's first installed preference. The seed config prefers
 `omp` running `openai-codex/gpt-6-luna`.
 
+The default hc launcher keeps sessions independent (`--no-parent`). With `[launcher] herdr = true`,
+running from a Herdr UI terminal adds a new tab in that terminal's space, never replaces its pane.
+trk resolves the space at launch time and confirms placement through `herdr-app ls`; successful
+`hc run` alone is not reported as visibility. Outside hc or without a space label, it stays headless.
+Unavailable UI, stale spaces and placement failures warn without ending or unclaiming the session;
+a two-second observation timeout means placement is unconfirmed and may still appear later.
+Pretty output shows the UI result; JSON includes `placement` (`visible`, `headless` or `failed`).
+
+For existing installs, add `herdr = true` under `[launcher]` after upgrading the binary; keep
+`--no-parent` in `start`. Omit it or use `herdr = false` for a headless/custom launcher. Herdr placement
+requires `hc` and `herdr-app` on PATH; no space or tab IDs belong in the config.
+
 The MCP server (`trk mcp --issue … --actor … --agent …`, started by the harness) serves exactly one
 issue: `get_task`, `add_note`, `add_link`, `report_followup`, `hand_back`, one tool per transition and
 close resolution (required fields become JSON Schema `required`), `set_<field>` setters, and the
@@ -132,9 +144,9 @@ override with `TRK_DB` / `--db`. Worktrees go to `<data dir>/worktrees/<ID>`, se
   Agents may create issues only as `discovered-from` follow-ups of an issue they claim; composed tools
   that create with another edge (e.g. `approves`) add that edge too.
 - **Harness names**: the Claude Code profile is `claude-code`, matching `agent:claude-code:<id>`.
-- **Launcher**: hc now has `--cwd`, so the start template uses it, plus `--no-parent` (otherwise hc
-  ends the session when the launching terminal's program exits). Environment still goes through
-  `sh -c`. `trk send` and briefing sends retry for ~30 s while hc reports the session is still starting.
+- **Launcher**: hc has `--cwd` and `--no-parent`; environment still goes through `sh -c`.
+  Optional `herdr = true` placement is described above. `trk send` and briefing sends retry for
+  ~30 s while hc reports the session is still starting.
 - **omp** (verified live): reads `<worktree>/.omp/mcp.json` and shows MCP server instructions to the
   model, so no folding is needed. Its `--tools` flag hides MCP tools that are not listed, so profiles
   get a `{trk_tools:PREFIX}` placeholder (`{trk_tools:mcp__trk_}`) to list the agent's trk tools.
