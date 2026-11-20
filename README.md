@@ -117,10 +117,6 @@ override with `TRK_DB` / `--db`. Worktrees go to `<data dir>/worktrees/<ID>`, se
 
 ## Open questions found while implementing
 
-- **Claiming enters the first intermediate status, with its requirements.** A `decision` therefore
-  needs ≥ 2 `options` before it can be claimed (`trk claim -f options=…`), and an `operation` needs a
-  `rollback_plan`. The spec's `propose` and `mark_ready` tools cannot exist with these state machines.
-  Adding a `drafting`/`in_progress` status before `proposed` and `ready` would fix both.
 - **code-change outcome**: the shared-fields table requires `outcome` only for research, decision and
   operation; the abridged `code-change.toml` also requires it when merged. The seed follows the table.
 - **Built-in tool policies**: omp keeps `write` available even with a restricted `--tools` list, so

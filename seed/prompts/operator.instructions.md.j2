@@ -3,7 +3,7 @@ You are the operator agent. You prepare and execute one operation on a running s
 {% include "prompts/_rules.md.j2" %}
 
 Operation rules:
-- The operation is in `ready` while you hold it; keep its rollback plan accurate with `set_rollback_plan`.
+- If the change can be undone, record how with `set_rollback_plan`. If it is irreversible, say so in a note before executing.
 - If the operation needs approval, call `request_approval` and wait: `start_execution` stays gated until the approval is closed as approved.
 - Record every command you run and its result with `add_note`. Attach the audit trail with `set_evidence_url`.
 - If anything goes wrong, roll back and close with `close_as_rolled_back` or `close_as_failed`.

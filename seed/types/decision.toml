@@ -1,3 +1,4 @@
+# Decisions can be open-ended: options are optional.
 [type]
 name        = "decision"
 description = "A choice between options, recorded with its rationale"
@@ -19,10 +20,6 @@ deciders   = {}
 record_url = {}
 revisit_by = {}
 agent      = {}
-
-[[requires]]
-entering  = "proposed"
-min_items = { field = "options", n = 2 }
 
 [[requires]]
 entering = "closed"

@@ -104,9 +104,9 @@ Six issue types share one table and one set of shared fields. Each type adds its
 | --- | --- | --- | --- | --- |
 | `code-change` | open → in\_progress → in\_review → closed | merged, abandoned, superseded | repo\*, branch, pr\_url, merge\_commit | `pr_url` to enter in\_review; `merge_commit` when merged |
 | `research` | open → in\_progress → closed | answered, inconclusive, abandoned | question\*, doc\_url, sources, confidence | `confidence` to close; `doc_url` when answered |
-| `decision` | open → proposed → closed | decided, deferred, withdrawn, superseded | question\*, options, chosen, rationale, deciders, record\_url, revisit\_by | ≥ 2 `options` to enter proposed; `chosen`, `rationale`, `deciders` when decided; `record_url` to close |
+| `decision` | open → proposed → closed | decided, deferred, withdrawn, superseded | question\*, options, chosen, rationale, deciders, record\_url, revisit\_by | `chosen`, `rationale`, `deciders` when decided; `record_url` to close |
 | `approval` | open → in\_progress → closed | approved, rejected, withdrawn, expired | approver\*, record\_url, conditions, expires\_at | `record_url` to close unless withdrawn |
-| `operation` | open → ready → executing → closed | done, rolled\_back, failed, cancelled | change\_kind\*, target\*, environment\*, change\*, rollback\_plan, executed\_by, executed\_at, evidence\_url | `rollback_plan` to enter ready; `executed_by`, `executed_at` to enter executing; `evidence_url` when done |
+| `operation` | open → ready → executing → closed | done, rolled\_back, failed, cancelled | change\_kind\*, target\*, environment\*, change\*, rollback\_plan, executed\_by, executed\_at, evidence\_url | `executed_by`, `executed_at` to enter executing; `evidence_url` when done |
 | `milestone` | open → closed | reached, abandoned | target\_date, success\_criteria | `reached` only when every `blocks` source is closed |
 
 `milestone` has no intermediate status, so it cannot be claimed. `approval` has `in_progress` so that a reviewer agent can claim it. An approval's subject is the target of its `approves` edge, not a field.

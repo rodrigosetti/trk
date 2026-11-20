@@ -1,3 +1,4 @@
+# Operations may be irreversible: a rollback plan is optional.
 [type]
 name        = "operation"
 description = "A change to a running system, with a rollback plan and an audit trail"
@@ -25,10 +26,6 @@ executed_by   = {}
 executed_at   = {}
 evidence_url  = {}
 agent         = {}
-
-[[requires]]
-entering = "ready"
-fields   = ["rollback_plan"]
 
 [[requires]]
 entering = "executing"
