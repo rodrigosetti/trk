@@ -1,0 +1,20 @@
+# Milestones group work through `blocks` edges. They have no intermediate
+# status, so they cannot be claimed; they close manually.
+[type]
+name        = "milestone"
+description = "A goal reached when everything blocking it is closed"
+statuses    = [ { name = "open",   category = "open" },
+                { name = "closed", category = "closed" } ]
+resolutions = ["reached", "abandoned"]
+
+[type.transitions]
+open = ["closed"]
+
+[fields]
+target_date      = {}
+success_criteria = {}
+
+[[requires]]
+entering        = "closed"
+resolution      = "reached"
+in_edges_closed = { kind = "blocks" }

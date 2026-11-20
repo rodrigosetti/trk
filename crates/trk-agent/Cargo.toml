@@ -1,0 +1,16 @@
+[package]
+name = "trk-agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+trk-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+minijinja = { workspace = true, features = ["serde", "json", "preserve_order"] }
+
+[dev-dependencies]
+toml.workspace = true

@@ -1,0 +1,48 @@
+# Edges are stored src → dst and read "src <kind> dst".
+# `allow` lists permitted [src_type, dst_type] pairs; "*" is any type.
+
+[blocks]
+inverse = "blocked by"
+blocks_ready = true
+description = "dst is not ready until src is closed"
+# A milestone never blocks a non-milestone; milestones may block milestones.
+allow = [
+  ["code-change", "*"], ["research", "*"], ["decision", "*"],
+  ["approval", "*"], ["operation", "*"], ["milestone", "milestone"],
+]
+
+[approves]
+inverse = "approved by"
+description = "Gate rules: the dst cannot pass its gates until this approval is closed as approved"
+allow = [["approval", "code-change"], ["approval", "operation"], ["approval", "decision"]]
+
+[informs]
+inverse = "informed by"
+allow = [["research", "*"], ["decision", "*"]]
+
+[implements]
+inverse = "implemented by"
+allow = [["code-change", "decision"], ["operation", "decision"]]
+
+[discovered-from]
+inverse = "spawned"
+allow = [["*", "*"]]
+
+[supersedes]
+inverse = "superseded by"
+same_type = true
+allow = [["*", "*"]]
+
+[duplicates]
+inverse = "duplicated by"
+same_type = true
+allow = [["*", "*"]]
+
+[reverts]
+inverse = "reverted by"
+allow = [["code-change", "code-change"], ["operation", "operation"]]
+
+[relates]
+inverse = "relates"
+acyclic = false
+allow = [["*", "*"]]

@@ -1,0 +1,19 @@
+[package]
+name = "trk-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+jiff.workspace = true
+winnow.workspace = true
+rand.workspace = true
+url.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

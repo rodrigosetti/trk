@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/trk-core", "crates/trk-agent", "crates/trk-mcp", "crates/trk-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.89"
+
+[workspace.dependencies]
+trk-core = { path = "crates/trk-core" }
+trk-agent = { path = "crates/trk-agent" }
+trk-mcp = { path = "crates/trk-mcp" }
+rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite_migration = "2.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = { version = "1.2", features = ["preserve_order"] }
+jiff = { version = "1.0", features = ["serde"] }
+winnow = "1.0"
+rand = "0.10"
+uuid = { version = "1", features = ["v4"] }
+url = "2.5"
+thiserror = "2"
+minijinja = "3.1"
+rmcp = { version = "3.11", features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt", "macros", "io-std", "time"] }
+clap = { version = "4.6", features = ["derive", "env"] }
+anstream = "1.0"
+owo-colors = "4.4"
+comfy-table = "8"
+termimad = "0.35"
+directories = "6"
+anyhow = "1"
+assert_cmd = "2.2"
+insta = { version = "1.49", features = ["json"] }
+tempfile = "3"

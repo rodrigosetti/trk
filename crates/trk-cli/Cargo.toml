@@ -1,0 +1,31 @@
+[package]
+name = "trk-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "trk"
+path = "src/main.rs"
+
+[dependencies]
+trk-core.workspace = true
+trk-agent.workspace = true
+trk-mcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+jiff.workspace = true
+uuid.workspace = true
+clap.workspace = true
+anstream.workspace = true
+owo-colors.workspace = true
+comfy-table.workspace = true
+termimad.workspace = true
+directories.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+insta.workspace = true
+tempfile.workspace = true
+serde_json.workspace = true

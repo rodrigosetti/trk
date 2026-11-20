@@ -1,0 +1,30 @@
+[type]
+name        = "research"
+description = "A question to answer, with sources and a confidence level"
+statuses    = [ { name = "open",        category = "open" },
+                { name = "in_progress", category = "active" },
+                { name = "closed",      category = "closed" } ]
+resolutions = ["answered", "inconclusive", "abandoned"]
+
+[type.transitions]
+open        = ["in_progress", "closed"]
+in_progress = ["closed"]
+
+[fields]
+question   = { required_at_create = true }
+doc_url    = {}
+sources    = {}
+confidence = {}
+agent      = {}
+
+[[requires]]
+entering = "closed"
+fields   = ["confidence", "outcome"]
+
+[[requires]]
+entering   = "closed"
+resolution = "answered"
+fields     = ["doc_url"]
+
+[routing]
+agent = "researcher"

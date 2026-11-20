@@ -1,0 +1,83 @@
+//! The default configuration written by `trk init` (seed data, not code).
+
+pub const FILES: &[(&str, &str)] = &[
+    (
+        "agents/decider.toml",
+        include_str!("../../../seed/agents/decider.toml"),
+    ),
+    (
+        "agents/implementer.toml",
+        include_str!("../../../seed/agents/implementer.toml"),
+    ),
+    (
+        "agents/operator.toml",
+        include_str!("../../../seed/agents/operator.toml"),
+    ),
+    (
+        "agents/researcher.toml",
+        include_str!("../../../seed/agents/researcher.toml"),
+    ),
+    (
+        "agents/reviewer.toml",
+        include_str!("../../../seed/agents/reviewer.toml"),
+    ),
+    (
+        "dep-kinds.toml",
+        include_str!("../../../seed/dep-kinds.toml"),
+    ),
+    ("fields.toml", include_str!("../../../seed/fields.toml")),
+    (
+        "prompts/_rules.md.j2",
+        include_str!("../../../seed/prompts/_rules.md.j2"),
+    ),
+    (
+        "prompts/briefing.md.j2",
+        include_str!("../../../seed/prompts/briefing.md.j2"),
+    ),
+    (
+        "prompts/decider.instructions.md.j2",
+        include_str!("../../../seed/prompts/decider.instructions.md.j2"),
+    ),
+    (
+        "prompts/implementer.instructions.md.j2",
+        include_str!("../../../seed/prompts/implementer.instructions.md.j2"),
+    ),
+    (
+        "prompts/operator.instructions.md.j2",
+        include_str!("../../../seed/prompts/operator.instructions.md.j2"),
+    ),
+    (
+        "prompts/researcher.instructions.md.j2",
+        include_str!("../../../seed/prompts/researcher.instructions.md.j2"),
+    ),
+    (
+        "prompts/reviewer.instructions.md.j2",
+        include_str!("../../../seed/prompts/reviewer.instructions.md.j2"),
+    ),
+    (
+        "types/approval.toml",
+        include_str!("../../../seed/types/approval.toml"),
+    ),
+    (
+        "types/code-change.toml",
+        include_str!("../../../seed/types/code-change.toml"),
+    ),
+    (
+        "types/decision.toml",
+        include_str!("../../../seed/types/decision.toml"),
+    ),
+    (
+        "types/milestone.toml",
+        include_str!("../../../seed/types/milestone.toml"),
+    ),
+    (
+        "types/operation.toml",
+        include_str!("../../../seed/types/operation.toml"),
+    ),
+    (
+        "types/research.toml",
+        include_str!("../../../seed/types/research.toml"),
+    ),
+];
+
+pub const CONFIG_TOML: &str = include_str!("../../../seed/config.toml");

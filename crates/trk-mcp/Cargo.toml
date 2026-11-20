@@ -1,0 +1,14 @@
+[package]
+name = "trk-mcp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+trk-core.workspace = true
+trk-agent.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rmcp.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+jiff.workspace = true

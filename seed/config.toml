@@ -1,0 +1,77 @@
+# trk user settings, launcher templates, harness profiles and named views.
+
+[user]
+# Your human actor is human:<email>. Defaults to `git config user.email`.
+{{EMAIL_LINE}}
+
+[claims]
+# Lease for agent claims. The MCP server renews it while the session runs,
+# so it only has to outlast a crash. Human claims have no lease by default.
+agent_lease = "30m"
+
+[run]
+# Where `trk run` creates git worktrees (default: <data dir>/worktrees).
+# worktrees = "~/trk-worktrees"
+
+# All of trk's knowledge of the launcher. Placeholders: {name} (terminal
+# name), {cwd}, {shell_command} (cd + env + harness argv), {text}.
+[launcher]
+start      = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
+attach     = ["hc", "attach", "{name}"]
+send       = ["hc", "send", "{name}", "{text}"]
+# Seconds to wait before sending the briefing to harnesses that take it by `send`.
+send_delay = 5
+
+# Harness profiles. Placeholders: {briefing} {briefing_file} {instructions}
+# {instructions_file} {mcp_json} {mcp_json_file} {opencode_json}
+# {trk_command} {trk_args_toml} {trk_env_toml} {session_dir} {worktree}
+# {issue} {actor} {agent} {name}, and {trk_tools:PREFIX}: the agent's trk tool
+# names, each with PREFIX, comma-separated.
+#   files                = files written before launch (relative to the worktree)
+#   builtin_tools.<lvl>  = extra args enforcing an agent's builtin_tools level
+#   server_instructions  = false folds the MCP server instructions into the briefing
+#   briefing             = "arg" | "send"
+
+[harness.omp]
+command = "omp"
+args    = ["--model", "openai-codex/gpt-6-luna", "{briefing}"]
+files   = { ".omp/mcp.json" = "{mcp_json}" }   # in the worktree, added to .git/info/exclude
+# omp hides MCP tools not named in --tools, so the trk tools are listed. omp
+# keeps `write` available even then: read-only is not fully enforced.
+builtin_tools = { read-only = ["--tools", "read,grep,glob,lsp,todo,{trk_tools:mcp__trk_}"] }
+
+[harness.claude-code]
+command = "claude"
+args    = ["--strict-mcp-config", "--mcp-config", "{mcp_json}", "{briefing}"]
+builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdit"], none = ["--tools", ""] }
+
+[harness.codex]
+command = "codex"
+args    = ["-c", "mcp_servers.trk.command=\"{trk_command}\"",
+           "-c", "mcp_servers.trk.args={trk_args_toml}",
+           "-c", "mcp_servers.trk.env={trk_env_toml}",
+           "{briefing}"]
+builtin_tools = { read-only = ["--sandbox", "read-only"] }
+
+[harness.opencode]
+command  = "opencode"
+env      = { OPENCODE_CONFIG_CONTENT = "{opencode_json}" }
+briefing = "send"
+
+[harness.pi]
+command = "pi"
+args    = ["{briefing}"]
+env     = { PI_CODING_AGENT_DIR = "{session_dir}" }
+files   = { "{session_dir}/mcp.json" = "{mcp_json}" }
+
+# Named views: `trk list @mine`.
+[views.mine]
+query = "claimed-by=me"
+
+[views.agents]
+query  = "claimed-by=agent:*"
+fields = ["id", "type", "status", "claimed-by", "lease", "title"]
+
+[views.open]
+query = "category!=closed"
+sort  = "type,-updated"

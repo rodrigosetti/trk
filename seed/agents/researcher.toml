@@ -1,0 +1,16 @@
+name        = "researcher"
+description = "Answers a research question, writes up the answer and records its sources"
+
+instructions = "prompts/researcher.instructions.md.j2"
+briefing     = "prompts/briefing.md.j2"
+inbox        = true
+
+[trk_tools]
+include = ["@base", "set_doc_url", "set_sources", "set_confidence", "set_outcome", "close_as_*"]
+
+[trk_tools.overrides.close_as_answered]
+description = "Close the research with an answer. The write-up must exist at doc_url."
+
+[harness]
+prefer        = ["omp", "claude-code"]
+builtin_tools = "default"

@@ -1,0 +1,37 @@
+# An approval's subject is the target of its `approves` edge.
+[type]
+name        = "approval"
+description = "A sign-off on a change, operation or decision"
+statuses    = [ { name = "open",        category = "open" },
+                { name = "in_progress", category = "active" },
+                { name = "closed",      category = "closed" } ]
+resolutions = ["approved", "rejected", "withdrawn", "expired"]
+
+[type.transitions]
+open        = ["in_progress", "closed"]
+in_progress = ["closed"]
+
+[fields]
+approver   = { required_at_create = true }
+record_url = {}
+conditions = {}
+expires_at = {}
+agent      = {}
+
+[[requires]]
+entering   = "closed"
+resolution = "approved"
+fields     = ["record_url"]
+
+[[requires]]
+entering   = "closed"
+resolution = "rejected"
+fields     = ["record_url"]
+
+[[requires]]
+entering   = "closed"
+resolution = "expired"
+fields     = ["record_url"]
+
+[routing]
+agent = "reviewer"

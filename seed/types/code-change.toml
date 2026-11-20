@@ -1,0 +1,45 @@
+[type]
+name        = "code-change"
+description = "A change delivered as a PR"
+statuses    = [ { name = "open",        category = "open" },
+                { name = "in_progress", category = "active" },
+                { name = "in_review",   category = "active" },
+                { name = "closed",      category = "closed" } ]
+resolutions = ["merged", "abandoned", "superseded"]
+
+[type.transitions]
+open        = ["in_progress", "closed"]
+in_progress = ["in_review", "closed"]
+in_review   = ["in_progress", "closed"]
+
+[type.tools]
+in_review   = { name = "submit_for_review", description = "Move the change to review once its PR is open." }
+in_progress = { name = "resume_work", description = "Move the change back to in_progress to address review feedback." }
+
+[fields]
+repo         = { required_at_create = true }
+branch       = {}
+pr_url       = {}
+merge_commit = {}
+agent        = {}
+
+[[requires]]
+entering = "in_review"
+fields   = ["pr_url"]
+
+[[requires]]
+entering        = "in_review"
+in_edges_closed = { kind = "approves", src_resolution = "approved" }
+
+[[requires]]
+entering   = "closed"
+resolution = "merged"
+fields     = ["merge_commit"]
+
+[[requires]]
+entering   = "closed"
+resolution = "superseded"
+out_edge   = "supersedes"
+
+[routing]
+agent = "implementer"

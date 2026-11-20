@@ -1,0 +1,47 @@
+[type]
+name        = "decision"
+description = "A choice between options, recorded with its rationale"
+statuses    = [ { name = "open",     category = "open" },
+                { name = "proposed", category = "active" },
+                { name = "closed",   category = "closed" } ]
+resolutions = ["decided", "deferred", "withdrawn", "superseded"]
+
+[type.transitions]
+open     = ["proposed", "closed"]
+proposed = ["closed"]
+
+[fields]
+question   = { required_at_create = true }
+options    = {}
+chosen     = {}
+rationale  = {}
+deciders   = {}
+record_url = {}
+revisit_by = {}
+agent      = {}
+
+[[requires]]
+entering  = "proposed"
+min_items = { field = "options", n = 2 }
+
+[[requires]]
+entering = "closed"
+fields   = ["record_url", "outcome"]
+
+[[requires]]
+entering   = "closed"
+resolution = "decided"
+fields     = ["chosen", "rationale", "deciders"]
+
+[[requires]]
+entering        = "closed"
+resolution      = "decided"
+in_edges_closed = { kind = "approves", src_resolution = "approved" }
+
+[[requires]]
+entering   = "closed"
+resolution = "superseded"
+out_edge   = "supersedes"
+
+[routing]
+agent = "decider"

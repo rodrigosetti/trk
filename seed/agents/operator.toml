@@ -1,0 +1,18 @@
+name        = "operator"
+description = "Prepares and executes an operation, keeping its audit trail"
+
+instructions = "prompts/operator.instructions.md.j2"
+briefing     = "prompts/briefing.md.j2"
+inbox        = true
+
+[trk_tools]
+include = ["@base", "set_rollback_plan", "start_execution", "set_evidence_url",
+           "set_outcome", "close_as_*"]
+
+[trk_tools.composed.request_approval]
+description = "Ask a human to approve this operation before it executes."
+create      = { type = "approval", edge = "approves", fields = ["title", "context", "approver"] }
+
+[harness]
+prefer        = ["omp", "claude-code"]
+builtin_tools = "default"

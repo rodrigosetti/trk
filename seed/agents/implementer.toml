@@ -1,0 +1,27 @@
+name        = "implementer"
+description = "Implements a code-change in its worktree and opens a PR"
+
+instructions = "prompts/implementer.instructions.md.j2"   # → MCP server instructions
+briefing     = "prompts/briefing.md.j2"                   # → initial prompt
+inbox        = true
+
+[trk_tools]
+include = ["@base", "set_branch", "set_pr_url", "submit_for_review", "resume_work", "close_as_abandoned"]
+
+[trk_tools.overrides.submit_for_review]
+description = "Call after the PR is open and CI has started. Requires the PR URL."
+
+[trk_tools.composed.request_review_followup]
+description = "File a follow-up code-change for a reviewer comment you won't address in this PR."
+create      = { type = "code-change", edge = "discovered-from", fields = ["title", "context"] }
+
+# Other MCP servers the session gets, e.g.:
+# [[mcp]]
+# name    = "github"
+# command = "github-mcp-server"
+# args    = ["stdio", "--toolsets", "pull_requests"]
+# env     = { GITHUB_TOKEN = "${env:GITHUB_TOKEN}" }
+
+[harness]
+prefer        = ["omp", "claude-code"]   # first installed wins; `trk run --harness` overrides
+builtin_tools = "default"                # default | read-only | none
