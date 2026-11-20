@@ -38,7 +38,7 @@ for f in $(cd seed && find . -type f | sed 's|^\./||' | sort); do
     changed="$changed\n  new      $f"
   elif [ "$f" = config.toml ]; then
     # Ignore the email line, which `trk init` fills in.
-    if ! diff -q <(grep -v 'email' "seed/$f") <(grep -v 'email' "$CONFIG/$f") >/dev/null 2>&1; then
+    if ! diff -q <(grep -vi 'email' "seed/$f") <(grep -vi 'email' "$CONFIG/$f") >/dev/null 2>&1; then
       changed="$changed\n  differs  $f"
     fi
   elif ! cmp -s "seed/$f" "$CONFIG/$f"; then
@@ -50,6 +50,7 @@ if [ -n "$changed" ]; then
   echo "    (your edits, or changes in this checkout; nothing was overwritten)"
   echo "    compare:  diff -u $REPO/seed/<file> $CONFIG/<file>"
   echo "    take one: cp $REPO/seed/<file> $CONFIG/<file> && trk schema apply"
+  echo "    (config.toml holds your settings: merge it by hand instead of copying)"
 else
   echo "==> your config matches the defaults in this checkout"
 fi
