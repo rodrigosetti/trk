@@ -34,8 +34,10 @@ send_delay = 5
 
 [harness.omp]
 command = "omp"
-args    = ["--model", "openai-codex/gpt-6-luna", "{briefing}"]
-files   = { ".omp/mcp.json" = "{mcp_json}" }   # in the worktree, added to .git/info/exclude
+args    = ["--model", "openai-codex/gpt-6-luna", "--config", "{session_dir}/omp.yml", "{briefing}"]
+# .omp/mcp.json goes in the worktree (added to .git/info/exclude). The overlay
+# hides the global `trk` skill: sessions reach trk through MCP only.
+files   = { ".omp/mcp.json" = "{mcp_json}", "{session_dir}/omp.yml" = "skills:\n  ignoredSkills: [trk]\n" }
 # omp hides MCP tools not named in --tools, so the trk tools are listed. omp
 # keeps `write` available even then: read-only is not fully enforced.
 builtin_tools = { read-only = ["--tools", "read,grep,glob,lsp,todo,{trk_tools:mcp__trk_}"] }

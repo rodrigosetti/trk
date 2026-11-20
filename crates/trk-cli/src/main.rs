@@ -82,7 +82,7 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         fields: Option<Vec<String>>,
         /// Sort by a field; prefix with - for descending
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         sort: Option<String>,
         #[arg(long)]
         limit: Option<usize>,
@@ -92,7 +92,7 @@ enum Cmd {
         query: Vec<String>,
         #[arg(long, value_delimiter = ',')]
         fields: Option<Vec<String>>,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         sort: Option<String>,
         #[arg(long)]
         limit: Option<usize>,

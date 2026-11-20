@@ -19,6 +19,17 @@ To upgrade after changing or pulling this checkout, run `./install.sh` again. It
 files in `seed/` that differ from yours, and shows `trk schema plan`. `trk --version` prints the
 commit the binary was built from. Running agent sessions keep the binary they started with.
 
+It also installs the `trk` agent skill (from [`skills/trk/`](skills/trk/SKILL.md)) to
+`~/.agents/skills/trk`, which omp and Codex read, and links it from `~/.claude/skills/trk` for Claude
+Code. The skill teaches your interactive agent sessions to use the CLI. It is copied rather than
+linked, so it always matches the installed binary. To edit it live while developing, replace
+`~/.agents/skills/trk` with a symlink to `skills/trk`; `install.sh` leaves a symlink alone.
+
+Sessions started by `trk run` reach trk only through their MCP server (see SPEC.md), so they should
+not use the skill. The omp profile hides it with a per-session `--config` overlay
+(`skills.ignoredSkills: [trk]`), and the skill itself tells an agent that has trk MCP tools to stop.
+The other harness profiles rely on the skill's own instruction.
+
 For development: `cargo build` and `cargo test --workspace`.
 
 ## Quick start

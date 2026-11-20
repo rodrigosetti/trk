@@ -154,6 +154,9 @@ fn launch_spec_for_omp() {
             .starts_with("cd /wt/orch-abc && exec env TRK_ACTOR=agent:omp:u1 omp")
     );
     assert!(spec.shell_command.ends_with("'Do it'\\''s thing'"));
+    // trk run sessions do not see the global trk skill.
+    assert!(spec.files["/state/u1/omp.yml"].contains("ignoredSkills: [trk]"));
+    assert!(spec.argv.windows(2).any(|w| w[0] == "--config" && w[1] == "/state/u1/omp.yml"));
     assert!(!spec.send_briefing);
     assert!(profiles["opencode"].sends_briefing());
 }
