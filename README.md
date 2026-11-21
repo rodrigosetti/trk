@@ -58,10 +58,13 @@ JSON output is the versioned API (`schema_version: 3`), and errors use the same 
 stable `code`, a `hint`, and exit codes 1–5.
 
 Pretty output colors priorities consistently (P0 red, P1 yellow, P2 cyan, P3 dim) and states
-(open green, claimed yellow, waiting cyan, closed dim green). Labels and state glyphs remain present
-without color. ANSI styling is enabled only for pretty output on a terminal; `NO_COLOR` or
-`--no-color` disables it, and piped output is unstyled. JSON and JSONL output never contain ANSI
-styling.
+(open green, claimed yellow, waiting cyan, closed dim green). Full issue details (`trk show` and
+other commands displaying an issue) use bold cyan IDs and section headings, green ready indicators,
+and yellow blocked, trust-required, and check-due indicators. Metadata, timestamps, and field labels
+are dimmed; description and note bodies retain their existing rendering. Labels and state glyphs
+remain present without color. ANSI styling is enabled only for pretty output on a terminal;
+`NO_COLOR` or `--no-color` disables it, and piped output is unstyled. JSON and JSONL output never
+contain ANSI styling.
 
 ## Waiting and `trk check`
 

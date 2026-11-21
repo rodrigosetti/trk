@@ -231,6 +231,33 @@ impl Renderer {
             s.to_string()
         }
     }
+    fn heading(&self, s: &str) -> String {
+        if self.color {
+            s.cyan().bold().to_string()
+        } else {
+            s.to_string()
+        }
+    }
+
+    fn issue_id(&self, s: &str) -> String {
+        self.heading(s)
+    }
+
+    fn ready(&self, s: &str) -> String {
+        if self.color {
+            s.green().to_string()
+        } else {
+            s.to_string()
+        }
+    }
+
+    fn warning(&self, s: &str) -> String {
+        if self.color {
+            s.yellow().to_string()
+        } else {
+            s.to_string()
+        }
+    }
 
     /// The DETAIL column: the claimant and its age, what a waiting issue
     /// waits for, a blocked marker, or blocker progress.
@@ -315,7 +342,7 @@ impl Renderer {
         let id = i["id"].as_str().unwrap_or("");
         s.push_str(&format!(
             "{}  {}  {}{}\n",
-            self.bold(id),
+            self.issue_id(id),
             self.priority_label(i["priority"].as_str().unwrap_or("")),
             self.state_label(i["state"].as_str().unwrap_or("")),
             i["close_reason"]
@@ -345,26 +372,27 @@ impl Renderer {
         );
         s.push_str(&format!("{}\n", self.dim(&meta)));
         if let Some(routing) = i.get("routing").filter(|r| !r.is_null()) {
-            s.push_str(&format!("\n{}\n", self.bold("Routing")));
+            s.push_str(&format!("\n{}\n", self.heading("Routing")));
             if let Some(agent) = routing["agent"].as_str() {
-                s.push_str(&format!("  agent   {agent}\n"));
+                s.push_str(&format!("  {}   {agent}\n", self.dim("agent")));
             }
             if let Some(sources) = routing["type_sources"].as_array() {
                 for source in sources.iter().filter_map(Value::as_str) {
-                    s.push_str(&format!("  type    {source}\n"));
+                    s.push_str(&format!("  {}    {source}\n", self.dim("type")));
                 }
             }
             if let Some(source) = routing["agent_source"].as_str() {
-                s.push_str(&format!("  source  {source}\n"));
+                s.push_str(&format!("  {}  {source}\n", self.dim("source")));
             }
             if let Some(directory) = routing["prompt_directory"].as_str() {
-                s.push_str(&format!("  prompts {directory}\n"));
+                s.push_str(&format!("  {} {directory}\n", self.dim("prompts")));
             }
-            s.push_str(if routing["requires_trust"].as_bool() == Some(true) {
-                "  trust   required (--trust-repo)\n"
+            let trust = if routing["requires_trust"].as_bool() == Some(true) {
+                self.warning("required (--trust-repo)")
             } else {
-                "  trust   not required\n"
-            });
+                "not required".to_string()
+            };
+            s.push_str(&format!("  {}   {trust}\n", self.dim("trust")));
         }
         let description = i["description"].as_str().unwrap_or("");
         if !description.trim().is_empty() {
@@ -375,33 +403,39 @@ impl Renderer {
             }
         }
         if let Some(w) = i.get("waiting").filter(|w| !w.is_null()) {
-            s.push_str(&format!("\n{}\n", self.bold("Waiting")));
+            s.push_str(&format!("\n{}\n", self.heading("Waiting")));
             if let Some(r) = w["reason"].as_str() {
-                s.push_str(&format!("  for    {r}\n"));
+                s.push_str(&format!("  {}    {r}\n", self.dim("for")));
             }
             match w["check"].as_str() {
                 Some(c) => {
                     // The command runs unattended: always shown in full.
                     let mut lines = c.lines();
-                    s.push_str(&format!("  check  {}\n", lines.next().unwrap_or("")));
+                    s.push_str(&format!(
+                        "  {}  {}\n",
+                        self.dim("check"),
+                        lines.next().unwrap_or("")
+                    ));
                     for l in lines {
                         s.push_str(&format!("         {l}\n"));
                     }
                     if let Some(cwd) = w["cwd"].as_str() {
-                        s.push_str(&format!("  in     {cwd}\n"));
+                        s.push_str(&format!("  {}     {cwd}\n", self.dim("in")));
                     }
                     s.push_str(&format!(
-                        "  every  {}{}\n",
+                        "  {}  {}{}\n",
+                        self.dim("every"),
                         w["interval"].as_i64().map(fmt_duration).unwrap_or_default(),
                         w["next_check_at"]
                             .as_str()
-                            .map(|t| format!(" · next {}", until(t)))
+                            .map(|t| self.dim(&format!(" · next {}", until(t))))
                             .unwrap_or_default()
                     ));
                     if let Some(t) = w["last_check_at"].as_str() {
                         s.push_str(&format!(
-                            "  last   {} ago, exit {} (not yet)\n",
-                            age(t),
+                            "  {}   {} ago, exit {} (not yet)\n",
+                            self.dim("last"),
+                            self.dim(&age(t)),
                             w["last_check_exit"]
                         ));
                     }
@@ -418,45 +452,47 @@ impl Renderer {
             let by = deps["blocked_by"].as_array().cloned().unwrap_or_default();
             let blocks = deps["blocks"].as_array().cloned().unwrap_or_default();
             if !by.is_empty() || !blocks.is_empty() {
-                s.push_str(&format!("\n{}\n", self.bold("Dependencies")));
+                s.push_str(&format!("\n{}\n", self.heading("Dependencies")));
                 for e in &by {
-                    s.push_str(&format!("  blocked by {}\n", self.edge(e)));
+                    s.push_str(&format!("  {} {}\n", self.dim("blocked by"), self.edge(e)));
                 }
                 for e in &blocks {
-                    s.push_str(&format!("  blocks     {}\n", self.edge(e)));
+                    s.push_str(&format!("  {}     {}\n", self.dim("blocks"), self.edge(e)));
                 }
             }
         }
         if let Some(c) = i.get("claim").filter(|c| !c.is_null()) {
-            s.push_str(&format!("\n{}\n", self.bold("Claim")));
+            s.push_str(&format!("\n{}\n", self.heading("Claim")));
             s.push_str(&format!("  {}", c["actor"].as_str().unwrap_or("")));
             if let Some(o) = c["on_behalf_of"].as_str() {
-                s.push_str(&format!(" on behalf of {o}"));
+                s.push_str(&format!(" {} {o}", self.dim("on behalf of")));
             }
-            s.push_str(&format!(
+            s.push_str(&self.dim(&format!(
                 " · since {}",
                 c["claimed_at"].as_str().map(age).unwrap_or_default()
-            ));
+            )));
             if let Some(l) = c["lease_until"].as_str() {
-                s.push_str(&format!(" · lease until {l}"));
+                s.push_str(&self.dim(&format!(" · lease until {l}")));
             }
             s.push('\n');
             for k in ["agent", "terminal", "worktree", "host"] {
                 if let Some(v) = c[k].as_str() {
-                    s.push_str(&format!("  {k}: {v}\n"));
+                    s.push_str(&format!("  {} {v}\n", self.dim(&format!("{k}:"))));
                 }
             }
         }
         let d = &i["derived"];
         let mut flags = vec![];
         if d["ready"].as_bool() == Some(true) {
-            flags.push("ready".to_string());
+            flags.push(self.ready("ready"));
         }
         if let Some(b) = d["blocked_by"].as_array().filter(|a| !a.is_empty()) {
             flags.push(format!(
-                "⛔ blocked by {}",
+                "{} {}",
+                self.warning("⛔ blocked by"),
                 b.iter()
                     .filter_map(|x| x.as_str())
+                    .map(|id| self.issue_id(id))
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
@@ -471,7 +507,7 @@ impl Renderer {
                     .iter()
                     .map(|item| format!(
                         "{} ({})",
-                        item["id"].as_str().unwrap_or(""),
+                        self.issue_id(item["id"].as_str().unwrap_or("")),
                         self.priority_label(item["priority"].as_str().unwrap_or(""))
                     ))
                     .collect::<Vec<_>>()
@@ -480,19 +516,24 @@ impl Renderer {
         }
 
         if let Some(p) = d.get("progress") {
-            flags.push(format!("progress {}/{}", p["closed"], p["total"]));
+            flags.push(format!(
+                "{} {}/{}",
+                self.dim("progress"),
+                p["closed"],
+                p["total"]
+            ));
         }
         if d["due"].as_bool() == Some(true) {
-            flags.push("check due: `trk check` will run it".to_string());
+            flags.push(self.warning("check due: `trk check` will run it"));
         }
         if !flags.is_empty() {
-            s.push_str(&format!("\n{}\n", self.bold("State")));
+            s.push_str(&format!("\n{}\n", self.heading("State")));
             for f in flags {
                 s.push_str(&format!("  {f}\n"));
             }
         }
         if let Some(notes) = i["notes"].as_array().filter(|a| !a.is_empty()) {
-            s.push_str(&format!("\n{}\n", self.bold("Notes")));
+            s.push_str(&format!("\n{}\n", self.heading("Notes")));
             for n in notes {
                 s.push_str(&format!(
                     "  {} {} {}{}\n",
@@ -501,7 +542,7 @@ impl Renderer {
                     short_actor(n["actor"].as_str().unwrap_or("")),
                     n["amends"]
                         .as_i64()
-                        .map(|a| format!(" (amends #{a})"))
+                        .map(|a| self.dim(&format!(" (amends #{a})")))
                         .unwrap_or_default()
                 ));
                 for line in n["body"].as_str().unwrap_or("").lines() {
@@ -510,19 +551,19 @@ impl Renderer {
             }
         }
         if let Some(ev) = i["events"].as_array().filter(|a| !a.is_empty()) {
-            s.push_str(&format!("\n{}\n", self.bold("Timeline")));
+            s.push_str(&format!("\n{}\n", self.heading("Timeline")));
             for e in ev {
                 s.push_str(&format!("  {}\n", self.event_line(e)));
             }
         }
         if let Some(cl) = i["claims"].as_array().filter(|a| !a.is_empty()) {
-            s.push_str(&format!("\n{}\n", self.bold("Claim history")));
+            s.push_str(&format!("\n{}\n", self.heading("Claim history")));
             for c in cl {
                 s.push_str(&format!(
                     "  {} {} → {} ({}){}\n",
                     c["actor"].as_str().unwrap_or(""),
-                    c["claimed_at"].as_str().unwrap_or(""),
-                    c["released_at"].as_str().unwrap_or("active"),
+                    self.dim(c["claimed_at"].as_str().unwrap_or("")),
+                    self.dim(c["released_at"].as_str().unwrap_or("active")),
                     c["release_reason"].as_str().unwrap_or("-"),
                     c["worktree"]
                         .as_str()
@@ -537,7 +578,7 @@ impl Renderer {
     fn edge(&self, e: &Value) -> String {
         format!(
             "{}  {}  {}",
-            self.bold(e["id"].as_str().unwrap_or("")),
+            self.issue_id(e["id"].as_str().unwrap_or("")),
             self.state_label(e["state"].as_str().unwrap_or("")),
             e["title"].as_str().unwrap_or("")
         )
@@ -552,7 +593,7 @@ impl Renderer {
                 p["title"].as_str().unwrap_or(""),
                 p["followup_of"]
                     .as_str()
-                    .map(|f| format!(" as a follow-up of {f}"))
+                    .map(|f| format!(" as a follow-up of {}", self.issue_id(f)))
                     .unwrap_or_default()
             ),
             "set" => {
@@ -621,13 +662,13 @@ impl Renderer {
             ),
             "dep_add" => format!(
                 "+ {} blocks {}",
-                p["blocker"].as_str().unwrap_or(""),
-                p["blocked"].as_str().unwrap_or("")
+                self.issue_id(p["blocker"].as_str().unwrap_or("")),
+                self.issue_id(p["blocked"].as_str().unwrap_or(""))
             ),
             "dep_rm" => format!(
                 "- {} blocks {}",
-                p["blocker"].as_str().unwrap_or(""),
-                p["blocked"].as_str().unwrap_or("")
+                self.issue_id(p["blocker"].as_str().unwrap_or("")),
+                self.issue_id(p["blocked"].as_str().unwrap_or(""))
             ),
             "note" => format!(
                 "note{}: {}",
