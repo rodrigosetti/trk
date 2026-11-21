@@ -466,14 +466,10 @@ pub fn compile(terms: &[Term], ctx: &dyn QueryCtx) -> Result<Compiled> {
 }
 
 /// ORDER BY clause for `--sort`. A leading `-` sorts descending. Without
-/// one, ready work is ordered by priority then age, anything else by recency.
-pub fn order_by(sort: Option<&str>, ready: bool) -> Result<String> {
+/// one, issues are ordered by priority then age.
+pub fn order_by(sort: Option<&str>) -> Result<String> {
     let Some(sort) = sort else {
-        return Ok(if ready {
-            "i.priority, i.created_at, i.id".into()
-        } else {
-            "i.updated_at DESC, i.id".into()
-        });
+        return Ok("i.priority, i.created_at, i.id".into());
     };
     let mut out = vec![];
     for part in sort.split(',') {

@@ -84,6 +84,22 @@ pub fn available() -> Result<(), String> {
     json_command("herdr-app", &["ls"]).map(|_| ())
 }
 
+/// Whether the exact terminal address still appears in Herdr's live inventory.
+fn contains_terminal(ui: &Value, terminal: &str) -> bool {
+    ui["spaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|space| space["tabs"].as_array().into_iter().flatten())
+        .flat_map(|tab| tab["terminals"].as_array().into_iter().flatten())
+        .any(|pane| pane["terminal"] == terminal)
+}
+
+pub fn has_terminal(terminal: &str) -> Result<bool, String> {
+    let ui = json_command("herdr-app", &["ls"])?;
+    Ok(contains_terminal(&ui, terminal))
+}
+
 /// Never retry a space creation: an uncertain reply may already have started it.
 pub fn start(title: &str, cwd: &str, shell_command: &str) -> Result<(String, Placement), String> {
     let argv = serde_json::to_string(&["sh", "-c", shell_command])
@@ -123,7 +139,7 @@ pub fn start(title: &str, cwd: &str, shell_command: &str) -> Result<(String, Pla
 
 #[cfg(test)]
 mod tests {
-    use super::visible_pane;
+    use super::{contains_terminal, visible_pane};
     use serde_json::json;
 
     #[test]
@@ -146,5 +162,14 @@ mod tests {
         );
         assert_eq!(visible_pane(&ui, "new", "/other", "Issue title", "agent"), None);
         assert_eq!(visible_pane(&ui, "new", "/wt", "Other title", "agent"), None);
+    }
+    #[test]
+    fn terminal_lookup_requires_the_exact_live_address() {
+        let ui = json!({"spaces": [{"tabs": [{"terminals": [
+            {"terminal": "herdr://space-a/pane-1", "pane": "pane-1"}
+        ]}]}]});
+        assert!(contains_terminal(&ui, "herdr://space-a/pane-1"));
+        assert!(!contains_terminal(&ui, "herdr://space-b/pane-1"));
+        assert!(!contains_terminal(&ui, "pane-1"));
     }
 }

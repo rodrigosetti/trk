@@ -57,6 +57,12 @@ Every command takes `--json` (or `--format pretty|json|jsonl`). Scripts should a
 JSON output is the versioned API (`schema_version: 3`), and errors use the same envelope with a
 stable `code`, a `hint`, and exit codes 1–5.
 
+Pretty output colors priorities consistently (P0 red, P1 yellow, P2 cyan, P3 dim) and states
+(open green, claimed yellow, waiting cyan, closed dim green). Labels and state glyphs remain present
+without color. ANSI styling is enabled only for pretty output on a terminal; `NO_COLOR` or
+`--no-color` disables it, and piped output is unstyled. JSON and JSONL output never contain ANSI
+styling.
+
 ## Waiting and `trk check`
 
 ```sh
@@ -87,6 +93,12 @@ The check runs with `sh -c` in the worktree the issue was claimed in, with `TRK_
 | 75 | not yet | still waiting; checked again after `--every` (default `[check] interval`, 5m) |
 | anything else, or a timeout | error | the issue returns to open with the command's output in a note |
 
+
+After a check passes or fails, trk best-effort sends an informational message to the
+original agent session if its MCP server and terminal are still present. A pass says
+the issue is closed; a failure includes its result and says the issue reopened. Exit 75
+does not notify. The agent is not resumed automatically, and the session remains for
+the user to inspect and close.
 Three properties follow from that:
 
 - **A waiting issue still blocks.** What depends on it becomes ready when the work has landed, not

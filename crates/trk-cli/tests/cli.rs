@@ -130,6 +130,58 @@ impl Env {
 }
 
 #[test]
+fn list_defaults_to_priority_then_age_and_honors_sort_overrides() {
+    let e = Env::new();
+    let issue = |now, title, priority| e.at(now, &["create", title, "-p", priority]);
+    let older = issue("2026-11-20T10:00:00Z", "Older normal issue", "P2");
+    let newer = issue("2026-11-20T11:00:00Z", "Newer normal issue", "P2");
+    let urgent = issue("2026-11-20T12:00:00Z", "Urgent issue", "P0");
+    let id = |issue: &Value| issue["id"].as_str().unwrap().to_string();
+    let mut age_order = vec![older.clone(), newer.clone(), urgent.clone()];
+    age_order.sort_by(|a, b| {
+        a["created_at"]
+            .as_str()
+            .cmp(&b["created_at"].as_str())
+            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+    });
+    let ids = |rows: &Value| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let mut default_order = vec![id(&urgent)];
+    default_order.extend(age_order[..2].iter().map(id));
+    assert_eq!(ids(&e.ok(&["list"])), default_order);
+    assert_eq!(
+        ids(&e.ok(&["list", "--sort", "created"])),
+        age_order.iter().map(id).collect::<Vec<_>>()
+    );
+
+    e.set_config(
+        r#"[views.mine]
+query = "claimed-by=me""#,
+        r#"[views.mine]
+query = "state=open"
+sort = "-created""#,
+    );
+    let mut reverse_age_order = age_order.clone();
+    reverse_age_order.sort_by(|a, b| {
+        b["created_at"]
+            .as_str()
+            .cmp(&a["created_at"].as_str())
+            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+    });
+    let reverse_age_ids = reverse_age_order.iter().map(id).collect::<Vec<_>>();
+    assert_eq!(ids(&e.ok(&["list", "@mine"])), reverse_age_ids);
+    assert_eq!(
+        ids(&e.ok(&["list", "@mine", "--sort", "created"])),
+        age_order.iter().map(id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn list_and_ready_scope_to_project_by_default() {
     let e = Env::new();
     e.ok(&["project", "add", "other", "--name", "Other"]);
@@ -1475,4 +1527,58 @@ fn new_repo_type_and_missing_routes_are_explicit() {
             .unwrap()
             .contains("missing agent 'missing'")
     );
+}
+
+#[test]
+fn pretty_priority_and_state_labels_are_readable_without_color() {
+    let e = Env::new();
+    e.create(&["-p", "P0", "open"]);
+    let claimed = e.create(&["-p", "P1", "claimed"]);
+    e.ok(&["claim", &claimed]);
+    let waiting = e.create(&["-p", "P2", "waiting"]);
+    e.ok(&["claim", &waiting]);
+    e.ok(&["wait", &waiting, "--reason", "later"]);
+    let closed = e.create(&["-p", "P3", "closed"]);
+    e.ok(&["close", &closed]);
+
+    let pretty_output = || {
+        e.cmd()
+            .args(["--format", "pretty", "list", "--all-projects"])
+            .output()
+            .unwrap()
+    };
+    let out = pretty_output();
+    assert!(out.status.success());
+    let pretty = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        pretty.contains("P0") && pretty.contains("○ open"),
+        "{pretty}"
+    );
+    assert!(
+        pretty.contains("P1") && pretty.contains("● claimed"),
+        "{pretty}"
+    );
+    assert!(
+        pretty.contains("P2") && pretty.contains("◷ waiting"),
+        "{pretty}"
+    );
+    assert!(
+        pretty.contains("P3") && pretty.contains("✓ closed"),
+        "{pretty}"
+    );
+    assert!(!pretty.contains('\x1b'), "{pretty:?}");
+
+    let no_color = e
+        .cmd()
+        .env("NO_COLOR", "1")
+        .args(["--format", "pretty", "list", "--all-projects"])
+        .output()
+        .unwrap();
+    assert!(no_color.status.success());
+    assert!(!no_color.stdout.contains(&0x1b));
+
+    let json = e.cmd().args(["--json", "ready"]).output().unwrap();
+    assert!(json.status.success());
+    assert!(!json.stdout.contains(&0x1b));
+    serde_json::from_slice::<Value>(&json.stdout).unwrap();
 }

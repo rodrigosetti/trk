@@ -209,15 +209,6 @@ impl Ctx<'_> {
         limit: Option<usize>,
     ) -> Result<Vec<Value>> {
         let terms = query::parse(q)?;
-        let ready = terms.iter().any(|term| {
-            matches!(
-                term,
-                query::Term::Flag {
-                    flag: query::Flag::Ready,
-                    negated: false
-                }
-            )
-        });
         let compiled = query::compile(&terms, self)?;
         let mut sql = format!(
             "SELECT {ISSUE_COLS} FROM issue_view i WHERE {}",
@@ -228,7 +219,7 @@ impl Ctx<'_> {
             sql.push_str(" AND i.project_id = ?");
             params.push(rusqlite::types::Value::Text(p.to_string()));
         }
-        sql.push_str(&format!(" ORDER BY {}", query::order_by(sort, ready)?));
+        sql.push_str(&format!(" ORDER BY {}", query::order_by(sort)?));
         if let Some(n) = limit {
             sql.push_str(&format!(" LIMIT {n}"));
         }

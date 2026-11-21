@@ -758,7 +758,7 @@ fn queries_and_sorts_use_type_not_issue_agent() {
             .code(),
         Code::BadQuery
     );
-    assert!(trk_core::query::order_by(Some("agent"), false).is_err());
+    assert!(trk_core::query::order_by(Some("agent")).is_err());
 }
 
 fn old_agent_database(path: &std::path::Path, agents: &[Option<&str>]) {
