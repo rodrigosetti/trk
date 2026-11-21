@@ -564,6 +564,40 @@ pub fn send(env: &Env, id: &str, text: &str) -> Result<Out> {
         json!({"issue": id, "terminal": name, "output": out}),
     ))
 }
+/// Best-effort notification to the exact agent session that left an issue waiting.
+///
+/// The waiting claim is historical by design: resolving the issue releases it,
+/// so looking up the active claim could steer a replacement session instead.
+pub fn notify_waiting_session(env: &Env, issue: &str, text: &str) -> Result<()> {
+    let store = env.store()?;
+    let claim = store.read(None, |c| {
+        Ok(c.claims(issue)?
+            .into_iter()
+            .rev()
+            .find(|claim| claim.release_reason.as_deref() == Some("waiting")))
+    })?;
+    let Some(claim) = claim else {
+        return Ok(());
+    };
+    if mcp_alive(&store.read(None, |c| c.actor_meta(&claim.actor))?) != Some(true) {
+        return Ok(());
+    }
+    let Some(name) = claim.terminal else {
+        return Ok(());
+    };
+    let launcher = launcher(env)?;
+    let Some(send) = launcher.send else {
+        return Ok(());
+    };
+    if launcher.herdr && !crate::herdr::has_terminal(&name).unwrap_or(false) {
+        return Ok(());
+    }
+    let mut vars = BTreeMap::new();
+    vars.insert("name", name);
+    vars.insert("text", text.to_string());
+    let _ = send_with_retry(&send, &vars)?;
+    Ok(())
+}
 
 /// Release claims whose MCP server has gone, recording the exit as a note.
 pub fn reap(env: &Env) -> Result<Out> {

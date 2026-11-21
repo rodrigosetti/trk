@@ -255,6 +255,36 @@ fn pass(env: &Env, a: &CheckArgs) -> Result<std::result::Result<Vec<Value>, Valu
             },
         };
         let result = store.write(&actor, false, |c| c.check_record(&i.id, &check, &run))?;
+        if matches!(result, CheckResult::Passed | CheckResult::Failed) {
+            let message = if result == CheckResult::Passed {
+                format!(
+                    "Informational update: the waiting check passed for {}. The issue is closed; no further action is required.",
+                    i.id
+                )
+            } else {
+                let reason = if run.timed_out {
+                    "timed out".to_string()
+                } else {
+                    run.exit
+                        .map(|code| format!("exited with status {code}"))
+                        .unwrap_or_else(|| "could not run".to_string())
+                };
+                let output = run.output.trim_end();
+                let context = if output.is_empty() {
+                    String::new()
+                } else {
+                    let excerpt: String = output.chars().take(500).collect();
+                    format!(" Check output: {excerpt}")
+                };
+                format!(
+                    "Informational update: the waiting check failed for {} ({reason}); the issue was reopened. No work was resumed automatically.{context}",
+                    i.id
+                )
+            };
+            // State and outcome are already committed. Notification is advisory:
+            // an exited session or a launcher failure must not affect the check.
+            let _ = crate::run::notify_waiting_session(env, &i.id, &message);
+        }
         let now = store.read(None, |c| c.issue(&i.id))?;
         let mut v = json!({
             "issue": i.id, "title": i.title, "result": result.as_str(),
