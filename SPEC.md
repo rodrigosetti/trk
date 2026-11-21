@@ -280,7 +280,7 @@ Replacing hc with tmux or a plain process is a config change: replace the templa
 ```toml
 [harness.claude-code]
 command = "claude"
-args    = ["--strict-mcp-config", "--mcp-config", "{mcp_json}", "{briefing}"]
+args    = ["--strict-mcp-config", "--mcp-config", "{mcp_json_file}", "{briefing}"]
 builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdit"], none = ["--tools", ""] }
 
 [harness.omp]

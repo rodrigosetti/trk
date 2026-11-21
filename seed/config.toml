@@ -55,7 +55,7 @@ builtin_tools = { read-only = ["--tools", "read,grep,glob,lsp,todo,{trk_tools:mc
 
 [harness.claude-code]
 command = "claude"
-args    = ["--strict-mcp-config", "--mcp-config", "{mcp_json}", "{briefing}"]
+args    = ["--strict-mcp-config", "--mcp-config", "{mcp_json_file}", "{briefing}"]
 builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdit"], none = ["--tools", ""] }
 
 [harness.codex]

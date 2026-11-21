@@ -168,3 +168,90 @@ fn launch_spec_for_omp() {
     assert!(!spec.send_briefing);
     assert!(profiles["opencode"].sends_briefing());
 }
+#[test]
+fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().join("worktree with spaces");
+    let session = temp.path().join("session files");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&session).unwrap();
+    let capture = temp.path().join("captured arguments");
+    let fake_claude = temp.path().join("fake claude");
+    std::fs::write(
+        &fake_claude,
+        "#!/bin/sh\nprintf '%s\\0' \"$@\" > \"$CAPTURE\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let user = user_config();
+    let profiles = harness::profiles(&user).unwrap();
+    let mut profile = profiles["claude-code"].clone();
+    profile.command = fake_claude.to_string_lossy().into_owned();
+    let agent = load_agent(&seed(), "implementer").unwrap();
+    let briefing = "# issue: test\n\nQuotes: ' \" ` $HOME $(echo nope) ; & | < >\n\
+                    Long detail: one two three four five six seven eight nine ten.\n";
+    let spec = harness::build(LaunchInput {
+        issue: "test-abc",
+        agent: &agent,
+        harness: "claude-code",
+        profile: &profile,
+        actor: "agent:claude-code:test-session",
+        on_behalf_of: None,
+        terminal: "trk-test-abc",
+        cwd: cwd.to_str().unwrap(),
+        worktree: Some(cwd.to_str().unwrap()),
+        session_dir: session.to_str().unwrap(),
+        trk_bin: "/bin/trk",
+        trk_env: BTreeMap::from([("TRK_DB".to_string(), "/tmp/trk.db".to_string())]),
+        briefing: briefing.to_string(),
+        instructions: "rules".into(),
+        tools: vec!["get_task".into(), "add_note".into()],
+    })
+    .unwrap();
+    for (path, contents) in &spec.files {
+        std::fs::write(path, contents).unwrap();
+    }
+
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(&spec.shell_command)
+        .env("CAPTURE", &capture)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let args: Vec<String> = std::fs::read(&capture)
+        .unwrap()
+        .split(|byte| *byte == 0)
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| String::from_utf8(arg.to_vec()).unwrap())
+        .collect();
+    assert_eq!(args[0], "--strict-mcp-config");
+    assert_eq!(args[1], "--mcp-config");
+    assert_eq!(args[2], format!("{}/mcp.json", session.display()));
+    assert_eq!(args[3], briefing);
+    let mcp: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&args[2]).unwrap()).unwrap();
+    assert_eq!(mcp["mcpServers"]["trk"]["command"], "/bin/trk");
+    assert_eq!(
+        mcp["mcpServers"]["trk"]["args"],
+        serde_json::json!([
+            "mcp",
+            "--issue",
+            "test-abc",
+            "--actor",
+            "agent:claude-code:test-session",
+            "--agent",
+            "implementer"
+        ])
+    );
+    assert_eq!(mcp["mcpServers"]["trk"]["env"]["TRK_DB"], "/tmp/trk.db");
+}
