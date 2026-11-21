@@ -6,9 +6,9 @@
 # The agent skill is installed separately, per repository, with
 # `trk skill install` (or `trk skill install --global`).
 #
-# First install: writes the default config (~/.config/trk) and applies it.
-# Upgrade: replaces the binary (the database migrates itself on next use), then lists default-config files that differ from yours, since trk
-# never overwrites your config.
+# First install: writes the default config (~/.config/trk) and creates the database.
+# Upgrade: replaces the binary, then lists default-config files that differ
+# from yours, since trk never overwrites your config.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -34,7 +34,7 @@ if "$BIN" skill status --global --format json 2>/dev/null | grep -q '"state": "o
 fi
 echo "    (refresh project skills with \`trk skill install\` in each repository; see \`trk skill status\`)"
 
-if [ ! -d "$CONFIG/types" ]; then
+if [ ! -f "$CONFIG/config.toml" ]; then
   echo "==> first install: writing the default config to $CONFIG"
   "$BIN" init --format pretty
   exit 0
@@ -58,9 +58,9 @@ if [ -n "$changed" ]; then
   printf "==> default config files that differ from %s:%b\n" "$CONFIG" "$changed"
   echo "    (your edits, or changes in this checkout; nothing was overwritten)"
   echo "    compare:  diff -u $REPO/seed/<file> $CONFIG/<file>"
-  echo "    take one: cp $REPO/seed/<file> $CONFIG/<file> && trk schema apply"
+  echo "    take one: cp $REPO/seed/<file> $CONFIG/<file>"
   echo "    (config.toml holds your settings: merge it by hand instead of copying)"
 else
   echo "==> your config matches the defaults in this checkout"
 fi
-"$BIN" schema plan --format pretty | sed 's/^/    /'
+"$BIN" agent check --format pretty | sed 's/^/    /' || true

@@ -1,10 +1,10 @@
-//! The trk-agent half of `trk schema check` and `trk schema plan`.
+//! `trk agent check`: diagnostics for agent definitions, their templates and
+//! the harness profiles they prefer.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use serde_json::{Map, Value, json};
-use trk_core::config::{ConfigDir, Diagnostic, UserConfig};
-use trk_core::registry::{Schema, TypeDef};
+use serde_json::{Value, json};
+use trk_core::config::{ConfigDir, DEFAULT_AGENT, Diagnostic, UserConfig};
 
 use crate::agent::{AgentDef, BUILTIN_LEVELS, load_agent_file};
 use crate::harness::{installed, profiles};
@@ -12,31 +12,18 @@ use crate::prompt::{PromptInput, briefing, instructions};
 use crate::tools::{agent_tools, unmatched_includes};
 
 /// A sample issue object for rendering templates during checks.
-pub fn sample_issue(schema: &Schema, ty: &TypeDef) -> Value {
-    let mut fields = Map::new();
-    for f in &ty.fields {
-        fields.insert(f.field.clone(), Value::Null);
-    }
-    let _ = schema;
+pub fn sample_issue() -> Value {
     json!({
-        "id": "proj-abc", "type": ty.name, "project": "proj", "title": "Sample", "context": "Sample context",
-        "status": ty.first_active().map(|s| s.name.clone()).unwrap_or_default(), "status_category": "active",
-        "resolution": null, "outcome": null, "owner": null, "links": [], "tags": [],
-        "fields": fields, "claim": null, "deps": {"out": [], "in": []},
-        "derived": {"ready": false, "blocked_by": [], "gates_unmet": [], "next": {}},
+        "id": "proj-abc", "project": "proj", "repo": null, "title": "Sample",
+        "description": "Sample description", "state": "claimed", "priority": "P2",
+        "agent": null, "close_reason": null, "waiting": null, "claim": null,
+        "deps": {"blocked_by": [], "blocks": []},
+        "derived": {"ready": false, "blocked_by": [], "due": false, "unblocks_higher_priority": []},
+        "notes": [],
     })
 }
 
-/// Types routed to each agent.
-pub fn routed_types<'a>(schema: &'a Schema, agent: &str) -> Vec<&'a TypeDef> {
-    schema
-        .types
-        .values()
-        .filter(|t| t.agent.as_deref() == Some(agent))
-        .collect()
-}
-
-pub fn check_agents(cfg: &ConfigDir, schema: &Schema, user: &UserConfig) -> Vec<Diagnostic> {
+pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
     let mut d = vec![];
     let mut agents: BTreeMap<String, AgentDef> = BTreeMap::new();
     for p in cfg.files_in("agents", "toml") {
@@ -55,15 +42,12 @@ pub fn check_agents(cfg: &ConfigDir, schema: &Schema, user: &UserConfig) -> Vec<
             Err(e) => d.push(Diagnostic::error(Some(&file), e.message())),
         }
     }
-    for t in schema.types.values() {
-        if let Some(a) = &t.agent
-            && !agents.contains_key(a)
-        {
-            d.push(Diagnostic::error(
-                Some(&format!("types/{}.toml", t.name)),
-                format!("routing.agent '{a}' has no agents/{a}.toml"),
-            ));
-        }
+    let default = user.run.default_agent.as_deref().unwrap_or(DEFAULT_AGENT);
+    if !agents.contains_key(default) {
+        d.push(Diagnostic::error(
+            Some("config.toml"),
+            format!("the default agent '{default}' has no agents/{default}.toml"),
+        ));
     }
     let profs = match profiles(user) {
         Ok(p) => p,
@@ -116,144 +100,37 @@ pub fn check_agents(cfg: &ConfigDir, schema: &Schema, user: &UserConfig) -> Vec<
                 ));
             }
         }
-        for (cname, c) in &a.trk_tools.composed {
-            if let Some(cs) = &c.create {
-                match schema.types.get(&cs.ty) {
-                    None => d.push(Diagnostic::error(
-                        Some(file),
-                        format!("composed tool '{cname}' creates unknown type '{}'", cs.ty),
-                    )),
-                    Some(nt) => {
-                        if !schema.dep_kinds.contains_key(&cs.edge) {
-                            d.push(Diagnostic::error(
-                                Some(file),
-                                format!("composed tool '{cname}' uses unknown edge '{}'", cs.edge),
-                            ));
-                        }
-                        for f in &cs.fields {
-                            let ok = nt.type_field(f).is_some()
-                                || schema.field(f).is_some_and(|x| x.shared);
-                            if !ok {
-                                d.push(Diagnostic::error(
-                                    Some(file),
-                                    format!(
-                                        "composed tool '{cname}': type '{}' has no field '{f}'",
-                                        cs.ty
-                                    ),
-                                ));
-                            }
-                        }
-                        let routed = routed_types(schema, &a.name);
-                        for tf in &nt.fields {
-                            // Shared required fields are inherited from the current issue.
-                            let inherited = !routed.is_empty()
-                                && routed.iter().all(|t| t.type_field(&tf.field).is_some());
-                            if tf.required_at_create && !cs.fields.contains(&tf.field) && !inherited
-                            {
-                                d.push(Diagnostic::error(
-                                    Some(file),
-                                    format!("composed tool '{cname}': '{}' needs field '{}' at creation; add it to `fields`", cs.ty, tf.field),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
+        for miss in unmatched_includes(a) {
+            d.push(Diagnostic::error(
+                Some(file),
+                format!("trk_tools.include: there is no tool '{miss}'"),
+            ));
         }
-        let routed = routed_types(schema, &a.name);
-        for t in &routed {
-            for miss in unmatched_includes(schema, t, a) {
-                d.push(Diagnostic::error(
-                    Some(file),
-                    format!(
-                        "tool '{miss}' does not exist for type '{}', which routes to this agent",
-                        t.name
-                    ),
-                ));
-            }
-            if let Some(cs) = a
-                .trk_tools
-                .composed
-                .values()
-                .filter_map(|c| c.create.as_ref())
-                .next()
-                && let (Some(nt), Ok(k)) = (schema.types.get(&cs.ty), schema.dep_kind(&cs.edge))
-            {
-                let (s, dd) = if cs.new_is_src() {
-                    (&nt.name, &t.name)
-                } else {
-                    (&t.name, &nt.name)
-                };
-                if !k.allows(s, dd) {
-                    d.push(Diagnostic::error(
-                        Some(file),
-                        format!("a composed tool creates a '{}' edge from {s} to {dd}, which '{}' does not allow", cs.edge, cs.edge),
-                    ));
+        let tools = agent_tools(a);
+        let ends = |n: &str| tools.iter().any(|t| t.name == n);
+        if !ends("close") && !ends("wait") && !ends("hand_back") {
+            d.push(Diagnostic::error(
+                Some(file),
+                "the agent has none of close, wait, hand_back: it could never end a session",
+            ));
+        }
+        let issue = sample_issue();
+        let input = PromptInput {
+            issue: &issue,
+            agent: a,
+            tools: &tools,
+            worktree: Some("/tmp/wt"),
+            actor: "agent:x:1",
+            harness: None,
+        };
+        match instructions(cfg, &input) {
+            Ok(i) => {
+                if let Err(e) = briefing(cfg, &input, Some(&i)) {
+                    d.push(Diagnostic::error(Some(file), e.message()));
                 }
             }
-            let issue = sample_issue(schema, t);
-            let tools = agent_tools(schema, t, a);
-            let input = PromptInput {
-                issue: &issue,
-                agent: a,
-                tools: &tools,
-                worktree: Some("/tmp/wt"),
-                actor: "agent:x:1",
-                harness: None,
-            };
-            match instructions(cfg, &input) {
-                Ok(i) => {
-                    if let Err(e) = briefing(cfg, &input, Some(&i)) {
-                        d.push(Diagnostic::error(Some(file), e.message()));
-                    }
-                }
-                Err(e) => d.push(Diagnostic::error(Some(file), e.message())),
-            }
+            Err(e) => d.push(Diagnostic::error(Some(file), e.message())),
         }
     }
     d
-}
-
-/// Per agent and routed type: tools added and removed going from `old` to `new`.
-pub fn tool_diff(old: &Schema, new: &Schema, agents: &BTreeMap<String, AgentDef>) -> Vec<Value> {
-    let mut out = vec![];
-    for a in agents.values() {
-        let mut types: BTreeSet<String> = routed_types(new, &a.name)
-            .iter()
-            .map(|t| t.name.clone())
-            .collect();
-        types.extend(routed_types(old, &a.name).iter().map(|t| t.name.clone()));
-        for t in types {
-            let names = |s: &Schema| -> BTreeSet<String> {
-                s.types
-                    .get(&t)
-                    .map(|ty| agent_tools(s, ty, a).into_iter().map(|x| x.name).collect())
-                    .unwrap_or_default()
-            };
-            let schemas = |s: &Schema| -> BTreeMap<String, Value> {
-                s.types
-                    .get(&t)
-                    .map(|ty| {
-                        agent_tools(s, ty, a)
-                            .into_iter()
-                            .map(|x| (x.name, x.input_schema))
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
-            let (o, n) = (names(old), names(new));
-            let added: Vec<_> = n.difference(&o).cloned().collect();
-            let removed: Vec<_> = o.difference(&n).cloned().collect();
-            let (os, ns) = (schemas(old), schemas(new));
-            let changed: Vec<_> = n
-                .intersection(&o)
-                .filter(|x| os.get(*x) != ns.get(*x))
-                .cloned()
-                .collect();
-            if !added.is_empty() || !removed.is_empty() || !changed.is_empty() {
-                out.push(json!({"agent": a.name, "type": t, "added": added, "removed": removed, "changed": changed}));
-            }
-        }
-    }
-    out
 }

@@ -1,5 +1,6 @@
 //! `trk`: a local issue tracker and agent launcher.
 
+mod check;
 mod editor;
 mod env;
 mod herdr;
@@ -13,11 +14,10 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, json};
-use trk_core::config::{Level, check_schema};
+use trk_core::config::Level;
 use trk_core::error::{Code, Error, Result, bad_args};
-use trk_core::fields::{Assign, parse_assign};
-use trk_core::ops::{ClaimOpts, NewDep, NewIssue};
-use trk_core::registry::Category;
+use trk_core::model::DEFAULT_PRIORITY;
+use trk_core::ops::{ClaimOpts, Edit, NewIssue, WaitOpts};
 use trk_core::view::With;
 
 use crate::env::Env;
@@ -62,16 +62,9 @@ pub struct Global {
     no_color: bool,
 }
 
-#[derive(Args, Clone, Default)]
-struct FieldArgs {
-    /// Set a field: k=v, k+=item, k-=item, k=@file, k=@-, k= (clear)
-    #[arg(short = 'f', long = "field", value_name = "K=V")]
-    fields: Vec<String>,
-}
-
 #[derive(Subcommand)]
 enum Cmd {
-    /// Write the default config and apply it
+    /// Write the default config and create the database
     Init {
         /// Overwrite existing config files
         #[arg(long)]
@@ -89,7 +82,7 @@ enum Cmd {
         #[arg(long)]
         limit: Option<usize>,
     },
-    /// Shorthand for `trk list 'ready …'`
+    /// Open issues whose blockers are all closed: `trk list 'ready …'`
     Ready {
         query: Vec<String>,
         #[arg(long, value_delimiter = ',')]
@@ -104,37 +97,54 @@ enum Cmd {
         #[arg(required = true)]
         ids: Vec<String>,
         /// Extra sections: notes,events,deps,claims (or all)
-        #[arg(long, default_value = "deps")]
+        #[arg(long, default_value = "deps,notes")]
         with: String,
     },
-    /// Create an issue; opens $EDITOR when required fields are missing on a TTY
+    /// Create an issue; opens $EDITOR when there is no title on a TTY
     Create {
-        #[arg(value_name = "TYPE")]
-        ty: String,
+        /// The title (same as -t)
+        #[arg(value_name = "TITLE", conflicts_with = "title")]
+        title_arg: Option<String>,
         #[arg(short = 't', long)]
         title: Option<String>,
-        #[command(flatten)]
-        f: FieldArgs,
-        /// Whole object, same shape as `show --json` (- for stdin)
+        /// Description: text, @file, or @- for stdin
+        #[arg(short = 'd', long)]
+        description: Option<String>,
+        /// P0 urgent, P1 high, P2 normal (default), P3 low
+        #[arg(short = 'p', long)]
+        priority: Option<String>,
+        /// Agent definition for `trk run` (default: the configured default agent)
         #[arg(long)]
-        from: Option<String>,
-        /// Add an edge from the new issue: KIND:ID (e.g. blocks:orch-m1)
-        #[arg(long = "dep", value_name = "KIND:ID")]
-        deps: Vec<String>,
+        agent: Option<String>,
+        /// An issue that must close before this one is ready (repeatable)
+        #[arg(long = "blocked-by", value_name = "ID")]
+        blocked_by: Vec<String>,
+        /// An issue that cannot be ready until this one closes (repeatable)
+        #[arg(long, value_name = "ID")]
+        blocks: Vec<String>,
+        /// Use this id instead of allocating one (imports)
+        #[arg(long, hide = true)]
+        id: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
-    /// Change field values; $EDITOR with no arguments
+    /// Change title, description, priority or agent; $EDITOR with no options
     Edit {
         id: String,
-        #[command(flatten)]
-        f: FieldArgs,
+        #[arg(short = 't', long)]
+        title: Option<String>,
+        /// Description: text, @file, or @- for stdin
+        #[arg(short = 'd', long)]
+        description: Option<String>,
+        #[arg(short = 'p', long)]
+        priority: Option<String>,
+        /// Agent definition; an empty value clears it
         #[arg(long)]
-        from: Option<String>,
+        agent: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
-    /// Claim and enter the first intermediate status
+    /// Claim a ready issue: open → claimed
     Claim {
         id: String,
         /// Lease, e.g. 30m (agent claims default to the configured lease)
@@ -144,10 +154,8 @@ enum Cmd {
         worktree: Option<PathBuf>,
         #[arg(long)]
         steal: bool,
-        #[command(flatten)]
-        f: FieldArgs,
     },
-    /// Release the claim and return to open
+    /// Release the claim: claimed → open
     Unclaim {
         id: String,
         #[arg(long)]
@@ -162,26 +170,62 @@ enum Cmd {
         #[arg(long)]
         lease: Option<String>,
     },
-    /// Move between intermediate statuses
-    Move {
+    /// Close an open, claimed or waiting issue
+    Close {
         id: String,
-        status: String,
-        #[command(flatten)]
-        f: FieldArgs,
+        /// done or abandoned
+        #[arg(short = 'r', long, default_value = "done")]
+        reason: String,
+        /// Note recorded with the close: the outcome
+        #[arg(short = 'm', long)]
+        message: Option<String>,
         #[arg(long)]
         force: bool,
         #[arg(long)]
         dry_run: bool,
     },
-    /// Close; checks required fields and gates
-    Close {
+    /// End work without closing: claimed → waiting, until a check passes or a human decides
+    #[command(
+        after_help = "The check runs later, by `trk check`, with `sh -c` in the claim's worktree.\n\
+        Exit 0 closes the issue as done; exit 75 means not yet, check again after --every;\n\
+        any other exit returns the issue to open with the output as a note.\n\
+        Without --check the issue waits for `trk close` or `trk reopen`.\n\
+        On an issue that is already waiting, this replaces its check, interval and reason."
+    )]
+    Wait {
         id: String,
+        /// Shell command that decides the issue's fate (text, @file, or @-)
+        #[arg(short = 'c', long)]
+        check: Option<String>,
+        /// Time between checks, e.g. 2m, 1h (default: [check] interval, 5m)
+        #[arg(long, value_name = "DURATION")]
+        every: Option<String>,
+        /// What the issue is waiting for
         #[arg(short = 'r', long)]
-        resolution: String,
-        #[command(flatten)]
-        f: FieldArgs,
+        reason: Option<String>,
         #[arg(long)]
         force: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Return a waiting or closed issue to open
+    Reopen {
+        id: String,
+        /// Note recorded with the reopen
+        #[arg(short = 'm', long)]
+        message: Option<String>,
+    },
+    /// Run the checks of waiting issues that are due, one at a time
+    Check {
+        /// Run only this issue's check, due or not
+        id: Option<String>,
+        /// Run every check, due or not
+        #[arg(long)]
+        all: bool,
+        /// Keep running, pausing between passes (default 30s)
+        #[arg(long, value_name = "PAUSE", num_args = 0..=1)]
+        watch: Option<Option<String>>,
+        /// Show what would run, without running it
         #[arg(long)]
         dry_run: bool,
     },
@@ -195,12 +239,12 @@ enum Cmd {
         #[arg(long)]
         to_agent: bool,
     },
-    /// Add or remove an edge: SRC KIND DST
+    /// Add or remove a blocks edge: BLOCKER blocks BLOCKED
     Dep {
         #[command(subcommand)]
         cmd: DepCmd,
     },
-    /// Merged timeline: events, notes, claims
+    /// Timeline: events and notes
     Log { id: String },
     /// Start an agent session on the issue through the launcher
     Run {
@@ -218,8 +262,6 @@ enum Cmd {
         /// Print the launch spec without claiming or writing anything
         #[arg(long)]
         dry_run: bool,
-        #[command(flatten)]
-        f: FieldArgs,
     },
     /// Active agent claims with agent, harness, terminal and lease
     Runs,
@@ -242,14 +284,6 @@ enum Cmd {
     Agent {
         #[command(subcommand)]
         cmd: AgentCmd,
-    },
-    /// Validate, diff, apply and draw the configuration; with no subcommand, show the applied schema
-    #[command(args_conflicts_with_subcommands = true)]
-    Schema {
-        #[command(subcommand)]
-        cmd: Option<SchemaCmd>,
-        #[arg(value_name = "TYPE")]
-        ty: Option<String>,
     },
     /// Register projects
     Project {
@@ -274,15 +308,14 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum DepCmd {
+    /// BLOCKED is not ready until BLOCKER is closed
     Add {
-        src: String,
-        kind: String,
-        dst: String,
+        blocker: String,
+        blocked: String,
     },
     Rm {
-        src: String,
-        kind: String,
-        dst: String,
+        blocker: String,
+        blocked: String,
     },
 }
 
@@ -292,36 +325,12 @@ enum AgentCmd {
     /// What a session would receive: instructions, briefing, tools, MCP servers
     Preview {
         agent: String,
-        #[arg(long = "type", conflicts_with = "issue")]
-        ty: Option<String>,
+        /// Render for this issue instead of a sample
         #[arg(long)]
         issue: Option<String>,
     },
-}
-
-#[derive(Subcommand)]
-enum SchemaCmd {
-    /// Check the config files
+    /// Check agent definitions, their templates and harness profiles
     Check,
-    /// Diff the config files against the database
-    Plan {
-        #[arg(long = "map-status", value_name = "OLD=NEW")]
-        map_status: Vec<String>,
-    },
-    /// Apply the config files in one transaction
-    Apply {
-        #[arg(long = "map-status", value_name = "OLD=NEW")]
-        map_status: Vec<String>,
-    },
-    /// Draw a type's state machine (Mermaid, or DOT with --dot)
-    Graph {
-        #[arg(value_name = "TYPE")]
-        ty: String,
-        #[arg(long)]
-        dot: bool,
-    },
-    /// Add an expression index for a hot custom field
-    Index { field: String },
 }
 
 #[derive(Args, Clone)]
@@ -444,6 +453,7 @@ fn mcp(g: &Global, issue: &str, actor: &str, agent: &str) -> anyhow::Result<()> 
             now,
             agent_lease: env.agent_lease()?,
             current_repo: None,
+            check_interval: trk_core::config::parse_duration(&env.user.check.interval)?,
         },
         issue: issue.to_string(),
         actor: actor.to_string(),
@@ -451,7 +461,7 @@ fn mcp(g: &Global, issue: &str, actor: &str, agent: &str) -> anyhow::Result<()> 
     })
 }
 
-/// Read `@file` / `@-` values.
+/// A value given as text, `@file`, or `@-` for stdin.
 fn read_value(v: &str) -> Result<String> {
     if let Some(p) = v.strip_prefix('@') {
         if p == "-" {
@@ -466,99 +476,23 @@ fn read_value(v: &str) -> Result<String> {
     Ok(v.to_string())
 }
 
-fn parse_fields(f: &FieldArgs) -> Result<Vec<Assign>> {
-    let mut out = vec![];
-    for s in &f.fields {
-        let (field, op, raw) = parse_assign(s)?;
-        out.push(Assign {
-            field,
-            op,
-            value: Value::String(read_value(&raw)?),
-        });
-    }
-    Ok(out)
-}
-
-const TOOL_OWNED: &[&str] = &[
-    "id",
-    "type",
-    "project",
-    "status",
-    "status_category",
-    "resolution",
-    "claim",
-    "deps",
-    "derived",
-    "created_by",
-    "created_at",
-    "updated_at",
-    "closed_at",
-    "notes",
-    "events",
-    "claims",
-];
-
-/// `--from FILE|-`: the shape `show --json` emits (bare or in the envelope).
-fn from_file(path: &str) -> Result<Vec<Assign>> {
-    let text = if path == "-" {
-        let mut s = String::new();
-        std::io::stdin().read_to_string(&mut s)?;
-        s
-    } else {
-        std::fs::read_to_string(path).map_err(|e| bad_args(format!("cannot read {path}: {e}")))?
-    };
-    let mut v: Value =
-        serde_json::from_str(&text).map_err(|e| bad_args(format!("{path}: invalid JSON: {e}")))?;
-    if v.get("data").is_some() && v.get("ok").is_some() {
-        v = v["data"].take();
-    }
-    let obj = v
-        .as_object()
-        .ok_or_else(|| bad_args("--from expects a JSON object"))?;
-    let mut out = vec![];
-    let mut ignored = vec![];
-    for (k, val) in obj {
-        if TOOL_OWNED.contains(&k.as_str()) {
-            ignored.push(k.clone());
-            continue;
-        }
-        if k == "fields" {
-            for (fk, fv) in val.as_object().into_iter().flatten() {
-                if !fv.is_null() {
-                    out.push(Assign::set(fk.clone(), fv.clone()));
-                }
-            }
-            continue;
-        }
-        if !val.is_null() {
-            out.push(Assign::set(k.clone(), val.clone()));
-        }
-    }
-    if !ignored.is_empty() {
-        eprintln!(
-            "warning: --from ignores tool-owned fields: {}",
-            ignored.join(", ")
-        );
-    }
-    Ok(out)
-}
-
 fn with_open<T>(env: &Env, f: impl FnOnce(&mut trk_core::Store) -> Result<T>) -> Result<T> {
     let mut s = env.store()?;
     f(&mut s)
 }
 
+const SHOWN: With = With {
+    deps: true,
+    notes: false,
+    events: false,
+    claims: false,
+};
+
 fn show_one(env: &Env, store: &trk_core::Store, id: &str) -> Result<Out> {
     let actor = env.actor.clone();
-    Ok(Out::Issue(store.read(actor.as_deref(), |c| {
-        c.show(
-            id,
-            With {
-                deps: true,
-                ..Default::default()
-            },
-        )
-    })?))
+    Ok(Out::Issue(
+        store.read(actor.as_deref(), |c| c.show(id, SHOWN))?,
+    ))
 }
 
 fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
@@ -591,70 +525,105 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
             }
         }
         Cmd::Create {
-            ty,
+            title_arg,
             title,
-            f,
-            from,
-            deps,
+            description,
+            priority,
+            agent,
+            blocked_by,
+            blocks,
+            id,
             dry_run,
-        } => create(&env, ty, title, f, from, deps, dry_run),
+        } => create(
+            &env,
+            NewIssue {
+                id,
+                title: title.or(title_arg).unwrap_or_default(),
+                description: description
+                    .as_deref()
+                    .map(read_value)
+                    .transpose()?
+                    .unwrap_or_default(),
+                priority,
+                agent,
+                blocked_by,
+                blocks,
+                ..Default::default()
+            },
+            dry_run,
+        ),
         Cmd::Edit {
             id,
-            f,
-            from,
+            title,
+            description,
+            priority,
+            agent,
             dry_run,
-        } => edit(&env, id, f, from, dry_run),
+        } => edit(
+            &env,
+            id,
+            Edit {
+                title,
+                description: description.as_deref().map(read_value).transpose()?,
+                priority,
+                agent: agent.map(|a| Some(a).filter(|a| !a.trim().is_empty())),
+            },
+            dry_run,
+        ),
         Cmd::Claim {
             id,
             lease,
             worktree,
             steal,
-            f,
         } => {
             let actor = env.actor()?.to_string();
             let lease = lease
                 .map(|l| trk_core::config::parse_duration(&l))
                 .transpose()?;
-            let mut opts = ClaimOpts {
-                lease,
-                steal,
-                assigns: parse_fields(&f)?,
-                host: env::hostname(),
-                ..Default::default()
-            };
-            // Inside a git checkout, record where the work happens.
-            let wt = match worktree {
-                Some(p) => Some(
-                    std::fs::canonicalize(&p)
-                        .unwrap_or(p)
-                        .to_string_lossy()
-                        .to_string(),
-                ),
-                None => env.git.as_ref().map(|g| g.toplevel.clone()),
-            };
-            if let Some(w) = &wt {
-                opts.worktree = Some(w.clone());
-                opts.branch = env::git_info(std::path::Path::new(w)).and_then(|g| g.branch);
-            }
+            let explicit = worktree.map(|p| {
+                std::fs::canonicalize(&p)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .to_string()
+            });
             with_open(&env, |s| {
                 s.write(&actor, false, |c| {
                     let id = c.resolve_id(&id)?;
-                    // Only keep the worktree when it is a checkout of the issue's repo.
-                    let issue = c.issue(&id)?;
-                    if let (Some(r), Some(g)) =
-                        (issue.fields.get("repo").and_then(|v| v.as_str()), &env.git)
-                    {
-                        let matches = c.repo_by_ref(r)?.is_some_and(|repo| {
-                            g.remote.as_deref().map(trk_core::model::normalize_remote)
-                                == repo.remote_url
-                                || repo.local_path.as_deref() == Some(g.toplevel.as_str())
-                        });
-                        if !matches && opts.worktree.as_deref() == Some(g.toplevel.as_str()) {
-                            opts.worktree = None;
-                            opts.branch = None;
+                    // Record where the work happens: the given worktree, or the
+                    // working directory when it is a checkout of the issue's repo.
+                    let worktree = match explicit {
+                        Some(w) => Some(w),
+                        None => {
+                            let issue = c.issue(&id)?;
+                            let here = env
+                                .git
+                                .as_ref()
+                                .map(|g| c.find_repo(g.remote.as_deref(), Some(&g.toplevel)))
+                                .transpose()?
+                                .flatten();
+                            match (&env.git, here) {
+                                (Some(g), Some(r))
+                                    if issue.repo_id == Some(r.id)
+                                        || (issue.repo_id.is_none()
+                                            && r.project == issue.project) =>
+                                {
+                                    Some(g.toplevel.clone())
+                                }
+                                _ => None,
+                            }
                         }
-                    }
-                    c.claim(&id, opts).map(|_| ())
+                    };
+                    c.claim(
+                        &id,
+                        ClaimOpts {
+                            lease,
+                            steal,
+                            worktree,
+                            host: env::hostname(),
+                            ..Default::default()
+                        },
+                    )
+                    .map(|_| ())
                 })?;
                 show_one(&env, s, &id)
             })
@@ -683,52 +652,68 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
                 ))
             })
         }
-        Cmd::Move {
-            id,
-            status,
-            f,
-            force,
-            dry_run,
-        } => {
-            let actor = env.actor()?.to_string();
-            let assigns = parse_fields(&f)?;
-            with_open(&env, |s| {
-                s.write(&actor, dry_run, |c| {
-                    c.move_to(&id, &status, &assigns, force)?;
-                    c.show(
-                        &id,
-                        With {
-                            deps: true,
-                            ..Default::default()
-                        },
-                    )
-                })
-                .map(Out::Issue)
-            })
-        }
         Cmd::Close {
             id,
-            resolution,
-            f,
+            reason,
+            message,
             force,
             dry_run,
         } => {
             let actor = env.actor()?.to_string();
-            let assigns = parse_fields(&f)?;
             with_open(&env, |s| {
                 s.write(&actor, dry_run, |c| {
-                    c.close(&id, &resolution, &assigns, force)?;
-                    c.show(
-                        &id,
-                        With {
-                            deps: true,
-                            ..Default::default()
-                        },
-                    )
+                    c.close(&id, &reason, message.as_deref(), force)?;
+                    c.show(&id, SHOWN)
                 })
                 .map(Out::Issue)
             })
         }
+        Cmd::Wait {
+            id,
+            check,
+            every,
+            reason,
+            force,
+            dry_run,
+        } => {
+            let actor = env.actor()?.to_string();
+            let opts = WaitOpts {
+                check: check.as_deref().map(read_value).transpose()?,
+                interval: every
+                    .map(|e| trk_core::config::parse_duration(&e))
+                    .transpose()?,
+                reason,
+                force,
+            };
+            with_open(&env, |s| {
+                s.write(&actor, dry_run, |c| {
+                    c.wait(&id, opts)?;
+                    c.show(&id, SHOWN)
+                })
+                .map(Out::Issue)
+            })
+        }
+        Cmd::Reopen { id, message } => {
+            let actor = env.actor()?.to_string();
+            with_open(&env, |s| {
+                s.write(&actor, false, |c| c.reopen(&id, message.as_deref()))?;
+                show_one(&env, s, &id)
+            })
+        }
+        Cmd::Check {
+            id,
+            all,
+            watch,
+            dry_run,
+        } => check::check(
+            &env,
+            check::CheckArgs {
+                id,
+                all,
+                watch,
+                dry_run,
+            },
+        ),
         Cmd::Note {
             id,
             text,
@@ -758,28 +743,28 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
         Cmd::Dep { cmd } => {
             let actor = env.actor()?.to_string();
             with_open(&env, |s| match cmd {
-                DepCmd::Add { src, kind, dst } => {
-                    let (added, src, dst) = s.write(&actor, false, |c| {
-                        let (src, dst) = (c.resolve_id(&src)?, c.resolve_id(&dst)?);
-                        Ok((c.dep_add(&src, &kind, &dst)?, src, dst))
+                DepCmd::Add { blocker, blocked } => {
+                    let (added, blocker, blocked) = s.write(&actor, false, |c| {
+                        let (a, b) = (c.resolve_id(&blocker)?, c.resolve_id(&blocked)?);
+                        Ok((c.dep_add(&a, &b)?, a, b))
                     })?;
                     Ok(Out::Text(
                         format!(
-                            "{src} {kind} {dst}{}",
+                            "{blocker} blocks {blocked}{}",
                             if added { "" } else { " (already present)" }
                         ),
-                        json!({"src": src, "kind": kind, "dst": dst, "added": added}),
+                        json!({"blocker": blocker, "blocked": blocked, "added": added}),
                     ))
                 }
-                DepCmd::Rm { src, kind, dst } => {
-                    let (src, dst) = s.write(&actor, false, |c| {
-                        let (src, dst) = (c.resolve_id(&src)?, c.resolve_id(&dst)?);
-                        c.dep_rm(&src, &kind, &dst)?;
-                        Ok((src, dst))
+                DepCmd::Rm { blocker, blocked } => {
+                    let (blocker, blocked) = s.write(&actor, false, |c| {
+                        let (a, b) = (c.resolve_id(&blocker)?, c.resolve_id(&blocked)?);
+                        c.dep_rm(&a, &b)?;
+                        Ok((a, b))
                     })?;
                     Ok(Out::Text(
-                        format!("removed {src} {kind} {dst}"),
-                        json!({"src": src, "kind": kind, "dst": dst}),
+                        format!("{blocker} no longer blocks {blocked}"),
+                        json!({"blocker": blocker, "blocked": blocked}),
                     ))
                 }
             })
@@ -805,7 +790,6 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
             fg,
             print,
             dry_run,
-            f,
         } => run::run(
             &env,
             run::RunArgs {
@@ -815,7 +799,6 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
                 fg,
                 print,
                 dry_run,
-                assigns: parse_fields(&f)?,
             },
         ),
         Cmd::Runs => run::runs(&env),
@@ -824,7 +807,6 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
         Cmd::Reap => run::reap(&env),
         Cmd::Mcp { .. } => unreachable!(),
         Cmd::Agent { cmd } => agent_cmd(&env, cmd),
-        Cmd::Schema { cmd, ty } => schema_cmd(&env, cmd, ty),
         Cmd::Project { cmd } => match cmd {
             ProjectCmd::Add { id, name } => {
                 let actor = env.actor()?.to_string();
@@ -935,14 +917,15 @@ fn init(env: &Env, force: bool) -> Result<Out> {
         std::fs::write(&p, content)?;
         written.push(rel.to_string());
     }
-    // Re-read the user config we may just have written, then apply.
-    let env2 = Env {
-        user: env.config.user_config()?,
-        ..Env::new_from(env)
-    };
-    let applied = schema_apply(&env2, &[])?;
-    let text = format!(
-        "config: {}\n  wrote {} files{}\ndatabase: {}\n{}\n\nNext:\n  trk project add <id> --name \"…\"\n  trk repo add --project <id>      (inside a git checkout)\n  trk create code-change -t \"…\"",
+    let stale: Vec<String> = seed::STALE
+        .iter()
+        .filter(|f| dir.join(f).exists())
+        .map(|f| f.to_string())
+        .collect();
+    // Opening the store creates the database.
+    env.store()?;
+    let mut text = format!(
+        "config: {}\n  wrote {} files{}\ndatabase: {}",
         dir.display(),
         written.len(),
         if kept.is_empty() {
@@ -951,32 +934,20 @@ fn init(env: &Env, force: bool) -> Result<Out> {
             format!(", kept {} existing (use --force to overwrite)", kept.len())
         },
         env.db.display(),
-        match &applied {
-            Out::Text(t, _) => t.clone(),
-            _ => String::new(),
-        }
     );
-    let data = match applied {
-        Out::Text(_, d) => d,
-        _ => Value::Null,
-    };
+    if !stale.is_empty() {
+        text.push_str(&format!(
+            "\n\nNo longer used, safe to delete from the config directory:\n  {}",
+            stale.join("\n  ")
+        ));
+    }
+    text.push_str(
+        "\n\nNext:\n  trk project add <id> --name \"…\"\n  trk repo add --project <id>      (inside a git checkout)\n  trk create \"…\" -d \"…\"\n  trk check --watch                (in a spare terminal: runs waiting checks)",
+    );
     Ok(Out::Text(
         text,
-        json!({"config": dir, "db": env.db, "written": written, "kept": kept, "applied": data}),
+        json!({"config": dir, "db": env.db, "written": written, "kept": kept, "stale": stale}),
     ))
-}
-
-impl Env {
-    fn new_from(e: &Env) -> Env {
-        Env {
-            db: e.db.clone(),
-            config: e.config.clone(),
-            user: e.user.clone(),
-            actor: e.actor.clone(),
-            explicit_project: e.explicit_project.clone(),
-            git: e.git.clone(),
-        }
-    }
 }
 
 fn list(
@@ -1024,178 +995,93 @@ fn list(
     Ok(Out::Issues { items, fields })
 }
 
-fn create(
-    env: &Env,
-    ty: String,
-    title: Option<String>,
-    f: FieldArgs,
-    from: Option<String>,
-    deps: Vec<String>,
-    dry_run: bool,
-) -> Result<Out> {
+fn create(env: &Env, mut new: NewIssue, dry_run: bool) -> Result<Out> {
     let actor = env.actor()?.to_string();
     let mut store = env.store()?;
-    let project = env.project(&store)?;
-    let mut assigns = vec![];
-    if let Some(p) = &from {
-        assigns.extend(from_file(p)?);
-    }
-    if let Some(t) = title {
-        assigns.push(Assign::set("title", t));
-    }
-    assigns.extend(parse_fields(&f)?);
-    let mut new_deps = vec![];
-    for d in deps {
-        let (kind, other) = d
-            .split_once(':')
-            .ok_or_else(|| bad_args(format!("--dep {d}: expected KIND:ID")))?;
-        new_deps.push(NewDep {
-            kind: kind.into(),
-            other: other.into(),
-            new_is_src: true,
-        });
-    }
-    let attempt = |store: &mut trk_core::Store, assigns: Vec<Assign>| -> Result<Value> {
+    new.project = env.project(&store)?;
+    let mut attempt = |new: NewIssue| -> Result<Value> {
         store.write(&actor, dry_run, |c| {
-            let id = c.create(NewIssue {
-                project: project.clone(),
-                ty: ty.clone(),
-                assigns,
-                deps: new_deps.clone(),
-            })?;
-            c.show(
-                &id,
-                With {
-                    deps: true,
-                    ..Default::default()
-                },
-            )
+            let id = c.create(new)?;
+            c.show(&id, SHOWN)
         })
     };
-    match attempt(&mut store, assigns.clone()) {
-        Ok(v) => Ok(Out::Issue(v)),
-        Err(e) if e.code() == Code::RequirementsUnmet && editor::is_tty() && !dry_run => {
-            let schema = store.schema()?;
-            let t = schema.ty(&ty)?.clone();
-            let given: std::collections::BTreeMap<String, Value> = assigns
-                .iter()
-                .map(|a| (a.field.clone(), a.value.clone()))
-                .collect();
-            let mut doc_fields = vec![(
-                "title".to_string(),
-                given.get("title").cloned().unwrap_or(Value::Null),
-                true,
-                "required".to_string(),
-            )];
-            for tf in &t.fields {
-                let hint = schema.field(&tf.field).map(|d| {
-                    let mut h = d.kind.as_str().to_string();
-                    if !d.enum_values().is_empty() {
-                        h = format!("one of {}", d.enum_values().join(", "));
-                    }
-                    if tf.required_at_create {
-                        h = format!("required; {h}");
-                    }
-                    h
-                });
-                doc_fields.push((
-                    tf.field.clone(),
-                    given.get(&tf.field).cloned().unwrap_or(Value::Null),
-                    tf.required_at_create,
-                    hint.unwrap_or_default(),
-                ));
-            }
-            let context = given
-                .get("context")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let context = if context.is_empty() {
-                "<!-- context: background, motivation, constraints -->\n".to_string()
+    if new.title.trim().is_empty() && editor::is_tty() && !dry_run {
+        let doc = editor::Doc {
+            title: String::new(),
+            priority: new
+                .priority
+                .clone()
+                .unwrap_or_else(|| DEFAULT_PRIORITY.to_string()),
+            agent: new.agent.clone().unwrap_or_default(),
+            description: if new.description.is_empty() {
+                "<!-- What is needed and why, with enough context to start cold. -->\n".into()
             } else {
-                context
-            };
-            let v = editor::edit_loop(
-                |errs| editor::document(errs, &doc_fields, &context),
-                |a| {
-                    let a: Vec<Assign> = a
-                        .into_iter()
-                        .filter(|x| {
-                            !(x.field == "context"
-                                && x.value.as_str().is_some_and(|s| {
-                                    s.trim_start().starts_with("<!--")
-                                        && s.trim_end().ends_with("-->")
-                                }))
-                        })
-                        .collect();
-                    attempt(&mut store, a)
+                new.description.clone()
+            },
+        };
+        let v = editor::edit_loop(&doc, |d| {
+            let description = d.description.trim();
+            let placeholder = description.starts_with("<!--") && description.ends_with("-->");
+            attempt(NewIssue {
+                title: d.title,
+                priority: Some(d.priority).filter(|p| !p.trim().is_empty()),
+                agent: Some(d.agent).filter(|a| !a.trim().is_empty()),
+                description: if placeholder {
+                    String::new()
+                } else {
+                    d.description
                 },
-            )?;
-            Ok(Out::Issue(v))
-        }
-        Err(e) => Err(e),
-    }
-}
-
-fn edit(env: &Env, id: String, f: FieldArgs, from: Option<String>, dry_run: bool) -> Result<Out> {
-    let actor = env.actor()?.to_string();
-    let mut store = env.store()?;
-    let mut assigns = vec![];
-    if let Some(p) = &from {
-        assigns.extend(from_file(p)?);
-    }
-    assigns.extend(parse_fields(&f)?);
-    let apply = |store: &mut trk_core::Store, assigns: Vec<Assign>| -> Result<Value> {
-        store.write(&actor, dry_run, |c| {
-            let id = c.resolve_id(&id)?;
-            c.edit(&id, &assigns)?;
-            c.show(
-                &id,
-                With {
-                    deps: true,
-                    ..Default::default()
-                },
-            )
-        })
-    };
-    if assigns.is_empty() {
-        if !editor::is_tty() {
-            return Err(bad_args("nothing to change").with_hint("pass -f k=v or --from FILE"));
-        }
-        let (cur, schema) = (
-            store.read(None, |c| c.show(&id, With::default()))?,
-            store.schema()?,
-        );
-        let t = schema.ty(cur["type"].as_str().unwrap_or_default())?.clone();
-        let mut doc_fields = vec![(
-            "title".to_string(),
-            cur["title"].clone(),
-            true,
-            String::new(),
-        )];
-        for k in ["outcome", "owner", "tags"] {
-            if !cur[k].is_null() && cur[k] != json!([]) {
-                doc_fields.push((k.to_string(), cur[k].clone(), false, String::new()));
-            } else {
-                doc_fields.push((k.to_string(), Value::Null, false, String::new()));
-            }
-        }
-        for tf in &t.fields {
-            doc_fields.push((
-                tf.field.clone(),
-                cur["fields"][&tf.field].clone(),
-                false,
-                String::new(),
-            ));
-        }
-        let context = cur["context"].as_str().unwrap_or("").to_string();
-        let v = editor::edit_loop(
-            |errs| editor::document(errs, &doc_fields, &context),
-            |a| apply(&mut store, a),
-        )?;
+                ..new.clone()
+            })
+        })?;
         return Ok(Out::Issue(v));
     }
-    Ok(Out::Issue(apply(&mut store, assigns)?))
+    Ok(Out::Issue(attempt(new)?))
+}
+
+fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
+    let actor = env.actor()?.to_string();
+    let mut store = env.store()?;
+    let nothing =
+        e.title.is_none() && e.description.is_none() && e.priority.is_none() && e.agent.is_none();
+    if !nothing {
+        return store
+            .write(&actor, dry_run, |c| {
+                let id = c.resolve_id(&id)?;
+                c.edit(&id, e)?;
+                c.show(&id, SHOWN)
+            })
+            .map(Out::Issue);
+    }
+    if !editor::is_tty() {
+        return Err(bad_args("nothing to change")
+            .with_hint("pass -t TITLE, -d DESCRIPTION, -p PRIORITY or --agent NAME"));
+    }
+    let cur = store.read(None, |c| {
+        let id = c.resolve_id(&id)?;
+        c.issue(&id)
+    })?;
+    let doc = editor::Doc {
+        title: cur.title.clone(),
+        priority: cur.priority.clone(),
+        agent: cur.agent.clone().unwrap_or_default(),
+        description: cur.description.clone(),
+    };
+    let v = editor::edit_loop(&doc, |d| {
+        store.write(&actor, dry_run, |c| {
+            c.edit(
+                &cur.id,
+                Edit {
+                    title: Some(d.title),
+                    description: Some(d.description),
+                    priority: Some(d.priority),
+                    agent: Some(Some(d.agent).filter(|a| !a.trim().is_empty())),
+                },
+            )?;
+            c.show(&cur.id, SHOWN)
+        })
+    })?;
+    Ok(Out::Issue(v))
 }
 
 fn repo_add(env: &Env, target: Option<String>) -> Result<Out> {
@@ -1245,7 +1131,7 @@ fn whoami(env: &Env) -> Result<Out> {
     let store = env.store()?;
     let project = env.project(&store).ok();
     let repo = env.current_repo(&store)?;
-    let (applied, counts) = store.read(None, |c| Ok((c.last_schema_event()?, c.counts()?)))?;
+    let (counts, lock) = store.read(None, |c| Ok((c.counts()?, c.check_lock()?)))?;
     let data = json!({
         "version": env!("TRK_VERSION"),
         "actor": env.actor,
@@ -1254,8 +1140,9 @@ fn whoami(env: &Env) -> Result<Out> {
         "config": env.config.path,
         "config_commit": env.config.git_commit(),
         "db": env.db,
-        "schema_applied": applied,
+        "default_agent": env.default_agent(),
         "issues": counts,
+        "check_running": lock.map(|(pid, host, started)| json!({"pid": pid, "host": host, "started_at": started})),
     });
     Ok(Out::Data(data))
 }
@@ -1264,66 +1151,107 @@ fn whoami(env: &Env) -> Result<Out> {
 // Agents
 // ----------------------------------------------------------------------
 
+fn diag_text(d: &[trk_core::config::Diagnostic]) -> String {
+    d.iter()
+        .map(|x| {
+            format!(
+                "{:<7} {}{}",
+                match x.level {
+                    Level::Error => "error",
+                    Level::Warning => "warning",
+                },
+                x.file
+                    .as_ref()
+                    .map(|f| format!("{f}: "))
+                    .unwrap_or_default(),
+                x.message
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
-    let store = env.store()?;
-    let schema = store.schema()?;
     match cmd {
         AgentCmd::List => {
             let agents = trk_agent::load_agents(&env.config)?;
+            let default = env.default_agent();
             let mut items = vec![];
             let mut text = String::new();
             for a in agents.values() {
-                let types: Vec<String> = trk_agent::check::routed_types(&schema, &a.name)
-                    .iter()
-                    .map(|t| t.name.clone())
+                let tools: Vec<String> = trk_agent::agent_tools(a)
+                    .into_iter()
+                    .map(|t| t.name)
                     .collect();
                 text.push_str(&format!(
-                    "{:<12} {}\n             types: {}  harness: {}  builtin_tools: {}\n",
+                    "{:<12} {}{}\n             harness: {}  builtin_tools: {}\n             tools: {}\n",
                     a.name,
                     a.description.clone().unwrap_or_default(),
-                    if types.is_empty() {
-                        "-".into()
-                    } else {
-                        types.join(", ")
-                    },
+                    if a.name == default { "  (default)" } else { "" },
                     a.harness.prefer.join(" > "),
-                    a.harness.builtin_tools
+                    a.harness.builtin_tools,
+                    tools.join(", "),
                 ));
-                items.push(json!({"name": a.name, "description": a.description, "types": types,
+                items.push(json!({"name": a.name, "description": a.description,
+                                  "default": a.name == default, "tools": tools,
                                   "harness": a.harness.prefer, "builtin_tools": a.harness.builtin_tools}));
+            }
+            if text.is_empty() {
+                text = "no agents: run `trk init`".into();
             }
             Ok(Out::Text(text, Value::Array(items)))
         }
-        AgentCmd::Preview { agent, ty, issue } => {
-            let a = trk_agent::load_agent(&env.config, &agent)?;
-            let (issue_json, t) = match (&issue, &ty) {
-                (Some(id), _) => store.read(env.actor.as_deref(), |c| {
-                    let v = c.show(
-                        id,
-                        With {
-                            deps: true,
-                            ..Default::default()
-                        },
-                    )?;
-                    let t = c.schema.ty(v["type"].as_str().unwrap_or_default())?.clone();
-                    Ok((v, t))
-                })?,
-                (None, Some(ty)) => {
-                    let t = schema.ty(ty)?.clone();
-                    (trk_agent::check::sample_issue(&schema, &t), t)
-                }
-                (None, None) => {
-                    let t = trk_agent::check::routed_types(&schema, &a.name)
-                        .first()
-                        .map(|t| (*t).clone())
-                        .ok_or_else(|| {
-                            bad_args(format!("agent '{agent}' is not routed from any type"))
-                                .with_hint("pass --type T or --issue ID")
-                        })?;
-                    (trk_agent::check::sample_issue(&schema, &t), t)
-                }
+        AgentCmd::Check => {
+            let d = trk_agent::check::check_agents(&env.config, &env.user);
+            let errors = d.iter().filter(|x| x.level == Level::Error).count();
+            let data = json!({"ok": errors == 0, "diagnostics": d});
+            if errors > 0 {
+                return Err(Error::new(
+                    Code::ConfigInvalid,
+                    format!("{errors} problem(s) in the agent configuration"),
+                )
+                .with_detail(
+                    "problems",
+                    json!(
+                        d.iter()
+                            .map(|x| format!(
+                                "{}{}",
+                                x.file
+                                    .as_ref()
+                                    .map(|f| format!("{f}: "))
+                                    .unwrap_or_default(),
+                                x.message
+                            ))
+                            .collect::<Vec<_>>()
+                    ),
+                ));
+            }
+            let text = if d.is_empty() {
+                "agents, templates and harness profiles are fine".to_string()
+            } else {
+                diag_text(&d)
             };
-            let tools = trk_agent::agent_tools(&schema, &t, &a);
+            Ok(Out::Text(text, data))
+        }
+        AgentCmd::Preview { agent, issue } => {
+            let a = trk_agent::load_agent(&env.config, &agent)?;
+            let issue_json = match &issue {
+                Some(id) => {
+                    let store = env.store()?;
+                    store.read(env.actor.as_deref(), |c| {
+                        c.show(
+                            id,
+                            With {
+                                deps: true,
+                                notes: true,
+                                ..Default::default()
+                            },
+                        )
+                    })?
+                }
+                None => trk_agent::check::sample_issue(),
+            };
+            let tools = trk_agent::agent_tools(&a);
             let input = trk_agent::prompt::PromptInput {
                 issue: &issue_json,
                 agent: &a,
@@ -1344,8 +1272,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 .map(|m| json!({"name": m.name, "command": m.command, "args": m.args}))
                 .collect();
             let mut text = format!(
-                "== instructions (MCP server) ==\n{instructions}\n\n== briefing (initial prompt) ==\n{briefing}\n\n== trk tools ({}) ==\n",
-                t.name
+                "== instructions (MCP server) ==\n{instructions}\n\n== briefing (initial prompt) ==\n{briefing}\n\n== trk tools ==\n",
             );
             for tl in &tools {
                 let req: Vec<String> = tl.input_schema["required"]
@@ -1374,363 +1301,8 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             }
             Ok(Out::Text(
                 text,
-                json!({"agent": a.name, "type": t.name, "instructions": instructions, "briefing": briefing, "tools": tool_json, "mcp": others}),
+                json!({"agent": a.name, "instructions": instructions, "briefing": briefing, "tools": tool_json, "mcp": others}),
             ))
-        }
-    }
-}
-
-// ----------------------------------------------------------------------
-// Schema
-// ----------------------------------------------------------------------
-
-fn parse_map(v: &[String]) -> Result<Vec<(String, String)>> {
-    v.iter()
-        .map(|s| {
-            s.split_once('=')
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .ok_or_else(|| bad_args(format!("--map-status {s}: expected OLD=NEW")))
-        })
-        .collect()
-}
-
-fn diagnostics(env: &Env) -> Result<(trk_core::Schema, Vec<trk_core::config::Diagnostic>)> {
-    let compiled = env.config.compile()?;
-    let mut d = check_schema(&compiled);
-    d.extend(trk_agent::check::check_agents(
-        &env.config,
-        &compiled,
-        &env.user,
-    ));
-    Ok((compiled, d))
-}
-
-fn diag_text(d: &[trk_core::config::Diagnostic]) -> String {
-    d.iter()
-        .map(|x| {
-            format!(
-                "{:<7} {}{}",
-                match x.level {
-                    Level::Error => "error",
-                    Level::Warning => "warning",
-                },
-                x.file
-                    .as_ref()
-                    .map(|f| format!("{f}: "))
-                    .unwrap_or_default(),
-                x.message
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn schema_apply(env: &Env, map: &[(String, String)]) -> Result<Out> {
-    let actor = env.actor()?.to_string();
-    let (compiled, diags) = diagnostics(env)?;
-    let harnesses: Vec<String> = env.user.harness.keys().cloned().collect();
-    let commit = env.config.git_commit();
-    let mut store = env.store()?;
-    let old = store.schema()?;
-    let agents = trk_agent::load_agents(&env.config).unwrap_or_default();
-    let plan = store.write(&actor, false, |c| {
-        c.apply(&compiled, &harnesses, map, commit.clone())
-    })?;
-    let tools = trk_agent::check::tool_diff(&old, &compiled, &agents);
-    let warnings: Vec<_> = diags
-        .iter()
-        .filter(|d| {
-            d.level == Level::Warning || d.file.as_deref().is_some_and(|f| f.starts_with("agents/"))
-        })
-        .cloned()
-        .collect();
-    let mut text = format!(
-        "schema applied: {} change(s){}",
-        plan.changes.len(),
-        commit
-            .as_deref()
-            .map(|c| format!(" (config {c})"))
-            .unwrap_or_default()
-    );
-    if !warnings.is_empty() {
-        text.push_str(&format!("\n{}", diag_text(&warnings)));
-    }
-    Ok(Out::Text(
-        text,
-        json!({"changes": plan.changes, "affected": plan.affected, "tools": tools, "commit": commit, "warnings": warnings}),
-    ))
-}
-
-fn schema_cmd(env: &Env, cmd: Option<SchemaCmd>, ty: Option<String>) -> Result<Out> {
-    match cmd {
-        Some(SchemaCmd::Check) => {
-            let (_, d) = diagnostics(env)?;
-            let errors = d.iter().filter(|x| x.level == Level::Error).count();
-            if errors > 0 {
-                return Err(Error::new(
-                    Code::SchemaInvalid,
-                    format!("{errors} error(s) in {}", env.config.path.display()),
-                )
-                .with_detail(
-                    "problems",
-                    json!(
-                        d.iter()
-                            .map(|x| format!(
-                                "{}: {}{}",
-                                match x.level {
-                                    Level::Error => "error",
-                                    Level::Warning => "warning",
-                                },
-                                x.file
-                                    .as_ref()
-                                    .map(|f| format!("{f}: "))
-                                    .unwrap_or_default(),
-                                x.message
-                            ))
-                            .collect::<Vec<_>>()
-                    ),
-                )
-                .with_detail("diagnostics", serde_json::to_value(&d)?));
-            }
-            let text = if d.is_empty() {
-                "config OK".to_string()
-            } else {
-                format!("config OK\n{}", diag_text(&d))
-            };
-            Ok(Out::Text(text, json!({"ok": true, "diagnostics": d})))
-        }
-        Some(SchemaCmd::Plan { map_status }) => {
-            let map = parse_map(&map_status)?;
-            let (compiled, diags) = diagnostics(env)?;
-            let store = env.store()?;
-            let old = store.schema()?;
-            let plan = store.read(env.actor.as_deref(), |c| c.plan(&compiled, &map))?;
-            let agents = trk_agent::load_agents(&env.config).unwrap_or_default();
-            let tools = trk_agent::check::tool_diff(&old, &compiled, &agents);
-            let mut text = String::new();
-            if plan.changes.is_empty() {
-                text.push_str("registry: no changes\n");
-            } else {
-                text.push_str("registry:\n");
-                for c in &plan.changes {
-                    let sign = match c.op {
-                        "add" => "+",
-                        "remove" => "-",
-                        _ => "~",
-                    };
-                    text.push_str(&format!(
-                        "  {sign} {}{}\n",
-                        c.what,
-                        c.detail
-                            .as_ref()
-                            .map(|d| format!("  ({d})"))
-                            .unwrap_or_default()
-                    ));
-                }
-            }
-            if !plan.affected.is_empty() {
-                text.push_str("affected issues:\n");
-                for a in &plan.affected {
-                    text.push_str(&format!(
-                        "  {}  {}\n",
-                        a["id"].as_str().unwrap_or(""),
-                        a["reason"].as_str().unwrap_or("")
-                    ));
-                }
-            }
-            if !tools.is_empty() {
-                text.push_str("agent tools:\n");
-                for t in &tools {
-                    text.push_str(&format!(
-                        "  {} on {}:",
-                        t["agent"].as_str().unwrap_or(""),
-                        t["type"].as_str().unwrap_or("")
-                    ));
-                    for (k, sign) in [("added", "+"), ("removed", "-"), ("changed", "~")] {
-                        for n in t[k].as_array().into_iter().flatten() {
-                            text.push_str(&format!(" {sign}{}", n.as_str().unwrap_or("")));
-                        }
-                    }
-                    text.push('\n');
-                }
-            }
-            if !plan.blockers.is_empty() {
-                text.push_str("cannot apply:\n");
-                for b in &plan.blockers {
-                    text.push_str(&format!("  ✗ {b}\n"));
-                }
-            }
-            let warns: Vec<_> = diags
-                .iter()
-                .filter(|d| {
-                    d.level == Level::Warning
-                        || d.file.as_deref().is_some_and(|f| f.starts_with("agents/"))
-                })
-                .cloned()
-                .collect();
-            if !warns.is_empty() {
-                text.push_str(&format!("{}\n", diag_text(&warns)));
-            }
-            Ok(Out::Text(
-                text,
-                json!({"changes": plan.changes, "affected": plan.affected, "tools": tools, "blockers": plan.blockers, "diagnostics": diags}),
-            ))
-        }
-        Some(SchemaCmd::Apply { map_status }) => schema_apply(env, &parse_map(&map_status)?),
-        Some(SchemaCmd::Graph { ty, dot }) => {
-            let store = env.store()?;
-            let schema = store.schema()?;
-            schema.require_applied()?;
-            let t = schema.ty(&ty)?;
-            let mut s = String::new();
-            let first = t.first_active().map(|x| x.name.clone());
-            let open = t.open_status().map(|x| x.name.clone()).unwrap_or_default();
-            if dot {
-                s.push_str(&format!("digraph \"{}\" {{\n  rankdir=LR;\n", t.name));
-                for st in &t.statuses {
-                    let shape = match st.category {
-                        Category::Open => "circle",
-                        Category::Active => "box",
-                        Category::Closed => "doublecircle",
-                    };
-                    s.push_str(&format!("  \"{}\" [shape={shape}];\n", st.name));
-                }
-                if let Some(f) = &first {
-                    s.push_str(&format!(
-                        "  \"{open}\" -> \"{f}\" [label=\"claim\", style=dashed];\n"
-                    ));
-                    for st in t.statuses.iter().filter(|x| x.category == Category::Active) {
-                        s.push_str(&format!(
-                            "  \"{}\" -> \"{open}\" [label=\"unclaim\", style=dotted];\n",
-                            st.name
-                        ));
-                    }
-                }
-                for (from, tos) in &t.transitions {
-                    for to in tos {
-                        if Some(to) == first.as_ref() && *from == open {
-                            continue;
-                        }
-                        s.push_str(&format!("  \"{from}\" -> \"{to}\";\n"));
-                    }
-                }
-                s.push_str("}\n");
-            } else {
-                s.push_str("stateDiagram-v2\n");
-                s.push_str(&format!("  [*] --> {}\n", open));
-                if let Some(f) = &first {
-                    s.push_str(&format!("  {open} --> {f} : claim\n"));
-                    for st in t.statuses.iter().filter(|x| x.category == Category::Active) {
-                        s.push_str(&format!("  {} --> {open} : unclaim\n", st.name));
-                    }
-                }
-                for (from, tos) in &t.transitions {
-                    for to in tos {
-                        if Some(to) == first.as_ref() && *from == open {
-                            continue;
-                        }
-                        let label = if t.category_of(to) == Some(Category::Closed) {
-                            format!(" : {}", t.resolutions.join(" | "))
-                        } else {
-                            String::new()
-                        };
-                        s.push_str(&format!("  {from} --> {to}{label}\n"));
-                    }
-                }
-                if let Some(c) = t.closed_status() {
-                    s.push_str(&format!("  {} --> [*]\n", c.name));
-                }
-            }
-            Ok(Out::Text(
-                s.clone(),
-                json!({"type": t.name, "format": if dot { "dot" } else { "mermaid" }, "graph": s}),
-            ))
-        }
-        Some(SchemaCmd::Index { field }) => {
-            let store = env.store()?;
-            let name = store.index_field(&field)?;
-            Ok(Out::Text(
-                format!("index {name} ready"),
-                json!({"index": name}),
-            ))
-        }
-        None => {
-            let store = env.store()?;
-            let schema = store.schema()?;
-            schema.require_applied()?;
-            match ty {
-                Some(t) => {
-                    let td = schema.ty(&t)?;
-                    let mut s = format!(
-                        "{}{}\n",
-                        td.name,
-                        td.description
-                            .as_ref()
-                            .map(|d| format!(" — {d}"))
-                            .unwrap_or_default()
-                    );
-                    s.push_str(&format!(
-                        "  statuses:    {}\n",
-                        td.statuses
-                            .iter()
-                            .map(|x| format!("{} ({})", x.name, x.category.as_str()))
-                            .collect::<Vec<_>>()
-                            .join(" → ")
-                    ));
-                    s.push_str(&format!("  resolutions: {}\n", td.resolutions.join(", ")));
-                    s.push_str("  transitions:\n");
-                    for (f, tos) in &td.transitions {
-                        s.push_str(&format!("    {f} → {}\n", tos.join(", ")));
-                    }
-                    s.push_str("  fields:\n");
-                    for tf in &td.fields {
-                        let def = schema.field(&tf.field);
-                        s.push_str(&format!(
-                            "    {}{}  {}{}\n",
-                            tf.field,
-                            if tf.required_at_create { "*" } else { "" },
-                            def.map(|d| d.kind.as_str()).unwrap_or("?"),
-                            def.map(|d| d.enum_values())
-                                .filter(|v| !v.is_empty())
-                                .map(|v| format!(" [{}]", v.join("|")))
-                                .unwrap_or_default()
-                        ));
-                    }
-                    s.push_str("  requirements:\n");
-                    for r in &td.requirements {
-                        s.push_str(&format!("    {}\n", r.describe()));
-                    }
-                    if let Some(a) = &td.agent {
-                        s.push_str(&format!("  agent: {a}\n"));
-                    }
-                    Ok(Out::Text(s, serde_json::to_value(td)?))
-                }
-                None => {
-                    let mut s = String::new();
-                    for t in schema.types.values() {
-                        s.push_str(&format!(
-                            "{:<12} {}  [{}]\n",
-                            t.name,
-                            t.statuses
-                                .iter()
-                                .map(|x| x.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join(" → "),
-                            t.resolutions.join(", ")
-                        ));
-                    }
-                    s.push_str(&format!(
-                        "\ndependency kinds: {}\n",
-                        schema
-                            .dep_kinds
-                            .keys()
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                    Ok(Out::Text(s, serde_json::to_value(&schema)?))
-                }
-            }
         }
     }
 }

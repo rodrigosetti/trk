@@ -1,0 +1,189 @@
+---
+source: crates/trk-cli/tests/cli.rs
+expression: snap
+---
+{
+  "id": "<A>",
+  "project": "orch",
+  "repo": {
+    "id": 1,
+    "remote_url": "github.com/acme/orch",
+    "local_path": "<path>"
+  },
+  "title": "Add leases to claims",
+  "description": "Claims need leases.",
+  "state": "waiting",
+  "priority": "P1",
+  "agent": null,
+  "close_reason": null,
+  "waiting": {
+    "reason": "merge into main",
+    "check": "true",
+    "interval": 120,
+    "next_check_at": "<ts>",
+    "last_check_at": null,
+    "last_check_exit": null,
+    "cwd": "<path>"
+  },
+  "claim": null,
+  "deps": {
+    "blocked_by": [],
+    "blocks": [
+      {
+        "id": "<B>",
+        "title": "Use leases",
+        "state": "open",
+        "priority": "P2"
+      }
+    ]
+  },
+  "derived": {
+    "ready": false,
+    "blocked_by": [],
+    "due": true,
+    "unblocks_higher_priority": []
+  },
+  "created_by": "human:alice@example.com",
+  "created_at": "<ts>",
+  "updated_at": "<ts>",
+  "closed_at": null,
+  "notes": [
+    {
+      "seq": 7,
+      "actor": "human:alice@example.com",
+      "at": "<ts>",
+      "body": "start with the sweep",
+      "amends": null,
+      "to_agent": false
+    }
+  ],
+  "events": [
+    {
+      "seq": 1,
+      "issue_id": "<A>",
+      "actor": "human:alice@example.com",
+      "at": "<ts>",
+      "op": "create",
+      "payload": {
+        "project": "orch",
+        "repo_id": 1,
+        "title": "Add claim leases",
+        "description": "Claims need leases.",
+        "priority": "P1",
+        "agent": null,
+        "followup_of": null
+      }
+    },
+    {
+      "seq": 3,
+      "issue_id": "<A>",
+      "actor": "human:alice@example.com",
+      "at": "<ts>",
+      "op": "dep_add",
+      "payload": {
+        "blocker": "<A>",
+        "blocked": "<B>"
+      }
+    },
+    {
+      "seq": 5,
+      "issue_id": "<A>",
+      "actor": "human:alice@example.com",
+      "at": "<ts>",
+      "op": "set",
+      "payload": {
+        "changes": {
+          "title": {
+            "from": "Add claim leases",
+            "to": "Add leases to claims"
+          },
+          "agent": {
+            "from": null,
+            "to": "implementer"
+          }
+        }
+      }
+    },
+    {
+      "seq": 6,
+      "issue_id": "<A>",
+      "actor": "human:alice@example.com",
+      "at": "<ts>",
+      "op": "set",
+      "payload": {
+        "changes": {
+          "agent": {
+            "from": "implementer",
+            "to": null
+          }
+        }
+      }
+    },
+    {
+      "seq": 7,
+      "issue_id": "<A>",
+      "actor": "human:alice@example.com",
+      "at": "<ts>",
+      "op": "note",
+      "payload": {
+        "body": "start with the sweep"
+      }
+    },
+    {
+      "seq": 8,
+      "issue_id": "<A>",
+      "actor": "human:alice@example.com",
+      "at": "<ts>",
+      "op": "claim",
+      "payload": {
+        "claim": 1,
+        "lease_until": null,
+        "worktree": "<path>",
+        "host": "<host>",
+        "agent": null,
+        "terminal": null
+      }
+    },
+    {
+      "seq": 9,
+      "issue_id": "<A>",
+      "actor": "human:alice@example.com",
+      "at": "<ts>",
+      "op": "wait",
+      "payload": {
+        "from": "claimed",
+        "reason": "merge into main",
+        "check": "true",
+        "interval": 120,
+        "cwd": "<path>",
+        "forced": false
+      }
+    },
+    {
+      "seq": 10,
+      "issue_id": "<A>",
+      "actor": "human:alice@example.com",
+      "at": "<ts>",
+      "op": "release",
+      "payload": {
+        "claim": 1,
+        "claimant": "human:alice@example.com",
+        "reason": "waiting"
+      }
+    }
+  ],
+  "claims": [
+    {
+      "actor": "human:alice@example.com",
+      "on_behalf_of": null,
+      "claimed_at": "<ts>",
+      "lease_until": null,
+      "worktree": "<path>",
+      "host": "<host>",
+      "agent": null,
+      "terminal": null,
+      "released_at": "<ts>",
+      "release_reason": "waiting"
+    }
+  ]
+}

@@ -1,8 +1,8 @@
 //! `Store`: the only code that writes to the database.
 //!
-//! Every mutating command is one `BEGIN IMMEDIATE` transaction: load the
-//! schema, sweep expired leases, validate, check claims and gates, write rows,
-//! append events, commit. Reads use deferred transactions.
+//! Every mutating command is one `BEGIN IMMEDIATE` transaction: sweep expired
+//! leases, validate, check claims, write rows, append events, commit. Reads
+//! use deferred transactions.
 
 use std::path::Path;
 
@@ -10,19 +10,15 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use rusqlite_migration::{M, Migrations};
 use serde_json::{Value, json};
 
-use crate::config::{Change, Level, check_schema, diff_schemas};
 use crate::error::{Code, Error, Result, bad_args, not_found};
 use crate::model::*;
-use crate::registry::*;
 
-const MIGRATIONS: &[M<'static>] = &[
-    M::up(include_str!("schema_v1.sql")),
-    M::up(include_str!("schema_v2.sql")),
-];
+const MIGRATIONS: &[M<'static>] = &[M::up(include_str!("schema.sql"))];
 
-pub const ISSUE_COLS: &str = "i.id, i.project_id, i.type, i.status, i.resolution, i.title, i.context, \
-     i.outcome, i.owner, i.links, i.tags, i.fields, i.created_by, i.created_at, i.updated_at, \
-     i.closed_at, i.status_category";
+pub const ISSUE_COLS: &str = "i.id, i.project_id, i.repo_id, i.state, i.title, i.description, \
+     i.priority, i.agent, i.close_reason, i.waiting_reason, i.waiting_check, i.check_interval, \
+     i.next_check_at, i.last_check_at, i.last_check_exit, i.wait_cwd, i.created_by, i.created_at, \
+     i.updated_at, i.closed_at";
 
 #[derive(Debug, Clone)]
 pub struct StoreOpts {
@@ -30,9 +26,11 @@ pub struct StoreOpts {
     pub now: Option<jiff::Timestamp>,
     /// Lease given to agent claims and renewed on each write.
     pub agent_lease: jiff::SignedDuration,
-    /// The repo of the working directory (normalized remote or path), used
-    /// for `repo` fields given as `.` and as their default.
+    /// The repo of the working directory (normalized remote or path): the
+    /// default repo of new issues and the meaning of `project=.`.
     pub current_repo: Option<String>,
+    /// Time between checks of a waiting issue that does not set its own.
+    pub check_interval: jiff::SignedDuration,
 }
 
 impl Default for StoreOpts {
@@ -41,6 +39,7 @@ impl Default for StoreOpts {
             now: None,
             agent_lease: jiff::SignedDuration::from_mins(30),
             current_repo: None,
+            check_interval: jiff::SignedDuration::from_mins(5),
         }
     }
 }
@@ -51,10 +50,9 @@ pub struct Store {
 }
 
 /// Per-transaction context: the connection inside the transaction, the
-/// schema as loaded at its start, the clock and the acting actor.
+/// clock and the acting actor.
 pub struct Ctx<'a> {
     pub conn: &'a Connection,
-    pub schema: Schema,
     pub now: jiff::Timestamp,
     pub actor: Option<ActorId>,
     pub opts: &'a StoreOpts,
@@ -72,6 +70,29 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+        // A database written by the six-type schema cannot be opened: there is
+        // no migration, only an export and reimport.
+        let old: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'issue_type'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if old {
+            return Err(Error::new(
+                Code::OldDatabase,
+                format!(
+                    "{} was written by an older trk with issue types and cannot be opened",
+                    path.display()
+                ),
+            )
+            .with_hint(
+                "move it aside (it stays readable with the old binary), then reimport its \
+                 open issues with scripts/import-v1.sh",
+            ));
+        }
         Migrations::from_slice(MIGRATIONS).to_latest(&mut conn)?;
         Ok(Store { conn, opts })
     }
@@ -87,11 +108,9 @@ impl Store {
     /// Run `f` in a deferred (read) transaction.
     pub fn read<T>(&self, actor: Option<&str>, f: impl FnOnce(&Ctx) -> Result<T>) -> Result<T> {
         let tx = self.conn.unchecked_transaction()?;
-        let schema = Schema::load(&tx)?;
         let actor = actor.map(ActorId::parse).transpose()?;
         let ctx = Ctx {
             conn: &tx,
-            schema,
             now: self.now(),
             actor,
             opts: &self.opts,
@@ -115,10 +134,8 @@ impl Store {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let schema = Schema::load(&tx)?;
         let mut ctx = Ctx {
             conn: &tx,
-            schema,
             now,
             actor: Some(actor_id),
             opts: &self.opts,
@@ -135,10 +152,6 @@ impl Store {
         Ok(out)
     }
 
-    pub fn schema(&self) -> Result<Schema> {
-        Schema::load(&self.conn)
-    }
-
     /// `trk backup`: a consistent copy via `VACUUM INTO`.
     pub fn backup(&self, path: &Path) -> Result<()> {
         if path.exists() {
@@ -147,27 +160,6 @@ impl Store {
         self.conn
             .execute("VACUUM INTO ?1", params![path.to_string_lossy()])?;
         Ok(())
-    }
-
-    /// `trk schema index <field>`: an expression index for a hot custom field.
-    pub fn index_field(&self, field: &str) -> Result<String> {
-        let schema = self.schema()?;
-        let def = schema
-            .field(field)
-            .ok_or_else(|| not_found("field", field))?;
-        if def.shared {
-            return Err(bad_args(format!(
-                "'{field}' is a shared column; it does not live in issue.fields"
-            )));
-        }
-        let name = format!("issue_f_{field}");
-        self.conn.execute(
-            &format!(
-                "CREATE INDEX IF NOT EXISTS {name} ON issue(json_extract(fields, '$.{field}'))"
-            ),
-            [],
-        )?;
-        Ok(name)
     }
 }
 
@@ -196,7 +188,7 @@ impl<'a> Ctx<'a> {
         Ok(self.conn.last_insert_rowid())
     }
 
-    /// Insert the actor row if missing. Agent actors need a registered harness.
+    /// Insert the actor row if missing.
     pub fn ensure_actor(&self, id: &str, on_behalf_of: Option<&str>) -> Result<()> {
         let parsed = ActorId::parse(id)?;
         let exists: bool = self
@@ -219,17 +211,11 @@ impl<'a> Ctx<'a> {
         let (kind, harness) = match &parsed {
             ActorId::Human { .. } => ("human", None),
             ActorId::Agent { harness, .. } => {
-                let known: bool = self
-                    .conn
-                    .query_row("SELECT 1 FROM harness WHERE name = ?1", [harness], |_| {
-                        Ok(true)
-                    })
-                    .optional()?
-                    .unwrap_or(false);
-                if !known {
-                    return Err(Error::new(Code::NotFound, format!("unknown harness '{harness}'"))
-                        .with_hint("harnesses are registered from [harness.*] profiles in config.toml by `trk schema apply`"));
-                }
+                // Harnesses are registered the first time one acts.
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO harness (name) VALUES (?1)",
+                    [harness],
+                )?;
                 ("agent", Some(harness.clone()))
             }
         };
@@ -254,26 +240,15 @@ impl<'a> Ctx<'a> {
             .collect::<std::result::Result<_, _>>()?;
         drop(st);
         for (claim_id, issue_id, claimant, lease_until) in &rows {
-            let (ty, status): (String, String) = self.conn.query_row(
-                "SELECT type, status FROM issue WHERE id = ?1",
-                [issue_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            let open = self
-                .schema
-                .ty(&ty)?
-                .open_status()
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| "open".into());
             self.conn.execute(
-                "UPDATE issue SET status = ?2, updated_at = ?3 WHERE id = ?1",
-                params![issue_id, open, self.ts()],
+                "UPDATE issue SET state = 'open', updated_at = ?2 WHERE id = ?1",
+                params![issue_id, self.ts()],
             )?;
             self.event(
                 Some(issue_id),
                 "release",
                 json!({"claim": claim_id, "claimant": claimant, "reason": "expired",
-                       "lease_until": lease_until, "from": status, "to": open}),
+                       "lease_until": lease_until, "from": "claimed", "to": "open"}),
             )?;
         }
         Ok(rows.len())
@@ -322,7 +297,7 @@ impl<'a> Ctx<'a> {
     pub fn issue(&self, id: &str) -> Result<Issue> {
         self.conn
             .query_row(
-                &format!("SELECT {ISSUE_COLS} FROM issue_view i WHERE i.id = ?1"),
+                &format!("SELECT {ISSUE_COLS} FROM issue i WHERE i.id = ?1"),
                 [id],
                 row_to_issue,
             )
@@ -351,25 +326,23 @@ impl<'a> Ctx<'a> {
         Ok(v)
     }
 
+    /// The issues this one blocks (`outgoing`) or is blocked by.
     pub fn edges(&self, issue_id: &str, outgoing: bool) -> Result<Vec<Edge>> {
         let sql = if outgoing {
-            "SELECT d.kind, o.id, o.type, o.status, o.status_category, o.resolution, o.title
-             FROM dep d JOIN issue_view o ON o.id = d.dst WHERE d.src = ?1 ORDER BY d.kind, o.id"
+            "SELECT o.id, o.title, o.state, o.priority
+             FROM dep d JOIN issue o ON o.id = d.dst WHERE d.src = ?1 ORDER BY o.id"
         } else {
-            "SELECT d.kind, o.id, o.type, o.status, o.status_category, o.resolution, o.title
-             FROM dep d JOIN issue_view o ON o.id = d.src WHERE d.dst = ?1 ORDER BY d.kind, o.id"
+            "SELECT o.id, o.title, o.state, o.priority
+             FROM dep d JOIN issue o ON o.id = d.src WHERE d.dst = ?1 ORDER BY o.id"
         };
         let mut st = self.conn.prepare(sql)?;
         let v = st
             .query_map([issue_id], |r| {
                 Ok(Edge {
-                    kind: r.get(0)?,
-                    id: r.get(1)?,
-                    ty: r.get(2)?,
-                    status: r.get(3)?,
-                    status_category: r.get(4)?,
-                    resolution: r.get(5)?,
-                    title: r.get(6)?,
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    state: state_col(r, 2)?,
+                    priority: r.get(3)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -423,7 +396,18 @@ impl<'a> Ctx<'a> {
         Ok(None)
     }
 
-    /// The repo row a stored `repo` field value refers to.
+    pub fn repo_by_id(&self, id: i64) -> Result<Option<Repo>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, project_id, remote_url, local_path FROM repo WHERE id = ?1",
+                [id],
+                row_to_repo,
+            )
+            .optional()?)
+    }
+
+    /// The repo row a normalized remote URL or an absolute path refers to.
     pub fn repo_by_ref(&self, r: &str) -> Result<Option<Repo>> {
         Ok(self
             .conn
@@ -477,77 +461,40 @@ fn row_to_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
     })
 }
 
-pub fn row_to_issue(r: &rusqlite::Row) -> rusqlite::Result<Issue> {
-    let links: String = r.get(9)?;
-    let tags: String = r.get(10)?;
-    let fields: String = r.get(11)?;
-    Ok(Issue {
-        id: r.get(0)?,
-        project: r.get(1)?,
-        ty: r.get(2)?,
-        status: r.get(3)?,
-        resolution: r.get(4)?,
-        title: r.get(5)?,
-        context: r.get(6)?,
-        outcome: r.get(7)?,
-        owner: r.get(8)?,
-        links: serde_json::from_str(&links).unwrap_or_default(),
-        tags: serde_json::from_str::<Vec<Value>>(&tags)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|v| {
-                v.as_str()
-                    .map(String::from)
-                    .unwrap_or_else(|| v.to_string())
-            })
-            .collect(),
-        fields: serde_json::from_str(&fields).unwrap_or_default(),
-        created_by: r.get(12)?,
-        created_at: r.get(13)?,
-        updated_at: r.get(14)?,
-        closed_at: r.get(15)?,
-        status_category: r.get(16)?,
+fn state_col(r: &rusqlite::Row, idx: usize) -> rusqlite::Result<State> {
+    let s: String = r.get(idx)?;
+    State::parse(&s).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            idx,
+            rusqlite::types::Type::Text,
+            format!("unknown state '{s}'").into(),
+        )
     })
 }
 
-// ----------------------------------------------------------------------
-// Coercion context
-// ----------------------------------------------------------------------
-
-impl crate::fields::CoerceCtx for Ctx<'_> {
-    fn me(&self) -> String {
-        self.actor
-            .as_ref()
-            .map(|a| a.to_string())
-            .unwrap_or_default()
-    }
-    fn now_rfc3339(&self) -> String {
-        self.ts()
-    }
-    fn resolve_repo(&self, raw: &str) -> Result<String> {
-        let raw = if raw == "." {
-            self.opts.current_repo.clone().ok_or_else(|| {
-                Error::new(
-                    Code::UnknownRepo,
-                    "'.' used but the current directory is not a registered repo",
-                )
-                .with_hint("run `trk repo add` in the repository")
-            })?
-        } else {
-            raw.to_string()
-        };
-        if let Some(r) = self.repo_by_ref(&raw)? {
-            return Ok(r.remote_url.or(r.local_path).unwrap_or(raw));
-        }
-        let n = normalize_remote(&raw);
-        if let Some(r) = self.repo_by_ref(&n)? {
-            return Ok(r.remote_url.or(r.local_path).unwrap_or(n));
-        }
-        Err(
-            Error::new(Code::UnknownRepo, format!("unknown repo '{raw}'"))
-                .with_hint("register it with `trk repo add` (see `trk repo list`)"),
-        )
-    }
+pub fn row_to_issue(r: &rusqlite::Row) -> rusqlite::Result<Issue> {
+    Ok(Issue {
+        id: r.get(0)?,
+        project: r.get(1)?,
+        repo_id: r.get(2)?,
+        state: state_col(r, 3)?,
+        title: r.get(4)?,
+        description: r.get(5)?,
+        priority: r.get(6)?,
+        agent: r.get(7)?,
+        close_reason: r.get(8)?,
+        waiting_reason: r.get(9)?,
+        waiting_check: r.get(10)?,
+        check_interval: r.get(11)?,
+        next_check_at: r.get(12)?,
+        last_check_at: r.get(13)?,
+        last_check_exit: r.get(14)?,
+        wait_cwd: r.get(15)?,
+        created_by: r.get(16)?,
+        created_at: r.get(17)?,
+        updated_at: r.get(18)?,
+        closed_at: r.get(19)?,
+    })
 }
 
 impl crate::query::QueryCtx for Ctx<'_> {
@@ -695,198 +642,4 @@ impl Ctx<'_> {
         )?;
         Ok(())
     }
-
-    // ------------------------------------------------------------------
-    // Schema apply
-    // ------------------------------------------------------------------
-
-    /// Plan: what applying `new` would change, and which issues it affects.
-    pub fn plan(&self, new: &Schema, map_status: &[(String, String)]) -> Result<Plan> {
-        let changes = diff_schemas(&self.schema, new);
-        let mut affected = vec![];
-        let mut blockers = vec![];
-        let mut st = self.conn.prepare(&format!(
-            "SELECT {ISSUE_COLS} FROM issue_view i ORDER BY i.id"
-        ))?;
-        let issues: Vec<Issue> = st
-            .query_map([], row_to_issue)?
-            .collect::<std::result::Result<_, _>>()?;
-        drop(st);
-        for issue in &issues {
-            let Some(nt) = new.types.get(&issue.ty) else {
-                blockers.push(format!(
-                    "type '{}' is removed but issue {} uses it",
-                    issue.ty, issue.id
-                ));
-                continue;
-            };
-            let status = match nt.status(&issue.status) {
-                Some(_) => issue.status.clone(),
-                None => {
-                    match map_status.iter().find(|(o, _)| o == &issue.status) {
-                        Some((_, n)) => match (
-                            nt.status(n),
-                            self.schema
-                                .ty(&issue.ty)
-                                .ok()
-                                .and_then(|t| t.category_of(&issue.status)),
-                        ) {
-                            (Some(ns), Some(oc)) if ns.category == oc => {
-                                affected.push(json!({"id": issue.id, "reason": format!("status {} → {}", issue.status, n)}));
-                                n.clone()
-                            }
-                            (Some(ns), oc) => {
-                                blockers.push(format!(
-                                "--map-status {}={} changes the category of issue {} ({:?} → {})",
-                                issue.status, n, issue.id, oc.map(|c| c.as_str()), ns.category.as_str()
-                            ));
-                                continue;
-                            }
-                            (None, _) => {
-                                blockers.push(format!(
-                                    "--map-status target '{n}' is not a status of type '{}'",
-                                    issue.ty
-                                ));
-                                continue;
-                            }
-                        },
-                        None => {
-                            blockers.push(format!(
-                            "status '{}' of type '{}' is removed but issue {} is in it; pass --map-status {}=<new>",
-                            issue.status, issue.ty, issue.id, issue.status
-                        ));
-                            continue;
-                        }
-                    }
-                }
-            };
-            if let Some(r) = &issue.resolution
-                && !nt.resolutions.contains(r)
-            {
-                blockers.push(format!(
-                    "resolution '{r}' of type '{}' is removed but issue {} uses it",
-                    issue.ty, issue.id
-                ));
-            }
-            // Requirements of the current status that the issue would now violate.
-            let old_unmet = self
-                .schema
-                .types
-                .get(&issue.ty)
-                .map(|t| self.unmet_fields(issue, t, &issue.status, issue.resolution.as_deref()))
-                .unwrap_or_default();
-            let new_unmet = self.unmet_fields(issue, nt, &status, issue.resolution.as_deref());
-            let added: Vec<_> = new_unmet
-                .iter()
-                .filter(|f| !old_unmet.contains(f))
-                .cloned()
-                .collect();
-            if !added.is_empty() {
-                affected.push(json!({
-                    "id": issue.id,
-                    "reason": format!("violates new requirements for '{}': {}", status, added.join(", ")),
-                }));
-            }
-        }
-        for k in self.schema.dep_kinds.keys() {
-            if !new.dep_kinds.contains_key(k) {
-                let n: i64 =
-                    self.conn
-                        .query_row("SELECT count(*) FROM dep WHERE kind = ?1", [k], |r| {
-                            r.get(0)
-                        })?;
-                if n > 0 {
-                    blockers.push(format!(
-                        "dependency kind '{k}' is removed but {n} edges use it"
-                    ));
-                }
-            }
-        }
-        let diags = check_schema(new);
-        for d in &diags {
-            if d.level == Level::Error {
-                blockers.push(format!(
-                    "{}{}",
-                    d.file
-                        .as_ref()
-                        .map(|f| format!("{f}: "))
-                        .unwrap_or_default(),
-                    d.message
-                ));
-            }
-        }
-        Ok(Plan {
-            changes,
-            affected,
-            blockers,
-        })
-    }
-
-    /// Apply `new` to the registry tables in this transaction.
-    pub fn apply(
-        &self,
-        new: &Schema,
-        harnesses: &[String],
-        map_status: &[(String, String)],
-        commit: Option<String>,
-    ) -> Result<Plan> {
-        let plan = self.plan(new, map_status)?;
-        if !plan.blockers.is_empty() {
-            return Err(
-                Error::new(Code::SchemaInvalid, "the configuration cannot be applied")
-                    .with_detail("problems", json!(plan.blockers)),
-            );
-        }
-        self.conn.pragma_update(None, "defer_foreign_keys", "ON")?;
-        for (old, newst) in map_status {
-            let mut st = self
-                .conn
-                .prepare("SELECT id, type FROM issue WHERE status = ?1")?;
-            let rows: Vec<(String, String)> = st
-                .query_map([old], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<std::result::Result<_, _>>()?;
-            drop(st);
-            for (id, ty) in rows {
-                if new
-                    .types
-                    .get(&ty)
-                    .is_some_and(|t| t.status(old).is_none() && t.status(newst).is_some())
-                {
-                    self.conn.execute(
-                        "UPDATE issue SET status = ?2, updated_at = ?3 WHERE id = ?1",
-                        params![id, newst, self.ts()],
-                    )?;
-                    self.event(
-                        Some(&id),
-                        "move",
-                        json!({"from": old, "to": newst, "schema": true}),
-                    )?;
-                }
-            }
-        }
-        new.write(self.conn)?;
-        for h in harnesses {
-            self.conn
-                .execute("INSERT OR IGNORE INTO harness (name) VALUES (?1)", [h])?;
-        }
-        self.event(
-            None,
-            "schema",
-            json!({
-                "commit": commit,
-                "changes": plan.changes,
-                "map_status": map_status.iter().map(|(a, b)| format!("{a}={b}")).collect::<Vec<_>>(),
-            }),
-        )?;
-        Ok(plan)
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct Plan {
-    pub changes: Vec<Change>,
-    /// Existing issues the new rules affect.
-    pub affected: Vec<Value>,
-    /// Problems that prevent applying.
-    pub blockers: Vec<String>,
 }

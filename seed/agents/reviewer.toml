@@ -1,12 +1,9 @@
 name        = "reviewer"
-description = "Reviews the subject of an approval and records the verdict"
+description = "Reviews what an issue asks it to review and records the verdict"
 
 instructions = "prompts/reviewer.instructions.md.j2"
 briefing     = "prompts/briefing.md.j2"
 inbox        = true
-
-[trk_tools]
-include = ["@base", "set_record_url", "set_conditions", "close_as_approved", "close_as_rejected"]
 
 [harness]
 prefer        = ["omp", "claude-code"]

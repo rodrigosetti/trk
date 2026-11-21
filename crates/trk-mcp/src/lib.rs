@@ -50,8 +50,7 @@ pub struct TrkServer {
 const TASK_URI: &str = "trk://task";
 
 impl TrkServer {
-    /// Load the agent, generate its tools for the issue's type, render the
-    /// instructions.
+    /// Load the agent, select its tools, render the instructions.
     pub fn new(args: McpArgs) -> anyhow::Result<TrkServer> {
         let store = Store::open(&args.db, args.opts.clone())?;
         let agent = trk_agent::load_agent(&args.config, &args.agent)?;
@@ -64,11 +63,7 @@ impl TrkServer {
                     ..Default::default()
                 },
             )?;
-            let ty = c
-                .schema
-                .ty(issue["type"].as_str().unwrap_or_default())?
-                .clone();
-            let tools = trk_agent::agent_tools(&c.schema, &ty, &agent);
+            let tools = trk_agent::agent_tools(&agent);
             let worktree = issue["claim"]["worktree"].as_str().map(String::from);
             Ok((tools, issue, worktree))
         })?;

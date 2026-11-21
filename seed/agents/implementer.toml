@@ -1,19 +1,14 @@
 name        = "implementer"
-description = "Implements a code-change in its worktree and opens a PR"
+description = "Implements an issue in its worktree and gets the change landed"
 
 instructions = "prompts/implementer.instructions.md.j2"   # → MCP server instructions
 briefing     = "prompts/briefing.md.j2"                   # → initial prompt
 inbox        = true
 
-[trk_tools]
-include = ["@base", "set_branch", "set_pr_url", "submit_for_review", "resume_work", "close_as_abandoned"]
-
-[trk_tools.overrides.submit_for_review]
-description = "Call after the PR is open and CI has started. Requires the PR URL."
-
-[trk_tools.composed.request_review_followup]
-description = "File a follow-up code-change for a reviewer comment you won't address in this PR."
-create      = { type = "code-change", edge = "discovered-from", fields = ["title", "context"] }
+# The trk tools are fixed: get_task, add_note, report_followup, hand_back,
+# close, wait. An agent gets all of them unless it narrows the list:
+# [trk_tools]
+# include = ["get_task", "add_note", "close", "hand_back"]
 
 # Other MCP servers the session gets, e.g.:
 # [[mcp]]

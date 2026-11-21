@@ -9,9 +9,17 @@
 # so it only has to outlast a crash. Human claims have no lease by default.
 agent_lease = "30m"
 
+[check]
+# How often `trk check` runs a waiting issue's check when the issue does not say.
+interval = "5m"
+# How long one check may run before it counts as a failure.
+timeout  = "10m"
+
 [run]
 # Where `trk run` creates git worktrees (default: <data dir>/worktrees).
 # worktrees = "~/trk-worktrees"
+# The agent for issues that do not name one.
+default_agent = "implementer"
 
 # Launcher templates. Placeholders: {name} (terminal name), {cwd},
 # {shell_command} (cd + env + harness argv), {text}.
@@ -75,8 +83,13 @@ query = "claimed-by=me"
 
 [views.agents]
 query  = "claimed-by=agent:*"
-fields = ["id", "type", "status", "claimed-by", "lease", "title"]
+fields = ["id", "state", "claimed-by", "lease", "title"]
 
 [views.open]
-query = "category!=closed"
-sort  = "type,-updated"
+query = "state!=closed"
+sort  = "priority,-updated"
+
+[views.waiting]
+query  = "state=waiting"
+fields = ["id", "priority", "waiting", "next-check", "title"]
+sort   = "next-check"

@@ -12,7 +12,6 @@ toml.workspace = true
 jiff.workspace = true
 winnow.workspace = true
 rand.workspace = true
-url.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

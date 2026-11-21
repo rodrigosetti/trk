@@ -57,7 +57,7 @@ pub fn profiles(user: &UserConfig) -> Result<BTreeMap<String, HarnessProfile>> {
     for (name, v) in &user.harness {
         let p: HarnessProfile = v.clone().try_into().map_err(|e| {
             Error::new(
-                Code::SchemaInvalid,
+                Code::ConfigInvalid,
                 format!("config.toml [harness.{name}]: {e}"),
             )
         })?;

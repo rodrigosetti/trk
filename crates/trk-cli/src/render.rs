@@ -6,6 +6,7 @@ use std::io::Write;
 use comfy_table::{Attribute, Cell, Color, Table, presets};
 use owo_colors::OwoColorize;
 use serde_json::{Value, json};
+use trk_core::config::fmt_duration;
 use trk_core::error::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,14 +114,7 @@ impl Renderer {
                 };
                 s.push_str(&format!("{label} {}\n", e.message()));
                 let j = e.to_json();
-                for key in [
-                    "missing_fields",
-                    "missing_edges",
-                    "unmet_gates",
-                    "candidates",
-                    "allowed",
-                    "problems",
-                ] {
+                for key in ["blocked_by", "candidates", "allowed", "problems"] {
                     if let Some(Value::Array(a)) = j.get(key)
                         && !a.is_empty()
                     {
@@ -128,13 +122,6 @@ impl Renderer {
                             .iter()
                             .map(|v| match v {
                                 Value::String(s) => s.clone(),
-                                Value::Object(o) if o.contains_key("src") => format!(
-                                    "{} ({} {}, needs {})",
-                                    o["src"].as_str().unwrap_or(""),
-                                    o["kind"].as_str().unwrap_or(""),
-                                    o["src_status"].as_str().unwrap_or(""),
-                                    o["required"].as_str().unwrap_or("")
-                                ),
                                 other => other.to_string(),
                             })
                             .collect();
@@ -188,18 +175,14 @@ impl Renderer {
         }
     }
 
-    pub fn status_label(&self, status: &str, category: &str) -> String {
-        let (glyph, s) = match category {
-            "active" => ("●", format!("● {status}")),
-            "closed" => ("✓", format!("✓ {status}")),
-            _ => ("○", format!("○ {status}")),
-        };
-        let _ = glyph;
+    pub fn state_label(&self, state: &str) -> String {
+        let s = format!("{} {state}", state_glyph(state));
         if !self.color {
             return s;
         }
-        match category {
-            "active" => s.yellow().to_string(),
+        match state {
+            "claimed" => s.yellow().to_string(),
+            "waiting" => s.cyan().to_string(),
             "closed" => s.green().dimmed().to_string(),
             _ => s,
         }
@@ -221,37 +204,35 @@ impl Renderer {
         }
     }
 
-    /// The CLAIM column: claimant and age, or a blocked/gated marker, or milestone progress.
-    fn claim_cell(&self, i: &Value) -> String {
+    /// The DETAIL column: the claimant and its age, what a waiting issue
+    /// waits for, a blocked marker, or blocker progress.
+    fn detail_cell(&self, i: &Value) -> String {
         if let Some(c) = i.get("claim").filter(|c| !c.is_null()) {
             let actor = c["actor"].as_str().unwrap_or("");
             let since = c["claimed_at"].as_str().map(age).unwrap_or_default();
             return format!("{} {}", short_actor(actor), since);
         }
+        if let Some(w) = i.get("waiting").filter(|w| !w.is_null()) {
+            return waiting_summary(w);
+        }
         let d = &i["derived"];
-        if let Some(p) = d.get("progress") {
-            return format!("{}/{} done", p["closed"], p["total"]);
+        if i["state"] != "closed" {
+            if d["blocked_by"].as_array().is_some_and(|a| !a.is_empty()) {
+                return match d.get("progress") {
+                    Some(p) => format!("⛔ blocked ({}/{} done)", p["closed"], p["total"]),
+                    None => "⛔ blocked".into(),
+                };
+            }
+            return String::new();
         }
-        if d["blocked_by"].as_array().is_some_and(|a| !a.is_empty()) {
-            return "⛔ blocked".into();
-        }
-        if let Some(g) = d["gates_unmet"].as_array().filter(|a| !a.is_empty()) {
-            let types: Vec<String> = g
-                .iter()
-                .filter_map(|x| x["src_type"].as_str().map(String::from))
-                .collect();
-            let mut types = types;
-            types.dedup();
-            return format!("⛔ gated ({})", types.join(","));
-        }
-        String::new()
+        i["close_reason"].as_str().unwrap_or("").to_string()
     }
 
     pub fn table(&self, items: &[Value], fields: Option<&[String]>) -> String {
         if items.is_empty() {
             return self.dim("no issues");
         }
-        let default = ["id", "priority", "type", "status", "claim", "title"];
+        let default = ["id", "priority", "state", "detail", "title"];
         let cols: Vec<String> = match fields {
             Some(f) => f.to_vec(),
             None => default.iter().map(|s| s.to_string()).collect(),
@@ -271,21 +252,23 @@ impl Renderer {
             let row: Vec<Cell> = cols
                 .iter()
                 .map(|c| match c.as_str() {
-                    "status" => {
-                        let cat = i["status_category"].as_str().unwrap_or("open");
-                        let label = match cat {
-                            "active" => format!("● {}", i["status"].as_str().unwrap_or("")),
-                            "closed" => format!("✓ {}", i["status"].as_str().unwrap_or("")),
-                            _ => format!("○ {}", i["status"].as_str().unwrap_or("")),
-                        };
-                        let cell = Cell::new(label);
-                        match cat {
-                            "active" => cell.fg(Color::Yellow),
+                    "state" | "status" => {
+                        let st = i["state"].as_str().unwrap_or("open");
+                        let cell = Cell::new(format!("{} {st}", state_glyph(st)));
+                        match st {
+                            "claimed" => cell.fg(Color::Yellow),
+                            "waiting" => cell.fg(Color::Cyan),
                             "closed" => cell.fg(Color::DarkGreen),
                             _ => cell,
                         }
                     }
-                    "claim" => Cell::new(self.claim_cell(i)),
+                    "detail" | "claim" => Cell::new(self.detail_cell(i)),
+                    "waiting" => Cell::new(
+                        i.get("waiting")
+                            .filter(|w| !w.is_null())
+                            .map(waiting_summary)
+                            .unwrap_or_default(),
+                    ),
                     "id" => {
                         Cell::new(i["id"].as_str().unwrap_or("")).add_attribute(Attribute::Bold)
                     }
@@ -303,12 +286,9 @@ impl Renderer {
         s.push_str(&format!(
             "{}  {}  {}{}\n",
             self.bold(id),
-            i["type"].as_str().unwrap_or(""),
-            self.status_label(
-                i["status"].as_str().unwrap_or(""),
-                i["status_category"].as_str().unwrap_or("")
-            ),
-            i["resolution"]
+            i["priority"].as_str().unwrap_or(""),
+            self.state_label(i["state"].as_str().unwrap_or("")),
+            i["close_reason"]
                 .as_str()
                 .map(|r| format!(" ({r})"))
                 .unwrap_or_default()
@@ -317,90 +297,81 @@ impl Renderer {
             "{}\n",
             self.bold(i["title"].as_str().unwrap_or(""))
         ));
+        let repo = &i["repo"];
         let meta = format!(
-            "project {} · created {} by {}{}",
+            "project {}{} · created {} by {}{}",
             i["project"].as_str().unwrap_or(""),
+            repo["remote_url"]
+                .as_str()
+                .or(repo["local_path"].as_str())
+                .map(|r| format!(" · repo {r}"))
+                .unwrap_or_default(),
             i["created_at"].as_str().map(age).unwrap_or_default(),
             i["created_by"].as_str().unwrap_or(""),
-            i["owner"]
+            i["agent"]
                 .as_str()
-                .map(|o| format!(" · owner {o}"))
+                .map(|a| format!(" · agent {a}"))
                 .unwrap_or_default()
         );
-        s.push_str(&format!("{}\n\n", self.dim(&meta)));
-        s.push_str(&markdown(i["context"].as_str().unwrap_or(""), self.color));
-        if !s.ends_with('\n') {
+        s.push_str(&format!("{}\n", self.dim(&meta)));
+        let description = i["description"].as_str().unwrap_or("");
+        if !description.trim().is_empty() {
             s.push('\n');
-        }
-        if let Some(o) = i["outcome"].as_str() {
-            s.push_str(&format!("\n{}\n", self.bold("Outcome")));
-            s.push_str(&markdown(o, self.color));
-        }
-        let mut rows = vec![];
-        let mut unset = vec![];
-        if let Some(f) = i["fields"].as_object() {
-            for (k, v) in f {
-                let t = cell_text(v);
-                if t.is_empty() {
-                    unset.push(k.clone());
-                } else {
-                    rows.push((k.clone(), t));
-                }
+            s.push_str(&markdown(description, self.color));
+            if !s.ends_with('\n') {
+                s.push('\n');
             }
         }
-        if let Some(t) = i["tags"].as_array().filter(|a| !a.is_empty()) {
-            rows.push(("tags".into(), cell_text(&Value::Array(t.clone()))));
-        }
-        if let Some(l) = i["links"].as_array() {
-            for link in l {
-                rows.push((
-                    format!("link:{}", link["kind"].as_str().unwrap_or("link")),
-                    format!(
-                        "{}{}",
-                        link["url"].as_str().unwrap_or(""),
-                        link["note"]
+        if let Some(w) = i.get("waiting").filter(|w| !w.is_null()) {
+            s.push_str(&format!("\n{}\n", self.bold("Waiting")));
+            if let Some(r) = w["reason"].as_str() {
+                s.push_str(&format!("  for    {r}\n"));
+            }
+            match w["check"].as_str() {
+                Some(c) => {
+                    // The command runs unattended: always shown in full.
+                    let mut lines = c.lines();
+                    s.push_str(&format!("  check  {}\n", lines.next().unwrap_or("")));
+                    for l in lines {
+                        s.push_str(&format!("         {l}\n"));
+                    }
+                    if let Some(cwd) = w["cwd"].as_str() {
+                        s.push_str(&format!("  in     {cwd}\n"));
+                    }
+                    s.push_str(&format!(
+                        "  every  {}{}\n",
+                        w["interval"].as_i64().map(fmt_duration).unwrap_or_default(),
+                        w["next_check_at"]
                             .as_str()
-                            .map(|n| format!("  {n}"))
+                            .map(|t| format!(" · next {}", until(t)))
                             .unwrap_or_default()
-                    ),
-                ));
-            }
-        }
-        if !rows.is_empty() || !unset.is_empty() {
-            s.push_str(&format!("\n{}\n", self.bold("Fields")));
-            let w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
-            for (k, v) in rows {
-                s.push_str(&format!(
-                    "  {:w$}  {}\n",
-                    k,
-                    v.replace('\n', &format!("\n  {:w$}  ", ""))
-                ));
-            }
-            if !unset.is_empty() {
-                s.push_str(&format!(
+                    ));
+                    if let Some(t) = w["last_check_at"].as_str() {
+                        s.push_str(&format!(
+                            "  last   {} ago, exit {} (not yet)\n",
+                            age(t),
+                            w["last_check_exit"]
+                        ));
+                    }
+                }
+                None => s.push_str(&format!(
                     "  {}\n",
-                    self.dim(&format!("unset: {}", unset.join(", ")))
-                ));
+                    self.dim(&format!(
+                        "no check: a human resolves it with `trk close {id}` or `trk reopen {id}`"
+                    ))
+                )),
             }
         }
         if let Some(deps) = i.get("deps") {
-            let out = deps["out"].as_array().cloned().unwrap_or_default();
-            let inn = deps["in"].as_array().cloned().unwrap_or_default();
-            if !out.is_empty() || !inn.is_empty() {
+            let by = deps["blocked_by"].as_array().cloned().unwrap_or_default();
+            let blocks = deps["blocks"].as_array().cloned().unwrap_or_default();
+            if !by.is_empty() || !blocks.is_empty() {
                 s.push_str(&format!("\n{}\n", self.bold("Dependencies")));
-                for e in &out {
-                    s.push_str(&format!(
-                        "  {} {}\n",
-                        e["kind"].as_str().unwrap_or(""),
-                        self.edge(e)
-                    ));
+                for e in &by {
+                    s.push_str(&format!("  blocked by {}\n", self.edge(e)));
                 }
-                for e in &inn {
-                    s.push_str(&format!(
-                        "  {} {}\n",
-                        inverse_label(e["kind"].as_str().unwrap_or("")),
-                        self.edge(e)
-                    ));
+                for e in &blocks {
+                    s.push_str(&format!("  blocks     {}\n", self.edge(e)));
                 }
             }
         }
@@ -438,16 +409,6 @@ impl Renderer {
                     .join(", ")
             ));
         }
-        if let Some(g) = d["gates_unmet"].as_array().filter(|a| !a.is_empty()) {
-            for x in g {
-                flags.push(format!(
-                    "⛔ gated: entering {} needs {} closed as {}",
-                    x["entering"].as_str().unwrap_or(""),
-                    x["src"].as_str().unwrap_or(""),
-                    x["required"].as_str().unwrap_or("")
-                ));
-            }
-        }
         if let Some(unblocks) = d["unblocks_higher_priority"]
             .as_array()
             .filter(|items| !items.is_empty())
@@ -469,30 +430,13 @@ impl Renderer {
         if let Some(p) = d.get("progress") {
             flags.push(format!("progress {}/{}", p["closed"], p["total"]));
         }
-        let mut next_lines = vec![];
-        if let Some(n) = d["next"].as_object() {
-            for (status, req) in n {
-                match req {
-                    Value::Array(a) => next_lines.push(format!("{status}: {}", missing_text(a))),
-                    Value::Object(o) => {
-                        for (res, m) in o {
-                            next_lines.push(format!(
-                                "{status} as {res}: {}",
-                                missing_text(m.as_array().map(|v| v.as_slice()).unwrap_or(&[]))
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-            }
+        if d["due"].as_bool() == Some(true) {
+            flags.push("check due: `trk check` will run it".to_string());
         }
-        if !flags.is_empty() || !next_lines.is_empty() {
+        if !flags.is_empty() {
             s.push_str(&format!("\n{}\n", self.bold("State")));
             for f in flags {
                 s.push_str(&format!("  {f}\n"));
-            }
-            for n in next_lines {
-                s.push_str(&format!("  next → {n}\n"));
             }
         }
         if let Some(notes) = i["notes"].as_array().filter(|a| !a.is_empty()) {
@@ -540,13 +484,9 @@ impl Renderer {
 
     fn edge(&self, e: &Value) -> String {
         format!(
-            "{}  {} {}  {}",
+            "{}  {}  {}",
             self.bold(e["id"].as_str().unwrap_or("")),
-            e["type"].as_str().unwrap_or(""),
-            self.status_label(
-                e["status"].as_str().unwrap_or(""),
-                e["status_category"].as_str().unwrap_or("")
-            ),
+            self.state_label(e["state"].as_str().unwrap_or("")),
             e["title"].as_str().unwrap_or("")
         )
     }
@@ -556,9 +496,12 @@ impl Renderer {
         let op = e["op"].as_str().unwrap_or("");
         let what = match op {
             "create" => format!(
-                "created {} \"{}\"",
-                p["type"].as_str().unwrap_or(""),
-                p["title"].as_str().unwrap_or("")
+                "created \"{}\"{}",
+                p["title"].as_str().unwrap_or(""),
+                p["followup_of"]
+                    .as_str()
+                    .map(|f| format!(" as a follow-up of {f}"))
+                    .unwrap_or_default()
             ),
             "set" => {
                 let ch: Vec<String> = p["changes"]
@@ -571,37 +514,68 @@ impl Renderer {
                     .unwrap_or_default();
                 format!("set {}", ch.join(", "))
             }
-            "move" => format!(
-                "moved {} → {}",
-                p["from"].as_str().unwrap_or(""),
-                p["to"].as_str().unwrap_or("")
-            ),
             "claim" => format!(
-                "claimed ({} → {}){}",
-                p["from"].as_str().unwrap_or(""),
-                p["to"].as_str().unwrap_or(""),
+                "claimed{}",
                 p["stolen_from"]
                     .as_str()
                     .map(|s| format!(", stolen from {s}"))
                     .unwrap_or_default()
+            ),
+            "wait" => format!(
+                "waiting{}{}",
+                p["reason"]
+                    .as_str()
+                    .map(|r| format!(" for {}", short(r, 60)))
+                    .unwrap_or_default(),
+                match p["check"].as_str() {
+                    Some(c) => format!(
+                        "; check every {}: {}",
+                        p["interval"].as_i64().map(fmt_duration).unwrap_or_default(),
+                        short(c.lines().next().unwrap_or(""), 60)
+                    ),
+                    None => "; no check, a human decides".to_string(),
+                }
+            ),
+            "check" => match p["result"].as_str() {
+                Some("passed") => "check passed".to_string(),
+                _ if p["timed_out"].as_bool() == Some(true) => "check timed out".to_string(),
+                _ => match p["exit"].as_i64() {
+                    Some(c) => format!("check failed (exit {c})"),
+                    None => "check failed".to_string(),
+                },
+            },
+            "reopen" => format!(
+                "reopened from {}{}",
+                p["from"].as_str().unwrap_or(""),
+                if p["by_check"].as_bool() == Some(true) {
+                    " by its check"
+                } else {
+                    ""
+                }
             ),
             "release" => format!(
                 "released claim of {} ({})",
                 short_actor(p["claimant"].as_str().unwrap_or("")),
                 p["reason"].as_str().unwrap_or("")
             ),
-            "close" => format!("closed as {}", p["resolution"].as_str().unwrap_or("")),
+            "close" => format!(
+                "closed as {}{}",
+                p["reason"].as_str().unwrap_or(""),
+                if p["by_check"].as_bool() == Some(true) {
+                    " by its check"
+                } else {
+                    ""
+                }
+            ),
             "dep_add" => format!(
-                "+ {} {} {}",
-                p["src"].as_str().unwrap_or(""),
-                p["kind"].as_str().unwrap_or(""),
-                p["dst"].as_str().unwrap_or("")
+                "+ {} blocks {}",
+                p["blocker"].as_str().unwrap_or(""),
+                p["blocked"].as_str().unwrap_or("")
             ),
             "dep_rm" => format!(
-                "- {} {} {}",
-                p["src"].as_str().unwrap_or(""),
-                p["kind"].as_str().unwrap_or(""),
-                p["dst"].as_str().unwrap_or("")
+                "- {} blocks {}",
+                p["blocker"].as_str().unwrap_or(""),
+                p["blocked"].as_str().unwrap_or("")
             ),
             "note" => format!(
                 "note{}: {}",
@@ -651,31 +625,26 @@ impl Renderer {
     }
 }
 
-fn missing_text(a: &[Value]) -> String {
-    if a.is_empty() {
-        "ready".into()
-    } else {
-        format!(
-            "needs {}",
-            a.iter()
-                .filter_map(|x| x.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+fn state_glyph(state: &str) -> &'static str {
+    match state {
+        "claimed" => "●",
+        "waiting" => "◷",
+        "closed" => "✓",
+        _ => "○",
     }
 }
 
-fn inverse_label(kind: &str) -> String {
-    match kind {
-        "blocks" => "blocked by".into(),
-        "approves" => "approved by".into(),
-        "informs" => "informed by".into(),
-        "implements" => "implemented by".into(),
-        "discovered-from" => "spawned".into(),
-        "supersedes" => "superseded by".into(),
-        "duplicates" => "duplicated by".into(),
-        "reverts" => "reverted by".into(),
-        k => format!("{k} (in)"),
+/// One line for a waiting issue: what it waits for and when it is checked next.
+fn waiting_summary(w: &Value) -> String {
+    let reason = w["reason"].as_str().map(|r| short(r, 40));
+    let when = match (w["check"].as_str(), w["next_check_at"].as_str()) {
+        (Some(_), Some(t)) => format!("check {}", until(t)),
+        (Some(_), None) => "check due".to_string(),
+        (None, _) => "needs a human".to_string(),
+    };
+    match reason {
+        Some(r) => format!("{r} · {when}"),
+        None => when,
     }
 }
 
@@ -700,16 +669,14 @@ pub fn short_actor(a: &str) -> String {
     a.to_string()
 }
 
-/// "12m", "3h", "2d" since an RFC 3339 timestamp.
-pub fn age(ts: &str) -> String {
-    let Ok(t) = ts.parse::<jiff::Timestamp>() else {
-        return ts.to_string();
-    };
-    let now = std::env::var("TRK_NOW")
+fn now() -> jiff::Timestamp {
+    std::env::var("TRK_NOW")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or_else(jiff::Timestamp::now);
-    let secs = (now - t).as_secs().max(0);
+        .unwrap_or_else(jiff::Timestamp::now)
+}
+
+fn span(secs: i64) -> String {
     if secs < 60 {
         format!("{secs}s")
     } else if secs < 3600 {
@@ -721,20 +688,31 @@ pub fn age(ts: &str) -> String {
     }
 }
 
+/// "12m", "3h", "2d" since an RFC 3339 timestamp.
+pub fn age(ts: &str) -> String {
+    let Ok(t) = ts.parse::<jiff::Timestamp>() else {
+        return ts.to_string();
+    };
+    span((now() - t).as_secs().max(0))
+}
+
+/// "in 4m", or "now" when the time has passed.
+pub fn until(ts: &str) -> String {
+    let Ok(t) = ts.parse::<jiff::Timestamp>() else {
+        return ts.to_string();
+    };
+    let secs = (t - now()).as_secs();
+    if secs <= 0 {
+        return "now".into();
+    }
+    format!("in {}", span(secs))
+}
+
 pub fn cell_text(v: &Value) -> String {
     match v {
         Value::Null => String::new(),
         Value::String(s) => s.clone(),
-        Value::Array(a) => a
-            .iter()
-            .map(|x| match x {
-                Value::Object(o) if o.contains_key("url") => {
-                    o["url"].as_str().unwrap_or("").to_string()
-                }
-                other => cell_text(other),
-            })
-            .collect::<Vec<_>>()
-            .join(", "),
+        Value::Array(a) => a.iter().map(cell_text).collect::<Vec<_>>().join(", "),
         other => other.to_string(),
     }
 }
@@ -742,21 +720,27 @@ pub fn cell_text(v: &Value) -> String {
 /// A value for `--fields` NAME from an issue object.
 pub fn field_value(i: &Value, name: &str) -> Value {
     match name {
-        "id" | "type" | "project" | "title" | "context" | "status" | "status_category"
-        | "resolution" | "outcome" | "owner" | "links" | "tags" | "created_by" | "created_at"
-        | "updated_at" | "closed_at" | "claim" | "deps" | "derived" => i[name].clone(),
-        "category" => i["status_category"].clone(),
+        "status" => i["state"].clone(),
+        "reason" => i["close_reason"].clone(),
         "created" => i["created_at"].clone(),
         "updated" => i["updated_at"].clone(),
         "closed" => i["closed_at"].clone(),
         "claimed-by" => i["claim"]["actor"].clone(),
         "lease" => i["claim"]["lease_until"].clone(),
         "ready" => i["derived"]["ready"].clone(),
+        "due" => i["derived"]["due"].clone(),
         "blocked-by" => i["derived"]["blocked_by"].clone(),
-        n => {
-            let n = n.strip_prefix("field.").unwrap_or(n);
-            i["fields"].get(n).cloned().unwrap_or(Value::Null)
+        "check" => i["waiting"]["check"].clone(),
+        "next-check" => i["waiting"]["next_check_at"].clone(),
+        "repo" => {
+            let r = &i["repo"];
+            if r["remote_url"].is_null() {
+                r["local_path"].clone()
+            } else {
+                r["remote_url"].clone()
+            }
         }
+        n => i.get(n).cloned().unwrap_or(Value::Null),
     }
 }
 

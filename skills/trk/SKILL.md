@@ -1,24 +1,28 @@
 ---
 name: trk
-description: Use when the user tracks work with trk, the local issue tracker and agent launcher. Trigger when asked to find ready work, file or update issues (code-change, research, decision, approval, operation, milestone), claim, move or close them, add notes, links or dependencies, query what is open, blocked or gated, or start, watch and steer agent sessions with `trk run`. Not for sessions started by `trk run`, which work through their trk MCP tools.
+description: Use when the user tracks work with trk, the local issue tracker and agent launcher. Trigger when asked to find ready work, file or update issues, claim, close or reopen them, leave an issue waiting on a check (a merge, a PR, a decision), run the waiting queue with `trk check`, add notes or blockers, query what is open, blocked or waiting, or start, watch and steer agent sessions with `trk run`. Not for sessions started by `trk run`, which work through their trk MCP tools.
 ---
 
 # trk
 
-trk keeps the work of every repository in one local database. Issues have a type, a status, fields, dependencies and an append-only history. Use the `trk` CLI.
+trk keeps the work of every repository in one local database. An issue has a title, a description, notes, a priority and one of four states. Use the `trk` CLI.
+
+```
+open → claimed → closed
+                → waiting → closed   (its check passed, or a human closed it)
+                          → open     (its check failed, or a human reopened it)
+```
 
 ## Inside a trk session? Stop here
 
-If you have trk MCP tools (`get_task`, `hand_back`, `close_as_*`) or `TRK_ACTOR` starts with `agent:`, `trk run` started you. Use those tools only, not this skill or the CLI.
+If you have trk MCP tools (`get_task`, `hand_back`, `wait`) or `TRK_ACTOR` starts with `agent:`, `trk run` started you. Use those tools only, not this skill or the CLI.
 
 ## Rules
 
-- Pass `--json` on every command and read the envelope: `{"ok": true, "data": …}` or `{"ok": false, "error": {"code", "message", "hint", "missing_fields", "unmet_gates"}}`. On an error, supply what `missing_fields` and `hint` name and retry. Do not guess around it.
-- Give every required field on the command line with `-f name=value`. Never rely on the interactive editor. Long text goes through stdin: `-f context=@-`.
+- Pass `--json` on every command and read the envelope: `{"ok": true, "data": …}` or `{"ok": false, "error": {"code", "message", "hint"}}`. On an error, do what `hint` says and retry. Do not guess around it.
+- Never rely on the interactive editor: give the title and description on the command line. Long text goes through stdin: `-d @-`.
 - You act as the user, with their default actor. Do not pass `--as` unless they ask.
-- Types, fields, statuses and requirements are configuration. Read them with `trk schema --json` and `trk schema <type> --json` instead of assuming.
-- `derived.next` in `trk show <ID> --json` lists, for each next status and resolution, the fields still missing.
-- Status changes only through `claim`, `unclaim`, `move` and `close`. `edit` changes fields only.
+- State changes only through `claim`, `unclaim`, `close`, `wait`, `reopen` and `trk check`. `edit` changes title, description, priority and agent.
 - Do not use `--force`, `--steal` or close someone else's claim unless the user asks.
 - Issue ids look like `orch-4kq`; a unique suffix such as `4kq` also works.
 
@@ -26,61 +30,91 @@ If you have trk MCP tools (`get_task`, `hand_back`, `close_as_*`) or `TRK_ACTOR`
 
 ```bash
 trk whoami --json                         # actor, project of this repo, config, database
-trk ready --json                          # open, unclaimed, unblocked
-
-trk list 'project=. category!=closed' --json
-trk show <ID> --json --with notes         # fields, deps, claim, derived.next
+trk ready --json                          # open, with every blocker closed
+trk list 'project=. state!=closed' --json
+trk list 'state=waiting' --json           # what is waiting, on what, and when it is checked next
+trk show <ID> --json                      # description, notes, blockers, claim, waiting, derived
 trk log <ID> --json                       # every change and note, attributed
 ```
-`trk ready` orders eligible issues by shared priority (P0 urgent/exceptional, P1 high, P2 normal, P3 low), oldest creation first, then ID. Priority is project-relative; it never changes blockers, claims, gates, or status, and never preempts active work. Set it with `trk create ... -f priority=P1` or `trk edit <ID> -f priority=P0`; new and upgraded issues default to P2. Priority changes appear in `trk log`.
+
+`trk ready` orders issues by priority (P0 urgent, P1 high, P2 normal, P3 low), then oldest first. A waiting issue is not closed, so what it blocks is not ready yet.
 
 `unknown_repo` means this repository is not registered. Ask the user which project it belongs to (`trk project list --json`), then `trk repo add --project <id>`.
 
 ## Create
 
-`title` and `context` are always required. The other required fields depend on the type; `trk schema <type>` marks them with `*`. With the default config:
-
-| Type | Also required | Notes |
-| --- | --- | --- |
-| code-change | `repo` | defaults to the current repo |
-| research | `question` | |
-| decision | `question` | options are optional |
-| approval | `approver` (`human:<email>` or `me`) | link it with `--dep approves:<ID>` |
-| operation | `change_kind`, `target`, `environment`, `change` | |
-| milestone | none | group work with `blocks` edges |
+Only the title is required. Write a description that lets someone start cold: what is needed, why, and how to tell it is done.
 
 ```bash
-trk create research --json -t "Which embedded DB?" -f question="SQLite or Dolt?" -f context=@- <<'EOF'
-We need a store for the tracker. Constraints: single binary, FTS.
-EOF
+printf '%s\n' "Crashed agents must release their claims. Add a lease to agent" \
+  "claims and sweep expired ones at the start of every write." |
+  trk create "Add claim leases" --json -p P1 -d @-
 
-trk create code-change --json -t "Add claim leases" -f context="Crashed agents must release claims." \
-  --dep blocks:orch-m1
+trk create "Enable leases in prod" --json --blocked-by orch-4kq
+trk create "Review the lease change" --json --agent reviewer --blocks orch-9xa
 ```
 
-`--dep KIND:ID` adds the edge `new KIND ID` at creation. For work found while doing another issue, use `--dep discovered-from:<that ID>`.
+`--blocked-by ID` and `--blocks ID` add blocker edges at creation. There are no issue types: a review, a decision or a milestone is an issue whose description says so, linked with blockers. `--agent` names the agent definition `trk run` uses for it (`trk agent list --json`).
 
 ## Work an issue yourself
 
 ```bash
-trk claim <ID> --json                     # enters the first intermediate status
+trk claim <ID> --json                     # open → claimed; refused while a blocker is open
 trk note <ID> --json "Found the cause: …"
-trk edit <ID> --json -f branch=feat/leases -f links+="pr=https://github.com/acme/orch/pull/12"
-trk move <ID> in_review --json -f pr_url=https://github.com/acme/orch/pull/12
-trk close <ID> --json -r merged -f merge_commit=9f2c1e0
-trk unclaim <ID> --json -m "Blocked on the API change"     # give it back
+trk edit <ID> --json -p P0 -t "New title"
+trk close <ID> --json -m "Merged in 9f2c1e0"            # reason defaults to done
+trk close <ID> --json -r abandoned -m "Not needed after all"
+trk unclaim <ID> --json -m "Blocked on the API change"  # give it back
 ```
 
-Closing needs a resolution (`trk schema <type>` lists them), and often fields such as `outcome`, `record_url` or `evidence_url`. Gates also apply: an `approves` edge holds the gated step until its approval is closed as `approved`. Add `--dry-run` to check a step without writing.
+Notes are the issue's memory. When you close, say what was done; when you give an issue back, say what is left.
 
-## Dependencies
+## Waiting
+
+Use `wait` instead of `close` when your part is finished but the issue is not done until something else happens. It releases your claim.
 
 ```bash
-trk dep add <SRC> <KIND> <DST> --json     # read as "SRC KIND DST"
-trk dep rm <SRC> <KIND> <DST> --json
+# Done once the PR is merged; look every 10 minutes.
+trk wait <ID> --json -r "PR 12 merged" --every 10m \
+  -c 'case "$(gh pr view 12 --json state -q .state)" in MERGED) exit 0;; OPEN) exit 75;; *) exit 1;; esac'
+
+# Done once the branch is merged into the main checkout: the check does the merge.
+trk wait <ID> --json -r "merge into main" \
+  -c 'cd "$TRK_REPO" && [ "$(git branch --show-current)" = main ] && git merge --no-edit "$TRK_BRANCH"'
+
+# Waiting on a person: no check.
+trk wait <ID> --json -r "Which store: SQLite or Dolt?"
 ```
 
-Kinds: `blocks` (DST is not ready until SRC closes), `approves` (an approval gates DST), `informs`, `implements`, `discovered-from`, `supersedes` and `duplicates` (same type), `reverts`, `relates`.
+The check is a shell command that `trk check` runs later, unattended, with `sh -c` in the directory the issue was claimed in:
+
+| Exit | Meaning | Result |
+| --- | --- | --- |
+| 0 | pass | the issue closes as done |
+| 75 | not yet | still waiting; checked again after `--every` (default 5m) |
+| anything else, or a timeout | error | the issue returns to open, with the output in a note |
+
+It may do the remaining work or only look. It may run more than once, so it must be safe to repeat, and it must never prompt. Let real failures exit non-zero on their own; do not turn them into 75. It sees `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` (the main checkout) and `TRK_BRANCH`.
+
+Without a check, the issue waits until a human runs `trk close <ID>` or `trk reopen <ID> -m "the answer"`. Running `trk wait` on an issue that is already waiting replaces its check, interval and reason.
+
+## Run the waiting queue
+
+```bash
+trk check --json              # run the checks that are due, one at a time
+trk check <ID> --json         # run one issue's check now
+trk check --all --json        # run every check, due or not
+trk check --dry-run --json    # show what would run and where
+```
+
+Each result is `passed`, `retry` or `failed`. Only one `trk check` runs at a time (`"busy": true` means another is running), so checks that merge never race. The user usually keeps `trk check --watch` running in a spare terminal; do not start that yourself, since it never returns.
+
+## Blockers
+
+```bash
+trk dep add <BLOCKER> <BLOCKED> --json    # BLOCKED is not ready until BLOCKER is closed
+trk dep rm <BLOCKER> <BLOCKED> --json
+```
 
 ## Agent sessions
 
@@ -89,12 +123,12 @@ trk run <ID> --dry-run --json             # preview: agent, harness, worktree, b
 trk run <ID> --json                       # claim and start the agent in its own terminal
 trk runs --json                           # active sessions: agent, terminal, lease, MCP liveness
 trk note <ID> --to-agent "Also update the docs" --json   # delivered with its next tool result
-trk send <ID> "Wrap up and submit" --json                # typed into its terminal
+trk send <ID> "Wrap up and finish" --json                # typed into its terminal
 trk reap --json                           # release claims whose session has ended
 ```
 
-Only ready issues can be run. Do not run `trk attach`: it takes over the terminal interactively, so suggest it to the user instead.
+Only ready issues can be run. A session ends by closing, waiting or handing back; an issue whose check failed is ready again, and its notes tell the next session why. Do not run `trk attach`: it takes over the terminal interactively, so suggest it to the user instead.
 
 ## More
 
-See [references/reference.md](references/reference.md) for the query language, the `-f` syntax, every command, and the error codes.
+See [references/reference.md](references/reference.md) for the query language, every command, and the error codes.

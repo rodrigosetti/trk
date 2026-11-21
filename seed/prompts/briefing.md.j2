@@ -1,31 +1,29 @@
 # {{ issue.id }}: {{ issue.title }}
 
-You are the {{ agent.name }} agent working on the {{ issue.type }} {{ issue.id }} in project `{{ issue.project }}`.
-{% if worktree %}Your working directory is `{{ worktree }}`{% if issue.fields.branch %}, on branch `{{ issue.fields.branch }}`{% endif %}.{% endif %}
+You are the {{ agent.name }} agent working on {{ issue.id }} in project `{{ issue.project }}` (priority {{ issue.priority }}).
+{% if worktree %}Your working directory is `{{ worktree }}`.{% endif %}
 
-## Context
+## Description
 
-{{ issue.context }}
-{% set ns = namespace(any=false) %}
-## Fields
-{% for k, v in issue.fields|items %}{% if v is not none %}{% set ns.any = true %}
-- **{{ k }}**: {% if v is sequence and v is not string %}{{ v|join(", ") }}{% else %}{{ v }}{% endif %}{% endif %}{% endfor %}
-{% if issue.deps.in or issue.deps.out %}
+{{ issue.description if issue.description else "(none: the title is the task)" }}
+{% if issue.notes %}
+## Notes so far
+
+Earlier sessions and people left these. Read them before you start: they may say what was already tried, or why the issue came back.
+{% for n in issue.notes %}
+### {{ n.at }} · {{ n.actor }}
+
+{{ n.body }}
+{% endfor %}{% endif %}{% if issue.deps.blocked_by or issue.deps.blocks %}
 ## Dependencies
-{% for e in issue.deps.out %}
-- {{ issue.id }} {{ e.kind }} {{ e.id }} ({{ e.type }}, {{ e.status }}): {{ e.title }}{% endfor %}{% for e in issue.deps.in %}
-- {{ e.id }} {{ e.kind }} {{ issue.id }} ({{ e.type }}, {{ e.status }}): {{ e.title }}{% endfor %}
+{% for e in issue.deps.blocked_by %}
+- blocked by {{ e.id }} ({{ e.state }}): {{ e.title }}{% endfor %}{% for e in issue.deps.blocks %}
+- blocks {{ e.id }} ({{ e.state }}): {{ e.title }}{% endfor %}
 {% endif %}
-## What finishing requires
-
-{% for status, req in issue.derived.next|items %}{% if req is mapping %}{% for res, missing in req|items %}
-- close as **{{ res }}**: {% if missing %}set {{ missing|join(", ") }}{% else %}nothing missing{% endif %}{% endfor %}{% else %}
-- move to **{{ status }}**: {% if req %}set {{ req|join(", ") }}{% else %}nothing missing{% endif %}{% endif %}{% endfor %}
-
 Your tracker tools: {{ tools|map(attribute="name")|join(", ") }}.
 {% if fold_instructions %}
 ## Instructions
 
 {{ instructions }}
 {% endif %}
-Start by reading the context above, then do the work. Use the tracker tools to record progress and to finish.
+Start by reading the description and notes above, then do the work. End the session with `close`, `wait` or `hand_back`.

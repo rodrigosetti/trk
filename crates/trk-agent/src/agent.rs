@@ -34,63 +34,13 @@ fn yes() -> bool {
     true
 }
 
+/// Which of the fixed trk tools the agent gets. Empty means all of them.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TrkTools {
+    /// Tool names, with `*` globs, or `@all`.
     #[serde(default)]
     pub include: Vec<String>,
-    #[serde(default)]
-    pub overrides: BTreeMap<String, Override>,
-    #[serde(default)]
-    pub composed: BTreeMap<String, Composed>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct Override {
-    #[serde(default)]
-    pub description: Option<String>,
-}
-
-/// A named combination of core operations, run in this order in one
-/// transaction: set fields, create a linked issue, move, close, add a note.
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct Composed {
-    pub description: String,
-    /// Fields of this issue to set; each becomes a parameter.
-    #[serde(default)]
-    pub set: Vec<String>,
-    #[serde(default)]
-    pub create: Option<CreateSpec>,
-    #[serde(default, rename = "move")]
-    pub move_to: Option<String>,
-    #[serde(default)]
-    pub close: Option<String>,
-    /// Add a `note` parameter whose text is appended as a note.
-    #[serde(default = "yes")]
-    pub note: bool,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateSpec {
-    #[serde(rename = "type")]
-    pub ty: String,
-    /// Edge between the new issue and this one.
-    pub edge: String,
-    /// Fields of the new issue that become parameters.
-    #[serde(default)]
-    pub fields: Vec<String>,
-    /// "new_to_this" (default): new <edge> this. "this_to_new": this <edge> new.
-    #[serde(default)]
-    pub direction: Option<String>,
-}
-
-impl CreateSpec {
-    pub fn new_is_src(&self) -> bool {
-        self.direction.as_deref() != Some("this_to_new")
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -136,7 +86,7 @@ pub fn load_agent_file(path: &Path) -> Result<AgentDef> {
         )
     })?;
     toml::from_str(&text)
-        .map_err(|e| Error::new(Code::SchemaInvalid, format!("{}: {e}", path.display())))
+        .map_err(|e| Error::new(Code::ConfigInvalid, format!("{}: {e}", path.display())))
 }
 
 /// All agents in the config dir, keyed by name.
@@ -150,6 +100,14 @@ pub fn load_agents(cfg: &ConfigDir) -> Result<BTreeMap<String, AgentDef>> {
 }
 
 pub fn load_agent(cfg: &ConfigDir, name: &str) -> Result<AgentDef> {
+    // The agent's own file first, so a broken neighbour cannot stop a run.
+    let own = cfg.path.join("agents").join(format!("{name}.toml"));
+    if own.is_file() {
+        let a = load_agent_file(&own)?;
+        if a.name == name {
+            return Ok(a);
+        }
+    }
     let agents = load_agents(cfg)?;
     agents.get(name).cloned().ok_or_else(|| {
         Error::new(Code::NotFound, format!("unknown agent '{name}'")).with_hint(format!(

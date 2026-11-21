@@ -8,7 +8,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use trk_agent::harness::{self, LaunchInput, subst};
 use trk_core::error::{Code, Error, Result};
-use trk_core::fields::Assign;
 use trk_core::model::normalize_remote;
 use trk_core::ops::ClaimOpts;
 use trk_core::view::With;
@@ -34,7 +33,7 @@ pub fn launcher(env: &Env) -> Result<Launcher> {
         Some(v) => v
             .clone()
             .try_into()
-            .map_err(|e| Error::new(Code::SchemaInvalid, format!("config.toml [launcher]: {e}"))),
+            .map_err(|e| Error::new(Code::ConfigInvalid, format!("config.toml [launcher]: {e}"))),
     }
 }
 
@@ -46,7 +45,7 @@ fn run_template(
     let argv: Vec<String> = tmpl.iter().map(|a| subst(a, vars)).collect();
     let (prog, args) = argv
         .split_first()
-        .ok_or_else(|| Error::new(Code::SchemaInvalid, "empty launcher template"))?;
+        .ok_or_else(|| Error::new(Code::ConfigInvalid, "empty launcher template"))?;
     if inherit {
         let st = Command::new(prog)
             .args(args)
@@ -91,7 +90,6 @@ pub struct RunArgs {
     pub fg: bool,
     pub print: bool,
     pub dry_run: bool,
-    pub assigns: Vec<Assign>,
 }
 
 /// Terminal names: 1-32 of a-z 0-9 - _.
@@ -110,11 +108,13 @@ fn terminal_name(id: &str) -> String {
     s.chars().take(32).collect()
 }
 
-/// The git checkout an issue's worktree is made from, if any.
-fn checkout_for(env: &Env, store: &trk_core::Store, issue: &Value) -> Result<Option<PathBuf>> {
+/// The git checkout an issue's worktree is made from, if any: the issue's
+/// repo when it has one, else the working directory when it is a repo of the
+/// issue's project.
+pub fn checkout_for(env: &Env, store: &trk_core::Store, issue: &Value) -> Result<Option<PathBuf>> {
     let project = issue["project"].as_str().unwrap_or_default().to_string();
-    if let Some(r) = issue["fields"]["repo"].as_str() {
-        let repo = store.read(None, |c| c.repo_by_ref(r))?;
+    if let Some(rid) = issue["repo"]["id"].as_i64() {
+        let repo = store.read(None, |c| c.repo_by_id(rid))?;
         if let Some(repo) = &repo {
             if let Some(lp) = &repo.local_path
                 && Path::new(lp).join(".git").exists()
@@ -129,8 +129,11 @@ fn checkout_for(env: &Env, store: &trk_core::Store, issue: &Value) -> Result<Opt
                 }
             }
         }
-        return Err(Error::new(Code::UnknownRepo, format!("no local checkout of {r} found"))
-            .with_hint("run `trk run` inside a checkout of the repo, or register its path with `trk repo add <path>`"));
+        let name = repo
+            .and_then(|r| r.remote_url.or(r.local_path))
+            .unwrap_or_else(|| format!("repo {rid}"));
+        return Err(Error::new(Code::UnknownRepo, format!("no local checkout of {name} found"))
+            .with_hint("run the command inside a checkout of the repo, or register its path with `trk repo add <path>`"));
     }
     if let Some(g) = &env.git
         && let Some(repo) = env.current_repo(store)?
@@ -192,17 +195,15 @@ fn trk_bin() -> String {
 pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let human = env.actor()?.to_string();
     let mut store = env.store()?;
-    let (issue, ty) = store.read(Some(&human), |c| {
+    let issue = store.read(Some(&human), |c| {
         let id = c.resolve_id(&a.id)?;
-        let v = c.show(
+        c.show(
             &id,
             With {
                 deps: true,
                 ..Default::default()
             },
-        )?;
-        let ty = c.schema.ty(v["type"].as_str().unwrap_or_default())?.clone();
-        Ok((v, ty))
+        )
     })?;
     let id = issue["id"].as_str().unwrap_or_default().to_string();
 
@@ -219,39 +220,23 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             .as_array()
             .filter(|b| !b.is_empty())
         {
-            return Err(Error::new(Code::GateUnmet, format!("{id} is blocked"))
+            return Err(Error::new(Code::Blocked, format!("{id} is blocked"))
                 .with_issue(&id)
                 .with_detail("blocked_by", Value::Array(b.clone())));
         }
-        return Err(Error::new(
-            Code::InvalidTransition,
-            format!(
-                "{id} is '{}', not ready",
-                issue["status"].as_str().unwrap_or("")
-            ),
-        )
-        .with_issue(&id));
-    }
-    if !ty.claimable() {
-        return Err(Error::new(
-            Code::InvalidTransition,
-            format!(
-                "type '{}' cannot be claimed, so no agent can run on it",
-                ty.name
-            ),
-        ));
+        let state = issue["state"].as_str().unwrap_or("");
+        let mut e =
+            Error::new(Code::InvalidState, format!("{id} is {state}, not ready")).with_issue(&id);
+        if state != "open" {
+            e = e.with_hint(format!("trk reopen {id}"));
+        }
+        return Err(e);
     }
     let agent_name = a
         .agent
         .clone()
-        .or_else(|| issue["fields"]["agent"].as_str().map(String::from))
-        .or_else(|| ty.agent.clone())
-        .ok_or_else(|| {
-            Error::new(Code::NotFound, format!("no agent for {id}")).with_hint(format!(
-                "pass --agent, or set routing.agent in types/{}.toml",
-                ty.name
-            ))
-        })?;
+        .or_else(|| issue["agent"].as_str().map(String::from))
+        .unwrap_or_else(|| env.default_agent());
     let agent = trk_agent::load_agent(&env.config, &agent_name)?;
     let profiles = harness::profiles(&env.user)?;
     let hname = harness::choose(&agent, &profiles, a.harness.as_deref())?;
@@ -259,10 +244,8 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
 
     // 2. Worktree.
     let checkout = checkout_for(env, &store, &issue)?;
-    let branch = issue["fields"]["branch"]
-        .as_str()
-        .map(String::from)
-        .unwrap_or_else(|| id.clone());
+    // The branch is always the issue id: a later session finds the same one.
+    let branch = id.clone();
     let worktree: Option<PathBuf> = checkout.as_ref().map(|_| env.worktrees_dir().join(&id));
 
     // 3. Actor.
@@ -299,22 +282,22 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         agent: Some(agent_name.clone()),
         terminal: if a.fg { None } else { Some(terminal.clone()) },
         steal: false,
-        branch: worktree.as_ref().map(|_| branch.clone()),
         on_behalf_of: Some(human.clone()),
-        assigns: a.assigns.clone(),
     };
     // In a dry run the claim is rolled back, but the issue is rendered as the
     // agent would see it after claiming.
-    let (issue_now, tools) = store.write(&actor, a.dry_run, |c| {
+    let tools = trk_agent::agent_tools(&agent);
+    let issue_now = store.write(&actor, a.dry_run, |c| {
         c.claim(&id, claim_opts)?;
-        let v = c.show(
+        // Notes go in the briefing: they are how a returning issue explains itself.
+        c.show(
             &id,
             With {
                 deps: true,
+                notes: true,
                 ..Default::default()
             },
-        )?;
-        Ok((v, trk_agent::agent_tools(&c.schema, &ty, &agent)))
+        )
     })?;
 
     // 5. Render the launch spec.
@@ -427,7 +410,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         let Some(start) = &l.start else {
             undo(&mut store, "launch failed: no [launcher] start template");
             return Err(Error::new(
-                Code::SchemaInvalid,
+                Code::ConfigInvalid,
                 "no [launcher] start template in config.toml",
             )
             .with_hint("use --fg to run in this terminal, or configure [launcher]"));
@@ -436,7 +419,8 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         if !ok {
             undo(&mut store, &format!("launch failed: {output}"));
             return Err(
-                Error::new(Code::Internal, format!("launcher start failed: {output}")).with_issue(&id),
+                Error::new(Code::Internal, format!("launcher start failed: {output}"))
+                    .with_issue(&id),
             );
         }
         let placement = ui.map(|result| crate::herdr::Placement::Failed {
@@ -475,7 +459,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     ))
 }
 
-fn pid_alive(pid: i64) -> bool {
+pub fn pid_alive(pid: i64) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])
         .stderr(std::process::Stdio::null())
@@ -505,7 +489,7 @@ pub fn runs(env: &Env) -> Result<Out> {
     let mut t = comfy_table::Table::new();
     t.load_style(comfy_table::presets::NOTHING);
     t.set_header([
-        "ISSUE", "AGENT", "HARNESS", "TERMINAL", "STATUS", "LEASE", "MCP", "TITLE",
+        "ISSUE", "AGENT", "HARNESS", "TERMINAL", "LEASE", "MCP", "TITLE",
     ]);
     for r in &runs {
         t.add_row([
@@ -513,7 +497,6 @@ pub fn runs(env: &Env) -> Result<Out> {
             r["agent"].as_str().unwrap_or("").to_string(),
             r["harness"].as_str().unwrap_or("").to_string(),
             r["terminal"].as_str().unwrap_or("").to_string(),
-            r["status"].as_str().unwrap_or("").to_string(),
             r["lease_until"].as_str().unwrap_or("").to_string(),
             match r["mcp_alive"].as_bool() {
                 Some(true) => "up".into(),
@@ -550,7 +533,7 @@ pub fn attach(env: &Env, id: &str) -> Result<Out> {
     let l = launcher(env)?;
     let tmpl = l
         .attach
-        .ok_or_else(|| Error::new(Code::SchemaInvalid, "no [launcher] attach template"))?;
+        .ok_or_else(|| Error::new(Code::ConfigInvalid, "no [launcher] attach template"))?;
     let (id, name) = terminal_of(env, id)?;
     let mut vars = BTreeMap::new();
     vars.insert("name", name.clone());
@@ -565,7 +548,7 @@ pub fn send(env: &Env, id: &str, text: &str) -> Result<Out> {
     let l = launcher(env)?;
     let tmpl = l
         .send
-        .ok_or_else(|| Error::new(Code::SchemaInvalid, "no [launcher] send template"))?;
+        .ok_or_else(|| Error::new(Code::ConfigInvalid, "no [launcher] send template"))?;
     let (id, name) = terminal_of(env, id)?;
     let mut vars = BTreeMap::new();
     vars.insert("name", name.clone());

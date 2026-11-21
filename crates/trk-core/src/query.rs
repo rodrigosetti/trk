@@ -6,9 +6,10 @@
 //! term   := NOT? (pred | flag)
 //! pred   := name op value | name 'in' '(' value (',' value)* ')'
 //! op     := '=' | '!=' | '<' | '<=' | '>' | '>=' | '~'
-//! flag   := 'ready' | 'blocked' | 'gated' | 'stale-lease'
+//! flag   := 'ready' | 'blocked' | 'due' | 'stale-lease'
 //! value  := word | quoted | 'me' | '.' | reltime
-//! name   := builtin | field | 'field.' field
+//! name   := id | state | project | priority | agent | reason | claimed-by | created-by
+//!         | title | created | updated | closed | next-check | text | blocks | blocked-by
 //! ```
 
 use rusqlite::types::Value as SqlValue;
@@ -18,7 +19,6 @@ use winnow::prelude::*;
 use winnow::token::{any, none_of, take_while};
 
 use crate::error::{Code, Error, Result};
-use crate::registry::{FieldKind, Schema};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -63,7 +63,7 @@ impl Val {
 pub enum Flag {
     Ready,
     Blocked,
-    Gated,
+    Due,
     StaleLease,
 }
 
@@ -180,7 +180,7 @@ pub fn parse(q: &str) -> Result<Vec<Term>> {
         let before = input;
         let (negated, n, rest) = term.parse_next(&mut input).map_err(|_| {
             Error::new(Code::BadQuery, format!("cannot parse query at '{before}'"))
-                .with_hint("terms look like name=value, name in (a,b), text~\"words\", or a flag: ready blocked gated stale-lease")
+                .with_hint("terms look like name=value, name in (a,b), text~\"words\", or a flag: ready blocked due stale-lease")
         })?;
         let t = match rest {
             Some((op, values, is_in)) => Term::Pred {
@@ -194,11 +194,11 @@ pub fn parse(q: &str) -> Result<Vec<Term>> {
                 let flag = match n.as_str() {
                     "ready" => Flag::Ready,
                     "blocked" => Flag::Blocked,
-                    "gated" => Flag::Gated,
+                    "due" => Flag::Due,
                     "stale-lease" => Flag::StaleLease,
                     _ => {
                         return Err(Error::new(Code::BadQuery, format!("unknown flag '{n}'")).with_hint(
-                            "flags are ready, blocked, gated, stale-lease; predicates need an operator, e.g. type=decision",
+                            "flags are ready, blocked, due, stale-lease; predicates need an operator, e.g. state=open",
                         ));
                     }
                 };
@@ -237,54 +237,36 @@ pub struct Compiled {
 enum Target {
     Column(&'static str),
     Time(&'static str),
-    Tag,
     Text,
-    DepOut(String),
-    DepIn(String),
-    Field(String, FieldKind),
-    ListField(String),
+    /// Issues that block the given one.
+    Blocks,
+    /// Issues blocked by the given one.
+    BlockedBy,
 }
 
-fn target(name: &str, schema: &Schema) -> Result<Target> {
+const NAMES: &str = "id state project priority agent reason claimed-by created-by title created updated closed next-check text blocks blocked-by";
+
+fn target(name: &str) -> Result<Target> {
     Ok(match name {
         "id" => Target::Column("i.id"),
-        "type" => Target::Column("i.type"),
-        "status" => Target::Column("i.status"),
-        "category" => Target::Column("i.status_category"),
-        "resolution" => Target::Column("i.resolution"),
+        "state" | "status" => Target::Column("i.state"),
         "project" => Target::Column("i.project_id"),
-        "owner" => Target::Column("i.owner"),
+        "priority" => Target::Column("i.priority"),
+        "agent" => Target::Column("i.agent"),
+        "reason" => Target::Column("i.close_reason"),
         "claimed-by" => Target::Column("i.claimant"),
         "created-by" => Target::Column("i.created_by"),
         "title" => Target::Column("i.title"),
-        "context" => Target::Column("i.context"),
-        "outcome" => Target::Column("i.outcome"),
         "created" => Target::Time("i.created_at"),
         "updated" => Target::Time("i.updated_at"),
         "closed" => Target::Time("i.closed_at"),
-        "tag" | "tags" => Target::Tag,
+        "next-check" => Target::Time("i.next_check_at"),
         "text" => Target::Text,
-        "blocks" => Target::DepOut("blocks".into()),
-        "blocked-by" => Target::DepIn("blocks".into()),
-        n if n.starts_with("dep:") => {
-            let k = &n[4..];
-            schema
-                .dep_kind(k)
-                .map_err(|e| Error::new(Code::BadQuery, e.message()))?;
-            Target::DepOut(k.to_string())
-        }
+        "blocks" => Target::Blocks,
+        "blocked-by" => Target::BlockedBy,
         n => {
-            let f = n.strip_prefix("field.").unwrap_or(n);
-            let def = schema.field(f).ok_or_else(|| {
-                Error::new(Code::BadQuery, format!("unknown field or name '{f}'")).with_hint(
-                    "built-in names: id type status category resolution project owner claimed-by created updated closed tag text blocks blocked-by dep:<kind>",
-                )
-            })?;
-            if def.kind == FieldKind::List {
-                Target::ListField(f.to_string())
-            } else {
-                Target::Field(f.to_string(), def.kind)
-            }
+            return Err(Error::new(Code::BadQuery, format!("unknown name '{n}'"))
+                .with_hint(format!("names: {NAMES}")));
         }
     })
 }
@@ -371,18 +353,7 @@ fn cmp(expr: &str, op: Op, v: SqlValue, params: &mut Vec<SqlValue>) -> String {
     }
 }
 
-const UNMET_GATE_SQL: &str = "EXISTS (
-    SELECT 1 FROM requirement r
-    JOIN dep_kind k ON k.name = r.dep_kind AND k.blocks_ready = 0
-    JOIN dep d ON d.dst = i.id AND d.kind = r.dep_kind
-    JOIN issue_view s ON s.id = d.src
-    WHERE r.type = i.type AND r.kind = 'in_edges_closed'
-      AND r.to_status <> i.status
-      AND i.status_category <> 'closed'
-      AND (s.status_category <> 'closed'
-           OR (r.src_resolution IS NOT NULL AND s.resolution IS NOT r.src_resolution)))";
-
-pub fn compile(terms: &[Term], schema: &Schema, ctx: &dyn QueryCtx) -> Result<Compiled> {
+pub fn compile(terms: &[Term], ctx: &dyn QueryCtx) -> Result<Compiled> {
     let mut parts = vec![];
     let mut params: Vec<SqlValue> = vec![];
     for t in terms {
@@ -390,8 +361,11 @@ pub fn compile(terms: &[Term], schema: &Schema, ctx: &dyn QueryCtx) -> Result<Co
             Term::Flag { negated, flag } => {
                 let sql = match flag {
                     Flag::Ready => "i.id IN (SELECT id FROM ready)".to_string(),
-                    Flag::Blocked => "i.status_category <> 'closed' AND EXISTS (SELECT 1 FROM dep d JOIN dep_kind k ON k.name = d.kind AND k.blocks_ready = 1 JOIN issue_view b ON b.id = d.src WHERE d.dst = i.id AND b.status_category <> 'closed')".to_string(),
-                    Flag::Gated => UNMET_GATE_SQL.to_string(),
+                    Flag::Blocked => "i.state <> 'closed' AND EXISTS (SELECT 1 FROM dep d JOIN issue b ON b.id = d.src WHERE d.dst = i.id AND b.state <> 'closed')".to_string(),
+                    Flag::Due => {
+                        params.push(SqlValue::Text(crate::model::fmt_ts(ctx.now())));
+                        "(i.state = 'waiting' AND i.waiting_check IS NOT NULL AND (i.next_check_at IS NULL OR i.next_check_at <= ?))".to_string()
+                    }
                     Flag::StaleLease => {
                         params.push(SqlValue::Text(crate::model::fmt_ts(ctx.now())));
                         "(i.lease_until IS NOT NULL AND i.lease_until < ?)".to_string()
@@ -406,7 +380,7 @@ pub fn compile(terms: &[Term], schema: &Schema, ctx: &dyn QueryCtx) -> Result<Co
                 values,
                 is_in,
             } => {
-                let tgt = target(name, schema)?;
+                let tgt = target(name)?;
                 let time = matches!(tgt, Target::Time(_));
                 let one = |v: &Val, params: &mut Vec<SqlValue>| -> Result<String> {
                     Ok(match &tgt {
@@ -415,6 +389,14 @@ pub fn compile(terms: &[Term], schema: &Schema, ctx: &dyn QueryCtx) -> Result<Co
                             let sv = match sv {
                                 SqlValue::Integer(n) => SqlValue::Text(n.to_string()),
                                 x => x,
+                            };
+                            let sv = if *c == "i.priority" {
+                                match sv {
+                                    SqlValue::Text(s) => SqlValue::Text(s.to_ascii_uppercase()),
+                                    x => x,
+                                }
+                            } else {
+                                sv
                             };
                             let sv = if *c == "i.id" {
                                 match &sv {
@@ -429,22 +411,6 @@ pub fn compile(terms: &[Term], schema: &Schema, ctx: &dyn QueryCtx) -> Result<Co
                             cmp(c, *op, sv, params)
                         }
                         Target::Time(c) => cmp(c, *op, resolve_value(name, v, ctx, time)?, params),
-                        Target::Tag => {
-                            let sv = resolve_value(name, v, ctx, false)?;
-                            let sv = match sv {
-                                SqlValue::Integer(n) => SqlValue::Text(n.to_string()),
-                                x => x,
-                            };
-                            let inner = cmp(
-                                "value",
-                                if *op == Op::Ne { Op::Eq } else { *op },
-                                sv,
-                                params,
-                            );
-                            let e =
-                                format!("EXISTS (SELECT 1 FROM json_each(i.tags) WHERE {inner})");
-                            if *op == Op::Ne { format!("NOT {e}") } else { e }
-                        }
                         Target::Text => {
                             let q = match v {
                                 Val::Quoted(s) => format!("\"{}\"", s.replace('"', "\"\"")),
@@ -455,62 +421,19 @@ pub fn compile(terms: &[Term], schema: &Schema, ctx: &dyn QueryCtx) -> Result<Co
                                 .to_string();
                             if *op == Op::Ne { format!("NOT {e}") } else { e }
                         }
-                        Target::DepOut(kind) | Target::DepIn(kind) => {
+                        Target::Blocks | Target::BlockedBy => {
                             let other = ctx.resolve_id(v.text())?;
-                            params.push(SqlValue::Text(kind.clone()));
                             params.push(SqlValue::Text(other));
-                            let e = if matches!(tgt, Target::DepOut(_)) {
-                                "EXISTS (SELECT 1 FROM dep d WHERE d.src = i.id AND d.kind = ? AND d.dst = ?)"
+                            let e = if matches!(tgt, Target::Blocks) {
+                                "EXISTS (SELECT 1 FROM dep d WHERE d.src = i.id AND d.dst = ?)"
                             } else {
-                                "EXISTS (SELECT 1 FROM dep d WHERE d.dst = i.id AND d.kind = ? AND d.src = ?)"
+                                "EXISTS (SELECT 1 FROM dep d WHERE d.dst = i.id AND d.src = ?)"
                             };
                             if *op == Op::Ne {
                                 format!("NOT {e}")
                             } else {
                                 e.to_string()
                             }
-                        }
-                        Target::Field(f, kind) => {
-                            let expr = format!("json_extract(i.fields, '$.{f}')");
-                            let sv = match kind {
-                                FieldKind::Date | FieldKind::Datetime
-                                    if !matches!(op, Op::Match) =>
-                                {
-                                    let raw = resolve_time(v.text(), ctx.now())?;
-                                    if *kind == FieldKind::Date {
-                                        SqlValue::Text(raw[..10].to_string())
-                                    } else {
-                                        SqlValue::Text(raw)
-                                    }
-                                }
-                                FieldKind::Bool => {
-                                    SqlValue::Integer(
-                                        matches!(v.text(), "true" | "yes" | "1") as i64
-                                    )
-                                }
-                                FieldKind::Int => resolve_value(name, v, ctx, false)?,
-                                _ => match resolve_value(name, v, ctx, false)? {
-                                    SqlValue::Integer(n) => SqlValue::Text(n.to_string()),
-                                    x => x,
-                                },
-                            };
-                            cmp(&expr, *op, sv, params)
-                        }
-                        Target::ListField(f) => {
-                            let sv = match resolve_value(name, v, ctx, false)? {
-                                SqlValue::Integer(n) => SqlValue::Text(n.to_string()),
-                                x => x,
-                            };
-                            let inner = cmp(
-                                "value",
-                                if *op == Op::Ne { Op::Eq } else { *op },
-                                sv,
-                                params,
-                            );
-                            let e = format!(
-                                "EXISTS (SELECT 1 FROM json_each(json_extract(i.fields, '$.{f}')) WHERE {inner})"
-                            );
-                            if *op == Op::Ne { format!("NOT {e}") } else { e }
                         }
                     })
                 };
@@ -542,11 +465,12 @@ pub fn compile(terms: &[Term], schema: &Schema, ctx: &dyn QueryCtx) -> Result<Co
     })
 }
 
-/// ORDER BY clause for `--sort`. A leading `-` sorts descending.
-pub fn order_by(sort: Option<&str>, schema: &Schema, ready: bool) -> Result<String> {
+/// ORDER BY clause for `--sort`. A leading `-` sorts descending. Without
+/// one, ready work is ordered by priority then age, anything else by recency.
+pub fn order_by(sort: Option<&str>, ready: bool) -> Result<String> {
     let Some(sort) = sort else {
         return Ok(if ready {
-            "json_extract(i.fields, '$.priority'), i.created_at, i.id".into()
+            "i.priority, i.created_at, i.id".into()
         } else {
             "i.updated_at DESC, i.id".into()
         });
@@ -558,27 +482,24 @@ pub fn order_by(sort: Option<&str>, schema: &Schema, ready: bool) -> Result<Stri
             None => (false, part),
         };
         let col = match name {
-            "id" => "i.id".to_string(),
-            "type" => "i.type".to_string(),
-            "status" => "i.status".to_string(),
-            "category" => "i.status_category".to_string(),
-            "project" => "i.project_id".to_string(),
-            "title" => "i.title".to_string(),
-            "owner" => "i.owner".to_string(),
-            "created" => "i.created_at".to_string(),
-            "updated" => "i.updated_at".to_string(),
-            "closed" => "i.closed_at".to_string(),
-            "claimed-by" => "i.claimant".to_string(),
-            "lease" => "i.lease_until".to_string(),
+            "id" => "i.id",
+            "state" | "status" => "i.state",
+            "project" => "i.project_id",
+            "title" => "i.title",
+            "priority" => "i.priority",
+            "agent" => "i.agent",
+            "created" => "i.created_at",
+            "updated" => "i.updated_at",
+            "closed" => "i.closed_at",
+            "claimed-by" => "i.claimant",
+            "lease" => "i.lease_until",
+            "next-check" => "i.next_check_at",
             f => {
-                let f = f.strip_prefix("field.").unwrap_or(f);
-                if schema.field(f).is_none() {
-                    return Err(Error::new(
-                        Code::BadArgs,
-                        format!("cannot sort by unknown field '{f}'"),
-                    ));
-                }
-                format!("json_extract(i.fields, '$.{f}')")
+                return Err(Error::new(
+                    Code::BadArgs,
+                    format!("cannot sort by '{f}'"),
+                )
+                .with_hint("sort by: id state project title priority agent created updated closed claimed-by lease next-check"));
             }
         };
         out.push(format!("{col} {}", if desc { "DESC" } else { "ASC" }));
@@ -593,9 +514,9 @@ mod tests {
 
     #[test]
     fn parses_examples() {
-        let t = parse("type=operation environment=prod status!=closed").unwrap();
+        let t = parse("project=orch priority=P1 state!=closed").unwrap();
         assert_eq!(t.len(), 3);
-        let t = parse("type in (decision,approval) closed>-7d resolution=decided").unwrap();
+        let t = parse("state in (open,waiting) closed>-7d reason=done").unwrap();
         assert!(matches!(&t[0], Term::Pred { is_in: true, values, .. } if values.len() == 2));
         assert!(
             matches!(&t[1], Term::Pred { op: Op::Gt, values, .. } if values[0] == Val::Word("-7d".into()))
@@ -616,7 +537,7 @@ mod tests {
         assert!(
             matches!(&t[0], Term::Pred { op: Op::Match, values, .. } if values[0] == Val::Quoted("feature flag".into()))
         );
-        let t = parse("NOT blocked !gated dep:informs=orch-1 field.env=prod").unwrap();
+        let t = parse("NOT blocked !due blocks=orch-1").unwrap();
         assert!(matches!(
             t[0],
             Term::Flag {
@@ -627,13 +548,14 @@ mod tests {
         assert!(matches!(
             t[1],
             Term::Flag {
-                flag: Flag::Gated,
+                flag: Flag::Due,
                 negated: true
             }
         ));
-        assert!(matches!(&t[2], Term::Pred { name, .. } if name == "dep:informs"));
+        assert!(matches!(&t[2], Term::Pred { name, .. } if name == "blocks"));
+        assert!(target("type").is_err());
         assert!(parse("bogus").is_err());
-        assert!(parse("type=a\"b").is_err());
+        assert!(parse("state=a\"b").is_err());
         assert!(parse("").unwrap().is_empty());
     }
 

@@ -9,41 +9,55 @@ name=value  name!=value  name<value  name<=value  name>value  name>=value
 name~value             text search for `text`; glob or substring otherwise
 name in (a,b,c)
 NOT term  or  !term
-ready  blocked  gated  stale-lease     flags
+ready  blocked  due  stale-lease     flags
 ```
 
-Values: words, `"quoted strings"`, `me` (the acting actor), `.` (for `project`: this repo's project), relative times such as `-7d`, `-12h` and `-30m`, dates (`2026-11-01`), and globs with `*` (`claimed-by=agent:*`).
+Values: words, `"quoted strings"`, `me` (the acting actor), `.` (for `project`: this repo's project), relative times such as `-7d`, `-12h` and `+30m`, dates (`2026-11-01`), and globs with `*` (`claimed-by=agent:*`).
 
-Names: `id`, `type`, `status`, `category` (open, active or closed), `resolution`, `project`, `owner`, `priority` (P0–P3), `claimed-by`, `created-by`, `title`, `created`, `updated`, `closed`, `tag`, `text` (full text over title, context, outcome and notes), `blocks=<ID>`, `blocked-by=<ID>`, `dep:<kind>=<ID>`. Any other name is a field, such as `environment=prod` or `field.environment=prod`.
+Names:
+
+| Name | Matches |
+| --- | --- |
+| `id`, `project`, `title` | as stored |
+| `state` | `open`, `claimed`, `waiting`, `closed` |
+| `priority` | `P0` to `P3` |
+| `agent` | the issue's agent definition |
+| `reason` | the close reason: `done` or `abandoned` |
+| `claimed-by`, `created-by` | an actor |
+| `created`, `updated`, `closed`, `next-check` | times |
+| `text` | full text over title, description and notes |
+| `blocks=<ID>` | issues that block ID |
+| `blocked-by=<ID>` | issues that ID blocks |
+
+Flags: `ready` (open, every blocker closed), `blocked` (not closed, with an open blocker), `due` (waiting, with a check whose time has come), `stale-lease` (claimed, lease expired).
 
 ```bash
-trk list 'type=operation environment=prod category!=closed' --json
-trk list 'type in (decision,approval) closed>-7d resolution=decided' --json
+trk list 'project=. state!=closed' --json
+trk list 'state=waiting' --sort next-check --json
+trk list 'state in (open,claimed) priority in (P0,P1)' --json
 trk list 'claimed-by=me' --json
-trk list 'blocks=orch-m1 category!=closed' --json      # what remains for a milestone
+trk list 'blocks=orch-m1 state!=closed' --json       # what remains before orch-m1 is ready
+trk list 'closed>-7d reason=done' --json
 trk list 'text~"feature flag"' --json
-trk list gated --json
 ```
 
-Options: `--fields id,type,status,title` picks the JSON keys, `--sort -updated` sorts (a leading `-` is descending), `--limit N`, and `--format jsonl` prints one object per line. `@name` runs a saved view from config.toml (`@mine`, `@agents`, `@open`).
-`trk ready` defaults to priority P0→P3, then oldest-created, then ID. `--sort` overrides that order; for example `trk ready --sort created` or `trk list 'priority=P1' --sort -updated`. Priorities are project-relative, not a shared cross-project urgency scale.
+Options: `--fields id,state,title` picks the JSON keys, `--sort -updated` sorts (a leading `-` is descending), `--limit N`, and `--format jsonl` prints one object per line. `@name` runs a saved view from config.toml (`@mine`, `@agents`, `@open`, `@waiting`).
 
+Sort keys: `id`, `state`, `project`, `title`, `priority`, `agent`, `created`, `updated`, `closed`, `claimed-by`, `lease`, `next-check`. Without `--sort`, `trk ready` orders by priority then oldest first; `trk list` by most recently updated.
 
-## Setting fields
+## The issue object
 
-The syntax is the same for `create`, `edit`, `claim`, `move`, `close` and `run`.
+`trk show <ID> --json` prints:
 
-```
--f name=value           set; the value is parsed by the field's kind
--f tags+=infra          append to a list
--f tags-=infra          remove from a list
--f name=@file.md        value from a file
--f name=@-              value from stdin
--f name=                clear (refused if the current status requires it)
---from issue.json       a whole object in the shape `show --json` prints (`-` for stdin)
-```
-
-Lists take a comma-separated value (`-f options=SQLite,Dolt`) or a JSON array (`-f options='["A, B","C"]'`). Links are `kind=url note`, for example `-f links+="pr=https://… the PR"`. Kinds: dates are `YYYY-MM-DD`; datetimes are RFC 3339 or `now`; actors are `human:<email>`, `agent:<harness>:<id>` or `me`; enums accept their listed values only.
+| Key | Content |
+| --- | --- |
+| `id`, `project`, `repo`, `title`, `description`, `priority`, `agent` | the authored issue |
+| `state`, `close_reason` | where it is |
+| `claim` | the active claim: `actor`, `claimed_at`, `lease_until`, `worktree`, `agent`, `terminal` |
+| `waiting` | while waiting: `reason`, `check`, `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit`, `cwd` |
+| `deps` | `blocked_by` and `blocks`, each a list of `{id, title, state, priority}` |
+| `derived` | `ready`, `blocked_by` (open blockers), `due`, `progress` (`{total, closed}` blockers), `unblocks_higher_priority` |
+| `notes`, `events`, `claims` | with `--with notes,events,claims` (notes are included by default) |
 
 ## Commands
 
@@ -51,31 +65,34 @@ Lists take a comma-separated value (`-f options=SQLite,Dolt`) or a JSON array (`
 | --- | --- |
 | `trk list [QUERY]`, `trk ready [QUERY]` | Query issues |
 | `trk show <ID>... [--with notes,events,deps,claims]` | Full issues with derived state |
-| `trk create <TYPE> -t TITLE -f k=v... [--dep KIND:ID] [--dry-run]` | Create |
-| `trk edit <ID> -f k=v... [--dry-run]` | Change fields |
-| `trk claim <ID> [-f k=v] [--lease 30m] [--worktree PATH] [--steal]` | Claim; enters the first intermediate status |
-| `trk unclaim <ID> [-m NOTE] [--force]` | Release the claim and return to open |
+| `trk create [TITLE] [-d TEXT] [-p P0..P3] [--agent A] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create |
+| `trk edit <ID> [-t TITLE] [-d TEXT] [-p P0..P3] [--agent A] [--dry-run]` | Change the authored fields; `--agent ""` clears it |
+| `trk claim <ID> [--lease 30m] [--worktree PATH] [--steal]` | open → claimed |
+| `trk unclaim <ID> [-m NOTE] [--force]` | claimed → open |
 | `trk renew <ID> [--lease 30m]` | Extend a lease |
-| `trk move <ID> <STATUS> [-f k=v] [--force] [--dry-run]` | Move between intermediate statuses |
-| `trk close <ID> -r RESOLUTION [-f k=v] [--force] [--dry-run]` | Close |
+| `trk close <ID> [-r done or abandoned] [-m NOTE] [--force] [--dry-run]` | Close from open, claimed or waiting |
+| `trk wait <ID> [-c CHECK] [--every 5m] [-r REASON] [--force] [--dry-run]` | claimed → waiting; on a waiting issue, replace its check |
+| `trk reopen <ID> [-m NOTE]` | waiting or closed → open |
+| `trk check [ID] [--all] [--watch [PAUSE]] [--dry-run]` | Run waiting checks, one at a time |
 | `trk note <ID> [TEXT or -] [--amends SEQ] [--to-agent]` | Append a note |
-| `trk dep add or rm <SRC> <KIND> <DST>` | Edges |
+| `trk dep add or rm <BLOCKER> <BLOCKED>` | Blocker edges |
 | `trk log <ID>` | Timeline |
-| `trk run <ID> [--agent A] [--harness H] [-f k=v] [--dry-run or --print]` | Start an agent session |
+| `trk run <ID> [--agent A] [--harness H] [--dry-run or --print]` | Start an agent session |
 | `trk runs`, `trk send <ID> TEXT`, `trk reap` | Watch, steer and clean up sessions |
-| `trk agent list`, `trk agent preview <agent> [--issue ID]` | Inspect agents |
-| `trk schema [TYPE]`, `trk schema check`, `trk schema plan`, `trk schema apply`, `trk schema graph TYPE` | Configuration |
+| `trk agent list`, `trk agent preview <agent> [--issue ID]`, `trk agent check` | Inspect agents |
 | `trk project add or list`, `trk repo add or list` | Projects and repositories |
 | `trk whoami`, `trk backup <PATH>` | Environment and backup |
+
+`-d` and `-c` take text, `@file`, or `@-` for stdin.
 
 ## Errors
 
 | Exit | Meaning | Codes |
 | --- | --- | --- |
-| 1 | Internal error | `internal`, `db_corrupt` |
+| 1 | Internal error | `internal`, `db_corrupt`, `old_database` |
 | 2 | Usage | `bad_args`, `bad_query` |
 | 3 | Not found | `not_found`, `ambiguous_id` (see `candidates`), `unknown_repo` |
-| 4 | Validation | `requirements_unmet` (see `missing_fields`, `missing_edges`), `invalid_field`, `invalid_transition`, `cycle`, `schema_invalid` |
-| 5 | Conflict | `claimed_by_other`, `not_claimant`, `gate_unmet` (see `unmet_gates`), `busy`, `not_permitted` |
+| 4 | Validation | `invalid_field` (see `allowed`), `invalid_state` (see `state`), `cycle`, `config_invalid` |
+| 5 | Conflict | `claimed_by_other` (see `claimant`), `not_claimant`, `blocked` (see `blocked_by`), `busy`, `not_permitted` |
 
-Every error carries a `hint`, often the exact command to run next.
+Every error carries a `message` and usually a `hint`, often the exact command to run next. A check that fails is not an error of `trk check`: it exits 0 and reports the result.

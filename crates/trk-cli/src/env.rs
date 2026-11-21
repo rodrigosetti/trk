@@ -24,7 +24,6 @@ pub struct Env {
 pub struct GitInfo {
     pub toplevel: String,
     pub remote: Option<String>,
-    pub branch: Option<String>,
 }
 
 pub fn home() -> PathBuf {
@@ -84,15 +83,10 @@ pub fn git(dir: &Path, args: &[&str]) -> Option<String> {
 pub fn git_info(dir: &Path) -> Option<GitInfo> {
     let toplevel = git(dir, &["rev-parse", "--show-toplevel"])?;
     let remote = git(dir, &["remote", "get-url", "origin"]).filter(|s| !s.is_empty());
-    let branch = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| b != "HEAD");
     let toplevel = std::fs::canonicalize(&toplevel)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or(toplevel);
-    Some(GitInfo {
-        toplevel,
-        remote,
-        branch,
-    })
+    Some(GitInfo { toplevel, remote })
 }
 
 /// `<git common dir>/info/exclude` for the repository at `dir`.
@@ -191,6 +185,7 @@ impl Env {
             now,
             agent_lease: self.agent_lease()?,
             current_repo: None,
+            check_interval: parse_duration(&self.user.check.interval)?,
         };
         let mut store = Store::open(&self.db, opts)?;
         store.opts.current_repo = self
@@ -232,6 +227,20 @@ impl Env {
                 }
             })),
         }
+    }
+
+    /// The agent for issues that do not name one.
+    pub fn default_agent(&self) -> String {
+        self.user
+            .run
+            .default_agent
+            .clone()
+            .unwrap_or_else(|| trk_core::config::DEFAULT_AGENT.to_string())
+    }
+
+    pub fn check_timeout(&self) -> Result<std::time::Duration> {
+        let d = parse_duration(&self.user.check.timeout)?;
+        Ok(std::time::Duration::from_secs(d.as_secs().max(1) as u64))
     }
 
     pub fn worktrees_dir(&self) -> PathBuf {

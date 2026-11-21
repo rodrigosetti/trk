@@ -39,7 +39,7 @@ pub fn render_template(cfg: &ConfigDir, path: &str, ctx: &Value) -> Result<Strin
     env.set_loader(minijinja::path_loader(&cfg.path));
     let tmpl = env
         .get_template(path)
-        .map_err(|e| Error::new(Code::SchemaInvalid, format!("template {path}: {e}")))?;
+        .map_err(|e| Error::new(Code::ConfigInvalid, format!("template {path}: {e}")))?;
     tmpl.render(minijinja::Value::from(minijinja::value::Serde(ctx)))
         .map_err(|e| {
             let mut msg = format!("template {path}: {e}");
@@ -48,11 +48,11 @@ pub fn render_template(cfg: &ConfigDir, path: &str, ctx: &Value) -> Result<Strin
                 msg.push_str(&format!(": {s}"));
                 src = s.source();
             }
-            Error::new(Code::SchemaInvalid, msg)
+            Error::new(Code::ConfigInvalid, msg)
         })
 }
 
-const DEFAULT_INSTRUCTIONS: &str = "You are working on one tracked issue. Use the trk tools to read it (get_task), record progress (add_note), and finish it with one of the close or transition tools. If you cannot finish, call hand_back with a note.";
+const DEFAULT_INSTRUCTIONS: &str = "You are working on one tracked issue. Use the trk tools to read it (get_task) and record progress (add_note). End the session with exactly one of: close (nothing more has to happen), wait (it is done once something outside this session happens), or hand_back (you cannot finish).";
 
 /// Rules for the whole session: the MCP server's `instructions`.
 pub fn instructions(cfg: &ConfigDir, input: &PromptInput) -> Result<String> {
@@ -73,7 +73,7 @@ pub fn briefing(cfg: &ConfigDir, input: &PromptInput, fold: Option<&str>) -> Res
                 "Work on {} \"{}\".\n\n{}\n",
                 issue["id"].as_str().unwrap_or(""),
                 issue["title"].as_str().unwrap_or(""),
-                issue["context"].as_str().unwrap_or("")
+                issue["description"].as_str().unwrap_or("")
             );
             if let Some(i) = fold {
                 s.push_str("\n## Instructions\n\n");

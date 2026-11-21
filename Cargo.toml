@@ -21,7 +21,6 @@ jiff = { version = "1.0", features = ["serde"] }
 winnow = "1.0"
 rand = "0.10"
 uuid = { version = "1", features = ["v4"] }
-url = "2.5"
 thiserror = "2"
 minijinja = "3.1"
 rmcp = { version = "3.11", features = ["server", "transport-io"] }

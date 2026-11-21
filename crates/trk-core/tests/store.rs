@@ -1,18 +1,12 @@
-//! Store-level tests against the seed configuration.
+//! Store-level tests of the four-state machine.
 
-use serde_json::json;
-use trk_core::config::{ConfigDir, Level, check_schema};
-use trk_core::fields::{Assign, AssignOp};
-use trk_core::ops::{ClaimOpts, NewDep, NewIssue};
+use trk_core::ops::{CheckResult, CheckRun, ClaimOpts, Edit, NewIssue, WaitOpts};
 use trk_core::view::With;
-use trk_core::{Code, Store, StoreOpts};
+use trk_core::{Code, State, Store, StoreOpts};
 
 const HUMAN: &str = "human:alice@example.com";
 const AGENT: &str = "agent:omp:s1";
-
-fn seed() -> ConfigDir {
-    ConfigDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed"))
-}
+const AGENT2: &str = "agent:omp:s2";
 
 fn ts(s: &str) -> jiff::Timestamp {
     s.parse().unwrap()
@@ -29,9 +23,7 @@ fn store_at(dir: &tempfile::TempDir, now: &str) -> Store {
 fn setup() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
     let mut s = store_at(&dir, "2026-11-20T10:00:00Z");
-    let schema = seed().compile().unwrap();
     s.write(HUMAN, false, |c| {
-        c.apply(&schema, &["omp".to_string()], &[], None)?;
         c.project_add("orch", "Orchestra")?;
         c.repo_add("orch", Some("git@github.com:acme/orch.git"), None)?;
         Ok(())
@@ -40,261 +32,265 @@ fn setup() -> (tempfile::TempDir, Store) {
     (dir, s)
 }
 
-fn set(f: &str, v: &str) -> Assign {
-    Assign::set(f, v)
-}
-
-fn create(s: &mut Store, ty: &str, extra: &[Assign]) -> String {
-    let mut assigns = vec![set("title", "T"), set("context", "C")];
-    match ty {
-        "code-change" => assigns.push(set("repo", "github.com/acme/orch")),
-        "research" | "decision" => assigns.push(set("question", "Q?")),
-        "approval" => assigns.push(set("approver", "me")),
-        "operation" => assigns.extend([
-            set("change_kind", "flag"),
-            set("target", "x"),
-            set("environment", "prod"),
-            set("change", "flip"),
-        ]),
-        _ => {}
+fn new(title: &str) -> NewIssue {
+    NewIssue {
+        project: "orch".into(),
+        title: title.into(),
+        description: "why and what".into(),
+        ..Default::default()
     }
-    assigns.extend(extra.iter().cloned());
-    s.write(HUMAN, false, |c| {
-        c.create(NewIssue {
-            project: "orch".into(),
-            ty: ty.into(),
-            assigns,
-            deps: vec![],
-        })
-    })
-    .unwrap()
 }
 
-#[test]
-fn priority_orders_ready_without_changing_eligibility_and_records_edits() {
-    let (_d, mut s) = setup();
-    let old = create(&mut s, "research", &[]);
-    s.opts.now = Some(ts("2026-11-20T11:00:00Z"));
-    let recent = create(&mut s, "research", &[]);
-    s.opts.now = Some(ts("2026-11-20T12:00:00Z"));
-    let urgent = create(&mut s, "research", &[set("priority", "P0")]);
-
-    s.write(HUMAN, false, |c| {
-        c.edit(&old, &[set("title", "Edited after creation")])?;
-        Ok(())
-    })
-    .unwrap();
-    let ready: Vec<String> = s
-        .read(None, |c| c.list("ready", None, None, None))
-        .unwrap()
-        .iter()
-        .map(|item| item["id"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(ready, [urgent.clone(), old.clone(), recent.clone()]);
-
-    let explicitly_sorted: Vec<String> = s
-        .read(None, |c| c.list("ready", None, Some("-created"), None))
-        .unwrap()
-        .iter()
-        .map(|item| item["id"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(
-        explicitly_sorted,
-        [urgent.clone(), recent.clone(), old.clone()]
-    );
-    let edited = s
-        .write(HUMAN, false, |c| c.edit(&old, &[set("priority", "P1")]))
-        .unwrap();
-    assert_eq!(edited["priority"]["to"], "P1");
-    let events = s.read(None, |c| c.log(&old)).unwrap();
-    assert!(
-        events.iter().any(|event| {
-            event.op == "set" && event.payload["changes"]["priority"]["to"] == "P1"
-        })
-    );
-
-    let prerequisite = create(&mut s, "research", &[]);
-    s.write(HUMAN, false, |c| {
-        c.edit(&urgent, &[set("priority", "P0")])?;
-        c.dep_add(&prerequisite, "blocks", &urgent)
-    })
-    .unwrap();
-    let (is_ready, impact) = s
-        .read(None, |c| {
-            let target = c.show(&urgent, With::default())?;
-            let source = c.show(&prerequisite, With::default())?;
-            Ok((
-                target["derived"]["ready"].as_bool().unwrap(),
-                source["derived"]["unblocks_higher_priority"].clone(),
-            ))
-        })
-        .unwrap();
-    assert!(!is_ready, "P0 must not bypass a blocking dependency");
-    assert_eq!(impact, json!([{"id": urgent, "priority": "P0"}]));
-}
-#[test]
-fn seed_config_is_valid() {
-    let schema = seed().compile().unwrap();
-    let errors: Vec<_> = check_schema(&schema)
-        .into_iter()
-        .filter(|d| d.level == Level::Error)
-        .collect();
-    assert!(errors.is_empty(), "{errors:?}");
-    assert_eq!(schema.types.len(), 6);
+fn create(s: &mut Store, title: &str) -> String {
+    s.write(HUMAN, false, |c| c.create(new(title))).unwrap()
 }
 
-#[test]
-fn ids_have_project_prefix_and_resolve_by_suffix() {
-    let (_d, mut s) = setup();
-    let id = create(&mut s, "research", &[]);
-    assert!(id.starts_with("orch-"));
-    assert_eq!(id.len(), "orch-".len() + 3);
-    let suffix = &id[5..];
-    let got = s.read(None, |c| c.resolve_id(suffix)).unwrap();
-    assert_eq!(got, id);
-    let err = s.read(None, |c| c.resolve_id("nope")).unwrap_err();
-    assert_eq!(err.code(), Code::NotFound);
+fn state(s: &Store, id: &str) -> State {
+    s.read(None, |c| c.issue(id)).unwrap().state
 }
 
-#[test]
-fn create_requires_fields() {
-    let (_d, mut s) = setup();
-    let err = s
-        .write(HUMAN, false, |c| {
-            c.create(NewIssue {
-                project: "orch".into(),
-                ty: "research".into(),
-                assigns: vec![set("title", "x")],
-                deps: vec![],
-            })
-        })
-        .unwrap_err();
-    assert_eq!(err.code(), Code::RequirementsUnmet);
-    assert_eq!(
-        err.to_json()["missing_fields"],
-        json!(["context", "question"])
-    );
-    // Bad enum values are rejected with the allowed list.
-    let err = s
-        .write(HUMAN, false, |c| {
-            c.create(NewIssue {
-                project: "orch".into(),
-                ty: "research".into(),
-                assigns: vec![
-                    set("title", "x"),
-                    set("context", "c"),
-                    set("question", "q"),
-                    set("confidence", "huge"),
-                ],
-                deps: vec![],
-            })
-        })
-        .unwrap_err();
-    assert_eq!(err.code(), Code::InvalidField);
-}
-
-#[test]
-fn only_the_claimant_can_bind_the_launched_terminal() {
-    let (_d, mut s) = setup();
-    let id = create(&mut s, "code-change", &[]);
-    s.write(AGENT, false, |c| c.claim(&id, ClaimOpts::default()))
-        .unwrap();
-    s.write(AGENT, false, |c| c.bind_terminal(&id, "t42"))
-        .unwrap();
-    let err = s
-        .write(HUMAN, false, |c| c.bind_terminal(&id, "t99"))
-        .unwrap_err();
-    assert_eq!(err.code(), Code::NotClaimant);
-    let claim = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
-    assert_eq!(claim.terminal.as_deref(), Some("t42"));
-}
-
-#[test]
-fn claim_invariant_and_transitions() {
-    let (_d, mut s) = setup();
-    let id = create(&mut s, "code-change", &[]);
-    // Moving an unclaimed issue is refused.
-    let e = s
-        .write(HUMAN, false, |c| c.move_to(&id, "in_review", &[], false))
-        .unwrap_err();
-    assert_eq!(e.code(), Code::InvalidTransition);
-    s.write(HUMAN, false, |c| {
+fn claim(s: &mut Store, actor: &str, id: &str) {
+    s.write(actor, false, |c| {
         c.claim(
-            &id,
+            id,
             ClaimOpts {
-                branch: Some("feat".into()),
+                worktree: Some("/tmp/wt".into()),
                 ..Default::default()
             },
         )
     })
     .unwrap();
-    let v = s.read(None, |c| c.show(&id, With::default())).unwrap();
-    assert_eq!(v["status"], "in_progress");
-    assert_eq!(v["fields"]["branch"], "feat", "claim fills an empty branch");
-    assert_eq!(
-        v["claim"]["lease_until"],
-        json!(null),
-        "human claims have no lease"
-    );
-    // Requirements on entering in_review.
-    let e = s
-        .write(HUMAN, false, |c| c.move_to(&id, "in_review", &[], false))
-        .unwrap_err();
-    assert_eq!(e.code(), Code::RequirementsUnmet);
-    assert_eq!(e.to_json()["missing_fields"], json!(["pr_url"]));
-    s.write(HUMAN, false, |c| {
-        c.move_to(&id, "in_review", &[set("pr_url", "https://x/pr/1")], false)
+}
+
+fn wait(s: &mut Store, actor: &str, id: &str, check: Option<&str>, reason: Option<&str>) {
+    s.write(actor, false, |c| {
+        c.wait(
+            id,
+            WaitOpts {
+                check: check.map(String::from),
+                reason: reason.map(String::from),
+                ..Default::default()
+            },
+        )
     })
     .unwrap();
-    // Only the claimant may close, unless forced.
+}
+
+fn run(exit: i32, output: &str) -> CheckRun {
+    CheckRun {
+        exit: Some(exit),
+        timed_out: false,
+        output: output.into(),
+    }
+}
+
+fn record(s: &mut Store, id: &str, check: &str, r: &CheckRun) -> CheckResult {
+    s.write(HUMAN, false, |c| c.check_record(id, check, r))
+        .unwrap()
+}
+
+fn ids(s: &Store, q: &str) -> Vec<String> {
+    s.read(Some(HUMAN), |c| c.list(q, None, None, None))
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn ops_of(s: &Store, id: &str) -> Vec<String> {
+    s.read(None, |c| c.events(id))
+        .unwrap()
+        .into_iter()
+        .map(|e| e.op)
+        .collect()
+}
+
+#[test]
+fn create_defaults_and_validation() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "First");
+    assert!(id.starts_with("orch-"));
+    let i = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(i.state, State::Open);
+    assert_eq!(i.priority, "P2");
+    assert_eq!(i.agent, None);
+    let e = s.write(HUMAN, false, |c| c.create(new("  "))).unwrap_err();
+    assert_eq!(e.code(), Code::InvalidField);
     let e = s
-        .write("human:bob@example.com", false, |c| {
-            c.close(&id, "abandoned", &[], false)
+        .write(HUMAN, false, |c| {
+            c.create(NewIssue {
+                priority: Some("P9".into()),
+                ..new("x")
+            })
         })
         .unwrap_err();
-    assert_eq!(e.code(), Code::NotClaimant);
-    s.write("human:bob@example.com", false, |c| {
-        c.close(&id, "abandoned", &[], true)
-    })
+    assert_eq!(e.code(), Code::InvalidField);
+    let e = s
+        .write(HUMAN, false, |c| {
+            c.create(NewIssue {
+                project: "nope".into(),
+                ..new("x")
+            })
+        })
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotFound);
+    // A fixed id is kept, and cannot be reused.
+    let fixed = NewIssue {
+        id: Some("orch-abc".into()),
+        ..new("Imported")
+    };
+    assert_eq!(
+        s.write(HUMAN, false, |c| c.create(fixed.clone())).unwrap(),
+        "orch-abc"
+    );
+    assert!(s.write(HUMAN, false, |c| c.create(fixed.clone())).is_err());
+    assert_eq!(s.read(None, |c| c.resolve_id("abc")).unwrap(), "orch-abc");
+}
+
+#[test]
+fn the_working_directory_repo_becomes_the_issue_repo() {
+    let (dir, s) = setup();
+    drop(s);
+    let mut s = Store::open(
+        &dir.path().join("trk.db"),
+        StoreOpts {
+            current_repo: Some("github.com/acme/orch".into()),
+            ..Default::default()
+        },
+    )
     .unwrap();
-    let v = s
-        .read(None, |c| {
-            c.show(
-                &id,
-                With {
-                    claims: true,
-                    events: true,
+    let id = create(&mut s, "In a repo");
+    let v = s.read(None, |c| c.show(&id, With::default())).unwrap();
+    assert_eq!(v["repo"]["remote_url"], "github.com/acme/orch");
+}
+
+#[test]
+fn ready_means_open_with_every_blocker_closed() {
+    let (_d, mut s) = setup();
+    let a = create(&mut s, "A");
+    let b = s
+        .write(HUMAN, false, |c| {
+            c.create(NewIssue {
+                blocked_by: vec![a.clone()],
+                ..new("B")
+            })
+        })
+        .unwrap();
+    assert_eq!(ids(&s, "ready"), vec![a.clone()]);
+    assert_eq!(ids(&s, "blocked"), vec![b.clone()]);
+    let e = s
+        .write(HUMAN, false, |c| c.claim(&b, ClaimOpts::default()))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::Blocked);
+
+    // A waiting blocker still blocks: its work has not landed yet.
+    claim(&mut s, HUMAN, &a);
+    wait(&mut s, HUMAN, &a, Some("true"), None);
+    assert!(ids(&s, "ready").is_empty());
+    let v = s.read(None, |c| c.show(&b, With::default())).unwrap();
+    assert_eq!(v["derived"]["ready"], false);
+    assert_eq!(v["derived"]["blocked_by"][0], a.as_str());
+    assert_eq!(v["derived"]["progress"]["closed"], 0);
+
+    assert_eq!(record(&mut s, &a, "true", &run(0, "")), CheckResult::Passed);
+    assert_eq!(ids(&s, "ready"), vec![b.clone()]);
+    let v = s.read(None, |c| c.show(&b, With::default())).unwrap();
+    assert_eq!(v["derived"]["progress"]["closed"], 1);
+}
+
+#[test]
+fn ready_is_ordered_by_priority_then_age() {
+    let (_d, mut s) = setup();
+    let old = create(&mut s, "old");
+    s.opts.now = Some(ts("2026-11-20T11:00:00Z"));
+    let recent = create(&mut s, "recent");
+    s.opts.now = Some(ts("2026-11-20T12:00:00Z"));
+    let urgent = s
+        .write(HUMAN, false, |c| {
+            c.create(NewIssue {
+                priority: Some("p0".into()),
+                ..new("urgent")
+            })
+        })
+        .unwrap();
+    assert_eq!(ids(&s, "ready"), vec![urgent.clone(), old, recent.clone()]);
+    assert_eq!(ids(&s, "priority=p0"), vec![urgent]);
+    let ch = s
+        .write(HUMAN, false, |c| {
+            c.edit(
+                &recent,
+                Edit {
+                    priority: Some("P1".into()),
+                    title: Some("recent".into()),
                     ..Default::default()
                 },
             )
         })
         .unwrap();
-    assert_eq!(v["status"], "closed");
-    assert_eq!(v["resolution"], "abandoned");
-    assert_eq!(v["claim"], json!(null));
-    assert_eq!(v["claims"][0]["release_reason"], "closed");
-    let close = v["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["op"] == "close")
-        .unwrap();
-    assert_eq!(close["payload"]["forced"], true);
+    assert_eq!(ch.len(), 1);
+    assert_eq!(ch["priority"]["to"], "P1");
+    assert_eq!(ids(&s, "ready")[1], recent);
 }
 
 #[test]
-fn unclaim_returns_to_open_and_steal() {
+fn claim_close_and_claimant_rules() {
     let (_d, mut s) = setup();
-    let id = create(&mut s, "research", &[]);
-    s.write(HUMAN, false, |c| c.claim(&id, ClaimOpts::default()))
-        .unwrap();
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    assert_eq!(state(&s, &id), State::Claimed);
+    assert!(ids(&s, "ready").is_empty());
     let e = s
-        .write("human:bob@example.com", false, |c| {
-            c.claim(&id, ClaimOpts::default())
-        })
+        .write(AGENT2, false, |c| c.claim(&id, ClaimOpts::default()))
         .unwrap_err();
     assert_eq!(e.code(), Code::ClaimedByOther);
-    s.write("human:bob@example.com", false, |c| {
+    // Agents write only to what they claim.
+    let e = s
+        .write(AGENT2, false, |c| c.note(&id, "hi", None, false))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotPermitted);
+    // A human needs --force to close someone else's claim.
+    let e = s
+        .write(HUMAN, false, |c| c.close(&id, "done", None, false))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotClaimant);
+    let e = s
+        .write(AGENT, false, |c| c.close(&id, "merged", None, false))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::InvalidField);
+    s.write(AGENT, false, |c| {
+        c.close(&id, "done", Some("shipped"), false)
+    })
+    .unwrap();
+    let i = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(i.state, State::Closed);
+    assert_eq!(i.close_reason.as_deref(), Some("done"));
+    assert!(s.read(None, |c| c.active_claim(&id)).unwrap().is_none());
+    let claims = s.read(None, |c| c.claims(&id)).unwrap();
+    assert_eq!(claims[0].release_reason.as_deref(), Some("closed"));
+    assert_eq!(ids(&s, "reason=done"), vec![id.clone()]);
+    let e = s
+        .write(HUMAN, false, |c| c.close(&id, "done", None, false))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::InvalidState);
+    // Reopen brings it back.
+    s.write(HUMAN, false, |c| c.reopen(&id, Some("not actually done")))
+        .unwrap();
+    let i = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(i.state, State::Open);
+    assert_eq!(i.close_reason, None);
+    assert_eq!(i.closed_at, None);
+}
+
+#[test]
+fn unclaim_steal_and_cancel() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    s.write(AGENT, false, |c| c.unclaim(&id, false, Some("stuck")))
+        .unwrap();
+    assert_eq!(state(&s, &id), State::Open);
+    claim(&mut s, AGENT, &id);
+    s.write(HUMAN, false, |c| {
         c.claim(
             &id,
             ClaimOpts {
@@ -304,436 +300,368 @@ fn unclaim_returns_to_open_and_steal() {
         )
     })
     .unwrap();
-    let v = s
-        .read(None, |c| {
-            c.show(
-                &id,
-                With {
-                    claims: true,
-                    ..Default::default()
-                },
-            )
-        })
+    assert_eq!(state(&s, &id), State::Claimed);
+    let claims = s.read(None, |c| c.claims(&id)).unwrap();
+    assert_eq!(claims[1].release_reason.as_deref(), Some("stolen"));
+    assert_eq!(claims[2].actor, HUMAN);
+    // An open issue can be cancelled without a claim.
+    let other = create(&mut s, "Never mind");
+    s.write(HUMAN, false, |c| c.close(&other, "abandoned", None, false))
         .unwrap();
-    assert_eq!(v["claim"]["actor"], "human:bob@example.com");
-    assert_eq!(v["claims"][0]["release_reason"], "stolen");
-    s.write("human:bob@example.com", false, |c| {
-        c.unclaim(&id, false, Some("not now"))
-    })
-    .unwrap();
-    let v = s
-        .read(None, |c| {
-            c.show(
-                &id,
-                With {
-                    notes: true,
-                    ..Default::default()
-                },
-            )
-        })
-        .unwrap();
-    assert_eq!(v["status"], "open");
-    assert_eq!(v["derived"]["ready"], true);
-    assert_eq!(v["notes"][0]["body"], "not now");
+    assert_eq!(ids(&s, "reason=abandoned"), vec![other]);
 }
 
 #[test]
-fn agent_leases_renew_and_expire() {
-    let (d, mut s) = setup();
-    let id = create(&mut s, "research", &[]);
-    s.write(AGENT, false, |c| c.claim(&id, ClaimOpts::default()))
-        .unwrap();
-    let lease = |s: &Store| {
-        s.read(None, |c| c.show(&id, With::default())).unwrap()["claim"]["lease_until"].clone()
-    };
-    assert_eq!(lease(&s), "2026-11-20T10:30:00Z");
-    // Any write by the claimant renews the lease.
-    let mut s2 = store_at(&d, "2026-11-20T10:20:00Z");
-    s2.write(AGENT, false, |c| c.note(&id, "progress", None, false))
-        .unwrap();
-    assert_eq!(lease(&s2), "2026-11-20T10:50:00Z");
-    // Past the lease, the next write transaction sweeps it.
-    let mut s3 = store_at(&d, "2026-11-20T11:00:00Z");
-    let stale = s3
-        .read(None, |c| c.list("stale-lease", None, None, None))
-        .unwrap();
-    assert_eq!(stale.len(), 1);
-    s3.write(HUMAN, false, |_| Ok(())).unwrap();
-    let v = s3
-        .read(None, |c| {
-            c.show(
-                &id,
-                With {
-                    claims: true,
-                    ..Default::default()
-                },
-            )
-        })
-        .unwrap();
-    assert_eq!(v["status"], "open");
-    assert_eq!(v["claims"][0]["release_reason"], "expired");
-    // The expired agent can no longer write.
-    let e = s3
-        .write(AGENT, false, |c| c.note(&id, "late", None, false))
-        .unwrap_err();
-    assert_eq!(e.code(), Code::NotPermitted);
-}
-
-#[test]
-fn agents_write_only_to_claimed_issues() {
+fn an_expired_lease_returns_the_issue_to_open() {
     let (_d, mut s) = setup();
-    let mine = create(&mut s, "research", &[]);
-    let other = create(&mut s, "research", &[]);
-    s.write(AGENT, false, |c| c.claim(&mine, ClaimOpts::default()))
-        .unwrap();
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    s.opts.now = Some(ts("2026-11-20T10:20:00Z"));
+    assert_eq!(ids(&s, "stale-lease"), Vec::<String>::new());
+    s.opts.now = Some(ts("2026-11-20T10:31:00Z"));
+    assert_eq!(ids(&s, "stale-lease"), vec![id.clone()]);
+    // Any write sweeps.
+    create(&mut s, "Other");
+    assert_eq!(state(&s, &id), State::Open);
+    let claims = s.read(None, |c| c.claims(&id)).unwrap();
+    assert_eq!(claims[0].release_reason.as_deref(), Some("expired"));
+    assert!(ops_of(&s, &id).contains(&"release".to_string()));
+}
+
+#[test]
+fn waiting_releases_the_claim_and_keeps_the_worktree() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Work");
+    // Only a claimed issue can start waiting.
     let e = s
-        .write(AGENT, false, |c| {
-            c.edit(&other, &[set("doc_url", "https://x")])
-        })
-        .unwrap_err();
-    assert_eq!(e.code(), Code::NotPermitted);
-    // Creating is allowed only as a discovered-from follow-up of a claimed issue.
-    let new = |deps: Vec<NewDep>| NewIssue {
-        project: "orch".into(),
-        ty: "research".into(),
-        assigns: vec![set("title", "f"), set("context", "c"), set("question", "q")],
-        deps,
-    };
-    let e = s
-        .write(AGENT, false, |c| c.create(new(vec![])))
-        .unwrap_err();
-    assert_eq!(e.code(), Code::NotPermitted);
-    let f = s
-        .write(AGENT, false, |c| {
-            c.create(new(vec![NewDep {
-                kind: "discovered-from".into(),
-                other: mine.clone(),
-                new_is_src: true,
-            }]))
-        })
-        .unwrap();
-    let v = s
-        .read(None, |c| {
-            c.show(
-                &f,
-                With {
-                    deps: true,
+        .write(HUMAN, false, |c| {
+            c.wait(
+                &id,
+                WaitOpts {
+                    check: Some("true".into()),
                     ..Default::default()
                 },
             )
         })
-        .unwrap();
-    assert_eq!(v["deps"]["out"][0]["kind"], "discovered-from");
-    assert_eq!(v["deps"]["out"][0]["id"], json!(mine));
-    // The unknown-harness check.
-    let e = s.write("agent:nope:1", false, |_| Ok(())).unwrap_err();
-    assert_eq!(e.code(), Code::NotFound);
-}
-
-#[test]
-fn gates_and_approvals() {
-    let (_d, mut s) = setup();
-    let op = create(&mut s, "operation", &[]);
-    let ap = create(&mut s, "approval", &[]);
-    s.write(HUMAN, false, |c| c.dep_add(&ap, "approves", &op))
-        .unwrap();
-    s.write(HUMAN, false, |c| c.claim(&op, ClaimOpts::default()))
-        .unwrap();
-    let v = s.read(None, |c| c.show(&op, With::default())).unwrap();
-    assert_eq!(v["derived"]["gates_unmet"][0]["src"], json!(ap));
-    let gated = s.read(None, |c| c.list("gated", None, None, None)).unwrap();
-    assert_eq!(gated.len(), 1);
-    let exec = [set("executed_by", "me"), set("executed_at", "now")];
-    let e = s
-        .write(HUMAN, false, |c| c.move_to(&op, "executing", &exec, false))
         .unwrap_err();
-    assert_eq!(e.code(), Code::GateUnmet);
-    assert_eq!(e.code().exit_code(), 5);
-    // A rejected approval still blocks; an approved one opens the gate.
-    s.write(HUMAN, false, |c| {
-        c.claim(&ap, ClaimOpts::default())?;
-        c.close(
-            &ap,
-            "approved",
-            &[set("record_url", "https://slack/x")],
-            false,
+    assert_eq!(e.code(), Code::InvalidState);
+    claim(&mut s, AGENT, &id);
+    // Neither a check nor a reason says nothing.
+    let e = s
+        .write(AGENT, false, |c| c.wait(&id, WaitOpts::default()))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::InvalidField);
+    s.write(AGENT, false, |c| {
+        c.wait(
+            &id,
+            WaitOpts {
+                check: Some("git merge feature".into()),
+                interval: Some(jiff::SignedDuration::from_mins(2)),
+                reason: Some("merge into main".into()),
+                force: false,
+            },
         )
     })
     .unwrap();
-    s.write(HUMAN, false, |c| c.move_to(&op, "executing", &exec, false))
-        .unwrap();
-    let v = s.read(None, |c| c.show(&op, With::default())).unwrap();
-    assert_eq!(v["status"], "executing");
-    assert_eq!(v["fields"]["executed_at"], "2026-11-20T10:00:00Z");
-    assert_eq!(v["fields"]["executed_by"], HUMAN);
+    let i = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(i.state, State::Waiting);
+    assert_eq!(i.wait_cwd.as_deref(), Some("/tmp/wt"));
+    assert_eq!(i.check_interval, Some(120));
+    assert_eq!(i.next_check_at.as_deref(), Some("2026-11-20T10:00:00Z"));
+    assert!(s.read(None, |c| c.active_claim(&id)).unwrap().is_none());
+    let claims = s.read(None, |c| c.claims(&id)).unwrap();
+    assert_eq!(claims[0].release_reason.as_deref(), Some("waiting"));
+    let v = s.read(None, |c| c.show(&id, With::default())).unwrap();
+    assert_eq!(v["waiting"]["check"], "git merge feature");
+    assert_eq!(v["waiting"]["interval"], 120);
+    assert_eq!(v["derived"]["due"], true);
+    assert_eq!(ids(&s, "due"), vec![id.clone()]);
+    // The agent has let go: it can no longer write.
+    let e = s
+        .write(AGENT, false, |c| c.note(&id, "x", None, false))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotPermitted);
+    // A waiting issue cannot be claimed; a human changes its check in place.
+    let e = s
+        .write(HUMAN, false, |c| c.claim(&id, ClaimOpts::default()))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::InvalidState);
+    wait(&mut s, HUMAN, &id, Some("true"), None);
+    let i = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(i.waiting_check.as_deref(), Some("true"));
+    assert_eq!(i.wait_cwd.as_deref(), Some("/tmp/wt"));
+    assert_eq!(i.check_interval, Some(300));
 }
 
 #[test]
-fn blocks_milestones_and_cycles() {
+fn a_check_passes_retries_or_fails() {
     let (_d, mut s) = setup();
-    let a = create(&mut s, "research", &[]);
-    let b = create(&mut s, "research", &[]);
-    let m = create(&mut s, "milestone", &[]);
-    s.write(HUMAN, false, |c| {
-        c.dep_add(&a, "blocks", &b)?;
-        c.dep_add(&a, "blocks", &m)?;
-        c.dep_add(&b, "blocks", &m)
-    })
-    .unwrap();
-    let e = s
-        .write(HUMAN, false, |c| c.dep_add(&b, "blocks", &a))
-        .unwrap_err();
-    assert_eq!(e.code(), Code::Cycle);
-    let e = s
-        .write(HUMAN, false, |c| c.dep_add(&m, "blocks", &a))
-        .unwrap_err();
-    assert_eq!(
-        e.code(),
-        Code::InvalidField,
-        "a milestone never blocks a non-milestone"
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    wait(
+        &mut s,
+        AGENT,
+        &id,
+        Some("check-pr 12"),
+        Some("PR 12 merged"),
     );
-    let e = s
-        .write(HUMAN, false, |c| c.claim(&m, ClaimOpts::default()))
-        .unwrap_err();
+    let before = ops_of(&s, &id);
+
+    // 75: not yet. No event; due again one interval later.
+    s.opts.now = Some(ts("2026-11-20T10:01:00Z"));
     assert_eq!(
-        e.code(),
-        Code::InvalidTransition,
-        "milestones cannot be claimed"
+        record(&mut s, &id, "check-pr 12", &run(75, "still open")),
+        CheckResult::Retry
     );
-    let ready: Vec<String> = s
-        .read(None, |c| c.list("ready", None, None, None))
-        .unwrap()
-        .iter()
-        .map(|v| v["id"].as_str().unwrap().to_string())
-        .collect();
-    assert!(ready.contains(&a) && !ready.contains(&b));
-    let blocked = s
-        .read(None, |c| {
-            c.list(&format!("blocks={m} blocked"), None, None, None)
-        })
-        .unwrap();
-    assert_eq!(blocked.len(), 1);
-    let e = s
-        .write(HUMAN, false, |c| c.close(&m, "reached", &[], false))
-        .unwrap_err();
-    assert_eq!(e.code(), Code::GateUnmet);
-    for id in [&a, &b] {
-        s.write(HUMAN, false, |c| {
-            c.close(
-                id,
-                "abandoned",
-                &[set("confidence", "low"), set("outcome", "x")],
-                false,
-            )
-        })
-        .unwrap();
+    let i = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(i.state, State::Waiting);
+    assert_eq!(i.last_check_exit, Some(75));
+    assert_eq!(i.next_check_at.as_deref(), Some("2026-11-20T10:06:00Z"));
+    assert_eq!(i.updated_at, "2026-11-20T10:00:00Z");
+    assert_eq!(ops_of(&s, &id), before);
+    assert!(s.read(None, |c| c.check_queue(false)).unwrap().is_empty());
+    assert_eq!(s.read(None, |c| c.check_queue(true)).unwrap().len(), 1);
+    s.opts.now = Some(ts("2026-11-20T10:06:00Z"));
+    assert_eq!(s.read(None, |c| c.check_queue(false)).unwrap().len(), 1);
+
+    // A run of a command the issue no longer waits on is dropped.
+    assert_eq!(
+        record(&mut s, &id, "something else", &run(0, "")),
+        CheckResult::Skipped
+    );
+    assert_eq!(state(&s, &id), State::Waiting);
+
+    // Anything else: open again, with the output in a note.
+    assert_eq!(
+        record(&mut s, &id, "check-pr 12", &run(3, "boom\n")),
+        CheckResult::Failed
+    );
+    let i = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(i.state, State::Open);
+    assert_eq!(i.waiting_check, None);
+    assert_eq!(i.wait_cwd, None);
+    let notes = s.read(None, |c| c.notes(&id)).unwrap();
+    let body = notes.last().unwrap()["body"].as_str().unwrap();
+    assert!(body.contains("exited with 3"), "{body}");
+    assert!(body.contains("boom"), "{body}");
+    assert!(body.contains("check-pr 12"), "{body}");
+    assert!(body.contains("PR 12 merged"), "{body}");
+    assert_eq!(ids(&s, "ready"), vec![id.clone()]);
+
+    // 0: closed as done.
+    claim(&mut s, AGENT2, &id);
+    wait(&mut s, AGENT2, &id, Some("true"), None);
+    assert_eq!(
+        record(&mut s, &id, "true", &run(0, "")),
+        CheckResult::Passed
+    );
+    let i = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(i.state, State::Closed);
+    assert_eq!(i.close_reason.as_deref(), Some("done"));
+    let ops = ops_of(&s, &id);
+    assert_eq!(&ops[ops.len() - 2..], ["check", "close"]);
+}
+
+#[test]
+fn a_timeout_or_a_killed_check_is_a_failure() {
+    let (_d, mut s) = setup();
+    for r in [
+        CheckRun {
+            exit: None,
+            timed_out: true,
+            output: "slow".into(),
+        },
+        CheckRun {
+            exit: Some(75),
+            timed_out: true,
+            output: String::new(),
+        },
+        CheckRun::default(),
+    ] {
+        let id = create(&mut s, "Work");
+        claim(&mut s, AGENT, &id);
+        wait(&mut s, AGENT, &id, Some("sleep 999"), None);
+        assert_eq!(record(&mut s, &id, "sleep 999", &r), CheckResult::Failed);
+        assert_eq!(state(&s, &id), State::Open);
     }
-    s.write(HUMAN, false, |c| c.close(&m, "reached", &[], false))
-        .unwrap();
-    let v = s.read(None, |c| c.show(&m, With::default())).unwrap();
-    assert_eq!(v["derived"]["progress"], json!({"total": 2, "closed": 2}));
 }
 
 #[test]
-fn supersede_requires_edge_and_derived_next() {
+fn waiting_on_a_human_is_never_due() {
     let (_d, mut s) = setup();
-    let old = create(&mut s, "decision", &[]);
-    let new = create(&mut s, "decision", &[]);
-    let v = s.read(None, |c| c.show(&old, With::default())).unwrap();
-    assert_eq!(
-        v["derived"]["next"]["proposed"],
-        json!([]),
-        "decisions can be open-ended"
-    );
-    assert_eq!(
-        v["derived"]["next"]["closed"]["superseded"],
-        json!(["record_url", "outcome", "edge:supersedes"])
-    );
-    let fields = [set("record_url", "https://x"), set("outcome", "replaced")];
-    let e = s
-        .write(HUMAN, false, |c| {
-            c.close(&old, "superseded", &fields, false)
-        })
-        .unwrap_err();
-    assert_eq!(e.to_json()["missing_edges"], json!(["supersedes"]));
-    s.write(HUMAN, false, |c| {
-        c.dep_add(&old, "supersedes", &new)?;
-        c.close(&old, "superseded", &fields, false)
-    })
-    .unwrap();
-    // Operations may be irreversible: claiming needs no rollback plan.
-    let op = create(&mut s, "operation", &[]);
-    s.write(HUMAN, false, |c| c.claim(&op, ClaimOpts::default()))
+    let id = create(&mut s, "Decide");
+    claim(&mut s, AGENT, &id);
+    wait(&mut s, AGENT, &id, None, Some("which database?"));
+    let i = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(i.state, State::Waiting);
+    assert_eq!(i.next_check_at, None);
+    assert_eq!(i.check_interval, None);
+    assert!(s.read(None, |c| c.check_queue(true)).unwrap().is_empty());
+    assert!(ids(&s, "due").is_empty());
+    assert_eq!(ids(&s, "state=waiting"), vec![id.clone()]);
+    // The human answers and reopens, or closes.
+    s.write(HUMAN, false, |c| c.reopen(&id, Some("SQLite")))
         .unwrap();
+    assert_eq!(state(&s, &id), State::Open);
+    claim(&mut s, AGENT, &id);
+    wait(&mut s, AGENT, &id, None, Some("approval"));
+    s.write(HUMAN, false, |c| c.close(&id, "done", None, false))
+        .unwrap();
+    let i = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(i.state, State::Closed);
+    assert_eq!(i.waiting_reason, None);
 }
 
 #[test]
-fn min_items_requirement() {
+fn the_check_queue_runs_higher_priority_first() {
     let (_d, mut s) = setup();
-    let mut schema = seed().compile().unwrap();
-    schema
-        .types
-        .get_mut("decision")
+    let mut made = vec![];
+    for p in ["P2", "P0", "P1"] {
+        let id = s
+            .write(HUMAN, false, |c| {
+                c.create(NewIssue {
+                    priority: Some(p.into()),
+                    ..new(p)
+                })
+            })
+            .unwrap();
+        claim(&mut s, HUMAN, &id);
+        wait(&mut s, HUMAN, &id, Some("true"), None);
+        made.push(id);
+    }
+    let q: Vec<String> = s
+        .read(None, |c| c.check_queue(false))
         .unwrap()
-        .requirements
-        .push(trk_core::registry::Requirement {
-            to_status: "proposed".into(),
-            resolution: None,
-            kind: trk_core::registry::ReqKind::MinItems {
-                field: "options".into(),
-                n: 2,
-            },
-        });
-    s.write(HUMAN, false, |c| {
-        c.apply(&schema, &[], &[], None).map(|_| ())
-    })
-    .unwrap();
-    let id = create(&mut s, "decision", &[]);
-    let one = ClaimOpts {
-        assigns: vec![set("options", "only one")],
-        ..Default::default()
-    };
-    let e = s.write(HUMAN, false, |c| c.claim(&id, one)).unwrap_err();
-    assert_eq!(e.code(), Code::RequirementsUnmet);
-    assert_eq!(e.to_json()["min_items"][0]["have"], 1);
-    let two = ClaimOpts {
-        assigns: vec![set("options", "SQLite, Dolt")],
-        ..Default::default()
-    };
-    s.write(HUMAN, false, |c| c.claim(&id, two)).unwrap();
+        .into_iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(q, vec![made[1].clone(), made[2].clone(), made[0].clone()]);
 }
 
 #[test]
-fn list_fields_and_edit_clear_rules() {
+fn the_check_lock_has_one_holder() {
     let (_d, mut s) = setup();
-    let id = create(&mut s, "research", &[set("tags", "a,b")]);
-    let add = Assign {
-        field: "tags".into(),
-        op: AssignOp::Append,
-        value: json!("c"),
-    };
-    let rm = Assign {
-        field: "tags".into(),
-        op: AssignOp::Remove,
-        value: json!("a"),
-    };
-    let link = Assign {
-        field: "links".into(),
-        op: AssignOp::Append,
-        value: json!("pr=https://x/1 the PR"),
-    };
-    s.write(HUMAN, false, |c| c.edit(&id, &[add, rm, link]))
+    assert!(s.read(None, |c| c.check_lock()).unwrap().is_none());
+    s.write(HUMAN, false, |c| c.check_lock_take(41, Some("host")))
         .unwrap();
-    let v = s.read(None, |c| c.show(&id, With::default())).unwrap();
-    assert_eq!(v["tags"], json!(["b", "c"]));
+    let (pid, host, _) = s.read(None, |c| c.check_lock()).unwrap().unwrap();
+    assert_eq!((pid, host.as_deref()), (41, Some("host")));
+    // Releasing with another pid leaves it alone.
+    s.write(HUMAN, false, |c| c.check_lock_release(42)).unwrap();
+    assert!(s.read(None, |c| c.check_lock()).unwrap().is_some());
+    s.write(HUMAN, false, |c| c.check_lock_release(41)).unwrap();
+    assert!(s.read(None, |c| c.check_lock()).unwrap().is_none());
+}
+
+#[test]
+fn blocks_edges_are_acyclic() {
+    let (_d, mut s) = setup();
+    let a = create(&mut s, "A");
+    let b = create(&mut s, "B");
+    let c3 = create(&mut s, "C");
+    assert!(s.write(HUMAN, false, |c| c.dep_add(&a, &b)).unwrap());
+    assert!(!s.write(HUMAN, false, |c| c.dep_add(&a, &b)).unwrap());
+    s.write(HUMAN, false, |c| c.dep_add(&b, &c3)).unwrap();
+    let e = s.write(HUMAN, false, |c| c.dep_add(&c3, &a)).unwrap_err();
+    assert_eq!(e.code(), Code::Cycle);
+    let e = s.write(HUMAN, false, |c| c.dep_add(&a, &a)).unwrap_err();
+    assert_eq!(e.code(), Code::Cycle);
+    assert_eq!(ids(&s, &format!("blocks={b}")), vec![a.clone()]);
+    assert_eq!(ids(&s, &format!("blocked-by={b}")), vec![c3.clone()]);
+    let v = s.read(None, |c| c.show(&b, With::parse("deps"))).unwrap();
+    assert_eq!(v["deps"]["blocked_by"][0]["id"], a.as_str());
+    assert_eq!(v["deps"]["blocks"][0]["id"], c3.as_str());
+    s.write(HUMAN, false, |c| c.dep_rm(&a, &b)).unwrap();
+    let e = s.write(HUMAN, false, |c| c.dep_rm(&a, &b)).unwrap_err();
+    assert_eq!(e.code(), Code::NotFound);
+    assert!(ids(&s, "ready").contains(&b));
+}
+
+#[test]
+fn agents_file_follow_ups_only_from_issues_they_claim() {
+    let (_d, mut s) = setup();
+    let parent = create(&mut s, "Parent");
+    let e = s
+        .write(AGENT, false, |c| c.create(new("Stray")))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotPermitted);
+    let follow = |blocks: bool| NewIssue {
+        followup_of: Some(parent.clone()),
+        blocks: if blocks { vec![parent.clone()] } else { vec![] },
+        ..new("Follow-up")
+    };
+    let e = s
+        .write(AGENT, false, |c| c.create(follow(false)))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotPermitted);
+    claim(&mut s, AGENT, &parent);
+    let f = s.write(AGENT, false, |c| c.create(follow(false))).unwrap();
+    assert_eq!(state(&s, &f), State::Open);
+    let ev = s.read(None, |c| c.events(&f)).unwrap();
+    assert_eq!(ev[0].payload["followup_of"], parent.as_str());
+    let g = s.write(AGENT, false, |c| c.create(follow(true))).unwrap();
     assert_eq!(
-        v["links"][0],
-        json!({"kind": "pr", "url": "https://x/1", "note": "the PR"})
+        s.read(None, |c| c.blocked_by(&parent)).unwrap(),
+        vec![g.clone()]
     );
-    // Clearing a field required in the current status is refused.
-    s.write(HUMAN, false, |c| c.claim(&id, ClaimOpts::default()))
-        .unwrap();
-    let e = s
-        .write(HUMAN, false, |c| c.edit(&id, &[set("title", "")]))
-        .unwrap_err();
-    assert_eq!(e.code(), Code::InvalidField);
-    let e = s
-        .write(HUMAN, false, |c| c.edit(&id, &[set("status", "closed")]))
-        .unwrap_err();
-    assert_eq!(e.code(), Code::InvalidField);
-    // Queries over custom fields and tags.
-    let hits = s
-        .read(None, |c| {
-            c.list("tag=c type=research category=active", None, None, None)
+}
+
+#[test]
+fn notes_search_and_inbox() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Leases for claims");
+    let seq = s
+        .write(HUMAN, false, |c| {
+            c.note(&id, "consider a heartbeat", None, true)
         })
         .unwrap();
-    assert_eq!(hits.len(), 1);
-    let hits = s
-        .read(None, |c| c.list("text~\"T\" NOT tag=zzz", None, None, None))
-        .unwrap();
-    assert_eq!(hits.len(), 1);
-}
-
-#[test]
-fn dry_run_writes_nothing_and_events_are_append_only() {
-    let (_d, mut s) = setup();
-    let id = create(&mut s, "research", &[]);
-    s.write(HUMAN, true, |c| c.claim(&id, ClaimOpts::default()))
-        .unwrap();
-    let v = s.read(None, |c| c.show(&id, With::default())).unwrap();
-    assert_eq!(v["status"], "open");
+    s.write(HUMAN, false, |c| {
+        c.note(&id, "typo fixed", Some(seq), false)
+    })
+    .unwrap();
+    assert_eq!(ids(&s, "text~heartbeat"), vec![id.clone()]);
+    assert_eq!(ids(&s, "text~leases"), vec![id.clone()]);
+    assert!(ids(&s, "text~nothing").is_empty());
+    claim(&mut s, AGENT, &id);
+    let inbox = s.write(AGENT, false, |c| c.take_inbox(&id)).unwrap();
+    assert_eq!(inbox.len(), 1);
     assert!(
-        s.conn()
-            .execute("UPDATE event SET op = 'note'", [])
-            .is_err()
+        s.write(AGENT, false, |c| c.take_inbox(&id))
+            .unwrap()
+            .is_empty()
     );
+    // The event log is append-only.
     assert!(s.conn().execute("DELETE FROM event", []).is_err());
     assert!(s.conn().execute("DELETE FROM issue", []).is_err());
 }
 
 #[test]
-fn inbox_delivers_once() {
+fn counts_and_dry_run() {
     let (_d, mut s) = setup();
-    let id = create(&mut s, "research", &[]);
-    s.write(AGENT, false, |c| c.claim(&id, ClaimOpts::default()))
+    let a = create(&mut s, "A");
+    create(&mut s, "B");
+    s.write(HUMAN, true, |c| c.close(&a, "done", None, false))
         .unwrap();
-    s.write(HUMAN, false, |c| c.note(&id, "please hurry", None, true))
+    assert_eq!(state(&s, &a), State::Open);
+    s.write(HUMAN, false, |c| c.close(&a, "done", None, false))
         .unwrap();
-    let first = s.write(AGENT, false, |c| c.take_inbox(&id)).unwrap();
-    assert_eq!(first.len(), 1);
-    assert_eq!(first[0]["body"], "please hurry");
-    let second = s.write(AGENT, false, |c| c.take_inbox(&id)).unwrap();
-    assert!(second.is_empty());
+    let n = s.read(None, |c| c.counts()).unwrap();
+    assert_eq!(n["open"], 1);
+    assert_eq!(n["closed"], 1);
 }
 
 #[test]
-fn schema_plan_maps_removed_statuses() {
-    let (_d, mut s) = setup();
-    let id = create(&mut s, "research", &[]);
-    s.write(HUMAN, false, |c| c.claim(&id, ClaimOpts::default()))
-        .unwrap();
-    let mut schema = seed().compile().unwrap();
-    let t = schema.types.get_mut("research").unwrap();
-    for st in &mut t.statuses {
-        if st.name == "in_progress" {
-            st.name = "investigating".into();
-        }
-    }
-    let tr = std::mem::take(&mut t.transitions);
-    for (from, tos) in tr {
-        let from = if from == "in_progress" {
-            "investigating".to_string()
-        } else {
-            from
-        };
-        let tos = tos
-            .into_iter()
-            .map(|x| {
-                if x == "in_progress" {
-                    "investigating".to_string()
-                } else {
-                    x
-                }
-            })
-            .collect();
-        t.transitions.insert(from, tos);
-    }
-    let plan = s.read(None, |c| c.plan(&schema, &[])).unwrap();
-    assert_eq!(plan.blockers.len(), 1);
-    let e = s
-        .write(HUMAN, false, |c| c.apply(&schema, &[], &[], None))
-        .unwrap_err();
-    assert_eq!(e.code(), Code::SchemaInvalid);
-    s.write(HUMAN, false, |c| {
-        c.apply(
-            &schema,
-            &[],
-            &[("in_progress".into(), "investigating".into())],
-            Some("abc".into()),
+fn an_old_database_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE issue_type (name TEXT PRIMARY KEY); PRAGMA user_version = 2;",
         )
-    })
-    .unwrap();
-    let v = s.read(None, |c| c.show(&id, With::default())).unwrap();
-    assert_eq!(v["status"], "investigating");
-    assert_eq!(v["claim"]["actor"], HUMAN, "the claim survives the mapping");
+        .unwrap();
+    }
+    let e = Store::open(&path, StoreOpts::default()).err().unwrap();
+    assert_eq!(e.code(), Code::OldDatabase);
+    assert!(e.hint().unwrap().contains("import-v1.sh"));
 }

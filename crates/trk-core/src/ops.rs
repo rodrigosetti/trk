@@ -1,33 +1,55 @@
-//! Issue operations. Each runs inside a write [`Ctx`]; status changes happen
-//! only through claim, unclaim, move and close.
+//! Issue operations. Each runs inside a write [`Ctx`]. State changes happen
+//! only here:
+//!
+//! ```text
+//! open    → claimed            claim
+//! claimed → open               unclaim, reap, lease expiry
+//! claimed → closed | waiting   close, wait
+//! waiting → closed | open      check passes | check fails, or a human
+//! open    → closed             close
+//! closed  → open               reopen
+//! ```
 
 use rand::RngExt;
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
 
-use crate::error::{Code, Error, Result, bad_args, invalid_field, not_found};
-use crate::fields::{Assign, AssignOp, coerce, coerce_item, is_present, item_count};
+use crate::error::{Code, Error, Result, bad_args, not_found};
 use crate::model::*;
-use crate::registry::*;
-use crate::store::Ctx;
+use crate::store::{Ctx, ISSUE_COLS, row_to_issue};
 
 const ID_ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
+
+/// How much of a failed check's output is kept in the note.
+pub const CHECK_OUTPUT_TAIL: usize = 4096;
 
 #[derive(Debug, Clone, Default)]
 pub struct NewIssue {
     pub project: String,
-    pub ty: String,
-    pub assigns: Vec<Assign>,
-    pub deps: Vec<NewDep>,
+    /// A fixed id (imports); otherwise one is allocated.
+    pub id: Option<String>,
+    pub title: String,
+    pub description: String,
+    pub priority: Option<String>,
+    pub agent: Option<String>,
+    /// `None`: the repo of the working directory, when it belongs to the project.
+    pub repo_id: Option<i64>,
+    /// Issues that block the new one.
+    pub blocked_by: Vec<String>,
+    /// Issues the new one blocks.
+    pub blocks: Vec<String>,
+    /// The issue this one was discovered from. Agents must claim it.
+    pub followup_of: Option<String>,
 }
 
-/// An edge created together with a new issue.
-#[derive(Debug, Clone)]
-pub struct NewDep {
-    pub kind: String,
-    pub other: String,
-    /// true: new → other; false: other → new.
-    pub new_is_src: bool,
+/// Changes to the authored fields; `None` leaves a field alone.
+#[derive(Debug, Clone, Default)]
+pub struct Edit {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub priority: Option<String>,
+    /// `Some(None)` clears the agent.
+    pub agent: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -38,319 +60,125 @@ pub struct ClaimOpts {
     pub agent: Option<String>,
     pub terminal: Option<String>,
     pub steal: bool,
-    /// Current git branch; written to an empty `branch` field.
-    pub branch: Option<String>,
     pub on_behalf_of: Option<String>,
-    pub assigns: Vec<Assign>,
 }
 
-/// Requirements not met when entering a status.
-#[derive(Debug, Default, Clone)]
-pub struct Unmet {
-    pub fields: Vec<String>,
-    pub min_items: Vec<Value>,
-    pub edges: Vec<String>,
-    pub gates: Vec<Value>,
+#[derive(Debug, Clone, Default)]
+pub struct WaitOpts {
+    /// Shell command run by `trk check`. `None` waits on a human.
+    pub check: Option<String>,
+    pub interval: Option<jiff::SignedDuration>,
+    pub reason: Option<String>,
+    pub force: bool,
 }
 
-impl Unmet {
-    pub fn is_empty(&self) -> bool {
-        self.fields.is_empty() && self.edges.is_empty() && self.gates.is_empty()
+/// What one run of a waiting check produced.
+#[derive(Debug, Clone, Default)]
+pub struct CheckRun {
+    /// `None` when the command was killed or could not start.
+    pub exit: Option<i32>,
+    pub timed_out: bool,
+    /// Combined stdout and stderr.
+    pub output: String,
+}
+
+/// What recording a check did to the issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckResult {
+    /// Exit 0: closed as done.
+    Passed,
+    /// Exit 75: still waiting.
+    Retry,
+    /// Anything else: back to open with the output as a note.
+    Failed,
+    /// The issue changed while the check ran; nothing was recorded.
+    Skipped,
+}
+
+impl CheckResult {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CheckResult::Passed => "passed",
+            CheckResult::Retry => "retry",
+            CheckResult::Failed => "failed",
+            CheckResult::Skipped => "skipped",
+        }
     }
 }
 
-const PROTECTED: &[&str] = &[
-    "id",
-    "type",
-    "project",
-    "status",
-    "resolution",
-    "created_by",
-    "created_at",
-    "updated_at",
-    "closed_at",
-];
-
-impl Ctx<'_> {
-    // ------------------------------------------------------------------
-    // Fields
-    // ------------------------------------------------------------------
-
-    fn field_def_for(&self, ty: &TypeDef, name: &str) -> Result<FieldDef> {
-        if PROTECTED.contains(&name) {
-            let hint = match name {
-                "status" => "status changes only through claim, unclaim, move and close",
-                "resolution" => "set the resolution with close --resolution",
-                _ => "this field is written by trk",
-            };
-            return Err(invalid_field(name, "cannot be set directly").with_hint(hint));
-        }
-        if let Some(def) = self.schema.field(name)
-            && (def.shared || ty.type_field(name).is_some())
-        {
-            return Ok(def.clone());
-        }
-        let mut names: Vec<String> = SHARED_COLUMNS.iter().map(|s| s.to_string()).collect();
-        names.extend(ty.fields.iter().map(|f| f.field.clone()));
+fn check_priority(p: &str) -> Result<String> {
+    let up = p.trim().to_ascii_uppercase();
+    if PRIORITIES.contains(&up.as_str()) {
+        Ok(up)
+    } else {
         Err(
-            invalid_field(name, format!("type '{}' has no such field", ty.name))
-                .with_hint(format!("fields of {}: {}", ty.name, names.join(", "))),
+            Error::new(Code::InvalidField, format!("invalid priority '{p}'"))
+                .with_detail("allowed", json!(PRIORITIES)),
         )
     }
+}
 
-    /// Apply assignments to `issue` in memory; returns {field: {from, to}}.
-    pub fn apply_assigns(
-        &self,
-        issue: &mut Issue,
-        ty: &TypeDef,
-        assigns: &[Assign],
-    ) -> Result<Map<String, Value>> {
-        let mut changes = Map::new();
-        for a in assigns {
-            let def = self.field_def_for(ty, &a.field)?;
-            let old = issue.get(&def.name);
-            let new = match a.op {
-                AssignOp::Set => coerce(&def, &a.value, self)?,
-                AssignOp::Append | AssignOp::Remove => {
-                    let item = coerce_item(&def, &a.value, self)?;
-                    let mut arr = match &old {
-                        Some(Value::Array(v)) => v.clone(),
-                        _ => vec![],
-                    };
-                    let same = |x: &Value| match (x.get("url"), item.get("url")) {
-                        (Some(u1), Some(u2)) => u1 == u2,
-                        _ => *x == item,
-                    };
-                    if a.op == AssignOp::Append {
-                        if !arr.iter().any(same) {
-                            arr.push(item.clone());
-                        }
-                    } else {
-                        arr.retain(|x| !same(x));
-                    }
-                    Value::Array(arr)
-                }
-            };
-            self.store_field(issue, &def, new.clone())?;
-            let after = issue.get(&def.name);
-            if after != old {
-                changes.insert(def.name.clone(), json!({"from": old, "to": after}));
-            }
-        }
-        Ok(changes)
+fn tail(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
     }
-
-    fn store_field(&self, issue: &mut Issue, def: &FieldDef, v: Value) -> Result<()> {
-        match def.name.as_str() {
-            "title" | "context" => {
-                let s = v.as_str().map(|s| s.to_string()).unwrap_or_default();
-                if s.trim().is_empty() {
-                    return Err(invalid_field(&def.name, "is required and cannot be empty"));
-                }
-                if def.name == "title" {
-                    issue.title = s;
-                } else {
-                    issue.context = s;
-                }
-            }
-            "outcome" => issue.outcome = v.as_str().map(String::from),
-            "owner" => {
-                let o = v.as_str().map(String::from);
-                if let Some(o) = &o {
-                    self.ensure_actor(o, None)?;
-                }
-                issue.owner = o;
-            }
-            "links" => {
-                issue.links = match v {
-                    Value::Array(a) => a,
-                    _ => vec![],
-                }
-            }
-            "tags" => {
-                issue.tags = match v {
-                    Value::Array(a) => a
-                        .into_iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect(),
-                    _ => vec![],
-                }
-            }
-            "priority" => {
-                if !matches!(&v, Value::String(p) if ["P0", "P1", "P2", "P3"].contains(&p.as_str()))
-                {
-                    return Err(invalid_field("priority", "must be P0, P1, P2, or P3"));
-                }
-                issue.fields.insert("priority".into(), v);
-            }
-            name => {
-                if is_present(Some(&v)) || matches!(v, Value::Bool(_)) {
-                    issue.fields.insert(name.to_string(), v);
-                } else {
-                    issue.fields.remove(name);
-                }
-            }
-        }
-        Ok(())
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
     }
+    &s[start..]
+}
 
-    fn save_issue(&self, issue: &Issue) -> Result<()> {
+impl Ctx<'_> {
+    fn save_issue(&self, i: &Issue) -> Result<()> {
         self.conn.execute(
-            "UPDATE issue SET title = ?2, context = ?3, outcome = ?4, owner = ?5, links = ?6, tags = ?7,
-                    fields = ?8, status = ?9, resolution = ?10, closed_at = ?11, updated_at = ?12
+            "UPDATE issue SET state = ?2, title = ?3, description = ?4, priority = ?5, agent = ?6,
+                    close_reason = ?7, waiting_reason = ?8, waiting_check = ?9, check_interval = ?10,
+                    next_check_at = ?11, last_check_at = ?12, last_check_exit = ?13, wait_cwd = ?14,
+                    closed_at = ?15, updated_at = ?16
              WHERE id = ?1",
             params![
-                issue.id,
-                issue.title,
-                issue.context,
-                issue.outcome,
-                issue.owner,
-                Value::Array(issue.links.clone()).to_string(),
-                json!(issue.tags).to_string(),
-                Value::Object(issue.fields.clone()).to_string(),
-                issue.status,
-                issue.resolution,
-                issue.closed_at,
+                i.id,
+                i.state.as_str(),
+                i.title,
+                i.description,
+                i.priority,
+                i.agent,
+                i.close_reason,
+                i.waiting_reason,
+                i.waiting_check,
+                i.check_interval,
+                i.next_check_at,
+                i.last_check_at,
+                i.last_check_exit,
+                i.wait_cwd,
+                i.closed_at,
                 self.ts(),
             ],
         )?;
         Ok(())
     }
 
-    // ------------------------------------------------------------------
-    // Requirements
-    // ------------------------------------------------------------------
-
-    pub fn unmet(
-        &self,
-        issue: &Issue,
-        ty: &TypeDef,
-        to: &str,
-        resolution: Option<&str>,
-    ) -> Result<Unmet> {
-        let mut u = Unmet::default();
-        for r in ty.requirements_for(to, resolution) {
-            match &r.kind {
-                ReqKind::Field { field } => {
-                    if !is_present(issue.get(field).as_ref()) && !u.fields.contains(field) {
-                        u.fields.push(field.clone());
-                    }
-                }
-                ReqKind::MinItems { field, n } => {
-                    let have = item_count(issue.get(field).as_ref());
-                    if have < *n {
-                        u.min_items
-                            .push(json!({"field": field, "min": n, "have": have}));
-                        if !u.fields.contains(field) {
-                            u.fields.push(field.clone());
-                        }
-                    }
-                }
-                ReqKind::OutEdge { dep_kind } => {
-                    let n: i64 = self.conn.query_row(
-                        "SELECT count(*) FROM dep WHERE src = ?1 AND kind = ?2",
-                        params![issue.id, dep_kind],
-                        |r| r.get(0),
-                    )?;
-                    if n == 0 {
-                        u.edges.push(dep_kind.clone());
-                    }
-                }
-                ReqKind::InEdgesClosed {
-                    dep_kind,
-                    src_resolution,
-                } => {
-                    let mut st = self.conn.prepare(
-                        "SELECT s.id, s.type, s.status, s.status_category, s.resolution
-                         FROM dep d JOIN issue_view s ON s.id = d.src
-                         WHERE d.dst = ?1 AND d.kind = ?2
-                           AND (s.status_category <> 'closed' OR (?3 IS NOT NULL AND s.resolution IS NOT ?3))",
-                    )?;
-                    let rows: Vec<Value> = st
-                        .query_map(params![issue.id, dep_kind, src_resolution], |r| {
-                            Ok(json!({
-                                "kind": dep_kind,
-                                "src": r.get::<_, String>(0)?,
-                                "src_type": r.get::<_, String>(1)?,
-                                "src_status": r.get::<_, String>(2)?,
-                                "src_resolution": r.get::<_, Option<String>>(4)?,
-                                "required": src_resolution.clone().unwrap_or_else(|| "closed".into()),
-                                "entering": to,
-                            }))
-                        })?
-                        .collect::<std::result::Result<_, _>>()?;
-                    u.gates.extend(rows);
-                }
-            }
-        }
-        Ok(u)
+    fn clear_waiting(issue: &mut Issue) {
+        issue.waiting_reason = None;
+        issue.waiting_check = None;
+        issue.check_interval = None;
+        issue.next_check_at = None;
+        issue.last_check_at = None;
+        issue.last_check_exit = None;
+        issue.wait_cwd = None;
     }
 
-    /// Field-type requirements (field, min_items) unmet for a status; used by plan.
-    pub fn unmet_fields(
-        &self,
-        issue: &Issue,
-        ty: &TypeDef,
-        to: &str,
-        resolution: Option<&str>,
-    ) -> Vec<String> {
-        let mut out = vec![];
-        for r in ty.requirements_for(to, resolution) {
-            match &r.kind {
-                ReqKind::Field { field } if !is_present(issue.get(field).as_ref()) => {
-                    out.push(field.clone())
-                }
-                ReqKind::MinItems { field, n } if item_count(issue.get(field).as_ref()) < *n => {
-                    out.push(format!("{field} (≥{n})"))
-                }
-                _ => {}
-            }
-        }
-        out
+    fn invalid_state(&self, issue: &Issue, what: &str) -> Error {
+        Error::new(
+            Code::InvalidState,
+            format!("{} is {}; {what}", issue.id, issue.state),
+        )
+        .with_issue(&issue.id)
+        .with_detail("state", issue.state.as_str())
     }
 
-    fn unmet_error(&self, u: Unmet, issue: &Issue, message: String, cmd: String) -> Error {
-        let code = if u.fields.is_empty() && u.edges.is_empty() {
-            Code::GateUnmet
-        } else {
-            Code::RequirementsUnmet
-        };
-        let mut hint = cmd;
-        for f in &u.fields {
-            let md = self
-                .schema
-                .field(f)
-                .is_some_and(|d| d.kind == FieldKind::Markdown);
-            hint.push_str(&format!(" -f {f}={}", if md { "@-" } else { "..." }));
-        }
-        for e in &u.edges {
-            hint.push_str(&format!("; first: trk dep add {} {e} <ID>", issue.id));
-        }
-        if !u.gates.is_empty() {
-            let srcs: Vec<String> = u
-                .gates
-                .iter()
-                .filter_map(|g| g["src"].as_str().map(String::from))
-                .collect();
-            let req = match u.gates[0]["required"].as_str() {
-                Some("closed") | None => "closed".to_string(),
-                Some(r) => format!("closed as '{r}'"),
-            };
-            if u.fields.is_empty() && u.edges.is_empty() {
-                hint = format!("{} must be {req} first", srcs.join(", "));
-            } else {
-                hint.push_str(&format!("; and {} must be {req}", srcs.join(", ")));
-            }
-        }
-        Error::new(code, message)
-            .with_issue(&issue.id)
-            .with_detail("missing_fields", json!(u.fields))
-            .with_detail("missing_edges", json!(u.edges))
-            .with_detail("min_items", json!(u.min_items))
-            .with_detail("unmet_gates", json!(u.gates))
-            .with_hint(hint)
-    }
-
+    /// Only the claimant may act on a claimed issue; a human may force it.
     fn claimant_check(
         &self,
         issue: &Issue,
@@ -378,6 +206,48 @@ impl Ctx<'_> {
         Ok(false)
     }
 
+    fn is_claimed_by_me(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .active_claim(id)?
+            .is_some_and(|c| c.actor == self.actor_str()))
+    }
+
+    /// Agent actors write only to issues they currently claim.
+    fn agent_gate(&self, issue_id: &str, claim: &Option<Claim>) -> Result<()> {
+        if self.actor().is_agent() && claim.as_ref().is_none_or(|c| c.actor != self.actor_str()) {
+            return Err(Error::new(
+                Code::NotPermitted,
+                "agent actors may only write to issues they currently claim",
+            )
+            .with_issue(issue_id));
+        }
+        Ok(())
+    }
+
+    /// Any write from the claimant extends its lease.
+    pub fn touch_lease(&self, issue_id: &str) -> Result<()> {
+        let until = fmt_ts(self.now + self.opts.agent_lease);
+        self.conn.execute(
+            "UPDATE claim SET lease_until = max(lease_until, ?3)
+             WHERE issue_id = ?1 AND actor = ?2 AND released_at IS NULL AND lease_until IS NOT NULL",
+            params![issue_id, self.actor_str(), until],
+        )?;
+        Ok(())
+    }
+
+    fn release(&self, claim: &Claim, reason: &str, extra: Value) -> Result<()> {
+        self.conn.execute(
+            "UPDATE claim SET released_at = ?2, release_reason = ?3 WHERE id = ?1",
+            params![claim.id, self.ts(), reason],
+        )?;
+        let mut p = json!({"claim": claim.id, "claimant": claim.actor, "reason": reason});
+        if let (Value::Object(p), Value::Object(e)) = (&mut p, extra) {
+            p.extend(e);
+        }
+        self.event(Some(&claim.issue_id), "release", p)?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // Create / edit
     // ------------------------------------------------------------------
@@ -390,12 +260,7 @@ impl Ctx<'_> {
                     .map(|_| ID_ALPHABET[rng.random_range(0..ID_ALPHABET.len())] as char)
                     .collect();
                 let id = format!("{project}-{suffix}");
-                let taken: bool = self
-                    .conn
-                    .query_row("SELECT 1 FROM issue WHERE id = ?1", [&id], |_| Ok(true))
-                    .optional()?
-                    .unwrap_or(false);
-                if !taken {
+                if !self.issue_exists(&id)? {
                     return Ok(id);
                 }
             }
@@ -403,134 +268,110 @@ impl Ctx<'_> {
         Err(Error::new(Code::Internal, "could not allocate an issue id"))
     }
 
+    fn issue_exists(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT 1 FROM issue WHERE id = ?1", [id], |_| Ok(true))
+            .optional()?
+            .unwrap_or(false))
+    }
+
     pub fn create(&self, new: NewIssue) -> Result<String> {
-        self.schema.require_applied()?;
         if !self.project_exists(&new.project)? {
             return Err(
                 not_found("project", &new.project).with_hint("create it with `trk project add`")
             );
         }
-        let ty = self.schema.ty(&new.ty)?.clone();
-        let mut deps = new.deps.clone();
-        let mut resolved = vec![];
-        for d in &mut deps {
-            d.other = self.resolve_id(&d.other)?;
-            resolved.push(d.other.clone());
+        let title = new.title.trim().to_string();
+        if title.is_empty() {
+            return Err(Error::new(Code::InvalidField, "an issue needs a title")
+                .with_hint("trk create -t TITLE [-d DESCRIPTION]"));
         }
+        let priority = check_priority(new.priority.as_deref().unwrap_or(DEFAULT_PRIORITY))?;
+        let followup_of = new
+            .followup_of
+            .as_deref()
+            .map(|p| self.resolve_id(p))
+            .transpose()?;
         if self.actor().is_agent() {
-            let mut ok = false;
-            for d in &deps {
-                if d.kind == "discovered-from" && d.new_is_src && self.is_claimed_by_me(&d.other)? {
-                    ok = true;
-                }
-            }
+            let ok = match &followup_of {
+                Some(p) => self.is_claimed_by_me(p)?,
+                None => false,
+            };
             if !ok {
                 return Err(Error::new(
                     Code::NotPermitted,
-                    "agent actors may create issues only as discovered-from follow-ups of an issue they claim",
+                    "agent actors may create issues only as follow-ups of an issue they claim",
                 ));
             }
         }
-        let open = ty.open_status().ok_or_else(|| {
-            Error::new(
-                Code::SchemaInvalid,
-                format!("type '{}' has no open status", ty.name),
-            )
-        })?;
-        let id = self.new_id(&new.project)?;
-        let mut issue = Issue {
-            id: id.clone(),
-            project: new.project.clone(),
-            ty: ty.name.clone(),
-            title: String::new(),
-            context: String::new(),
-            status: open.name.clone(),
-            status_category: "open".into(),
-            resolution: None,
-            outcome: None,
-            owner: None,
-            links: vec![],
-            tags: vec![],
-            fields: {
-                let mut fields = Map::new();
-                fields.insert("priority".into(), Value::String("P2".into()));
-                fields
-            },
-            created_by: self.actor_str(),
-            created_at: self.ts(),
-            updated_at: self.ts(),
-            closed_at: None,
+        let blocked_by = new
+            .blocked_by
+            .iter()
+            .map(|b| self.resolve_id(b))
+            .collect::<Result<Vec<_>>>()?;
+        let blocks = new
+            .blocks
+            .iter()
+            .map(|b| self.resolve_id(b))
+            .collect::<Result<Vec<_>>>()?;
+        let id = match &new.id {
+            Some(id) => {
+                let ok = id
+                    .strip_prefix(&format!("{}-", new.project))
+                    .is_some_and(|s| {
+                        !s.is_empty()
+                            && s.chars()
+                                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                    });
+                if !ok {
+                    return Err(bad_args(format!(
+                        "id '{id}' must be '{}-' followed by lowercase letters and digits",
+                        new.project
+                    )));
+                }
+                if self.issue_exists(id)? {
+                    return Err(bad_args(format!("issue '{id}' already exists")));
+                }
+                id.clone()
+            }
+            None => self.new_id(&new.project)?,
         };
-        for tf in &ty.fields {
-            if let Some(d) = &tf.default {
-                issue.fields.insert(tf.field.clone(), d.clone());
-            }
-            let is_repo = self
-                .schema
-                .field(&tf.field)
-                .is_some_and(|f| f.kind == FieldKind::Repo);
-            if is_repo
-                && !new.assigns.iter().any(|a| a.field == tf.field)
-                && let Some(r) = &self.opts.current_repo
-            {
-                issue
-                    .fields
-                    .insert(tf.field.clone(), Value::String(r.clone()));
-            }
-        }
-        // title/context are set through assigns; skip their emptiness check until after.
-        for a in &new.assigns {
-            if (a.field == "title" || a.field == "context") && a.op == AssignOp::Set {
-                let s = a.value.as_str().unwrap_or_default();
-                if s.trim().is_empty() {
-                    continue;
-                }
-            }
-            self.apply_assigns(&mut issue, &ty, std::slice::from_ref(a))?;
-        }
-        let mut missing = vec![];
-        if issue.title.trim().is_empty() {
-            missing.push("title".to_string());
-        }
-        if issue.context.trim().is_empty() {
-            missing.push("context".to_string());
-        }
-        for tf in &ty.fields {
-            if tf.required_at_create && !is_present(issue.get(&tf.field).as_ref()) {
-                missing.push(tf.field.clone());
+        let repo_id = match new.repo_id {
+            Some(r) => Some(r),
+            None => match &self.opts.current_repo {
+                Some(r) => self
+                    .repo_by_ref(r)?
+                    .filter(|r| r.project == new.project)
+                    .map(|r| r.id),
+                None => None,
+            },
+        };
+        if let Some(r) = repo_id {
+            let repo = self
+                .repo_by_id(r)?
+                .ok_or_else(|| not_found("repo", &r.to_string()))?;
+            if repo.project != new.project {
+                return Err(bad_args(format!(
+                    "repo {r} belongs to project '{}', not '{}'",
+                    repo.project, new.project
+                )));
             }
         }
-        if !missing.is_empty() {
-            let mut hint = format!("trk create {} -t TITLE", ty.name);
-            for f in &missing {
-                if f != "title" {
-                    hint.push_str(&format!(" -f {f}=..."));
-                }
-            }
-            return Err(Error::new(
-                Code::RequirementsUnmet,
-                format!("{} requires fields at creation", ty.name),
-            )
-            .with_detail("missing_fields", json!(missing))
-            .with_hint(hint));
-        }
+        let agent = new.agent.filter(|a| !a.trim().is_empty());
         self.conn.execute(
-            "INSERT INTO issue (id, project_id, type, status, title, context, outcome, owner, links, tags,
-                                fields, created_by, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+            "INSERT INTO issue (id, project_id, repo_id, state, title, description, priority, agent,
+                                created_by, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
             params![
-                issue.id,
-                issue.project,
-                issue.ty,
-                issue.status,
-                issue.title,
-                issue.context,
-                issue.outcome,
-                issue.owner,
-                Value::Array(issue.links.clone()).to_string(),
-                json!(issue.tags).to_string(),
-                Value::Object(issue.fields.clone()).to_string(),
-                issue.created_by,
+                id,
+                new.project,
+                repo_id,
+                title,
+                new.description,
+                priority,
+                agent,
+                self.actor_str(),
                 self.ts(),
             ],
         )?;
@@ -538,91 +379,69 @@ impl Ctx<'_> {
             Some(&id),
             "create",
             json!({
-                "type": issue.ty, "project": issue.project, "status": issue.status,
-                "title": issue.title, "context": issue.context, "outcome": issue.outcome,
-                "owner": issue.owner, "links": issue.links, "tags": issue.tags, "fields": issue.fields,
+                "project": new.project, "repo_id": repo_id, "title": title,
+                "description": new.description, "priority": priority, "agent": agent,
+                "followup_of": followup_of,
             }),
         )?;
-        for d in deps {
-            let (src, dst) = if d.new_is_src {
-                (id.clone(), d.other.clone())
-            } else {
-                (d.other.clone(), id.clone())
-            };
-            self.dep_insert(&src, &d.kind, &dst)?;
+        for b in &blocked_by {
+            self.dep_insert(b, &id)?;
         }
-        for other in resolved {
-            self.touch_lease_pub(&other)?;
+        for b in &blocks {
+            self.dep_insert(&id, b)?;
+        }
+        if let Some(p) = &followup_of {
+            self.touch_lease(p)?;
         }
         Ok(id)
     }
 
-    fn is_claimed_by_me(&self, id: &str) -> Result<bool> {
-        Ok(self
-            .active_claim(id)?
-            .is_some_and(|c| c.actor == self.actor_str()))
-    }
-
-    pub fn touch_lease_pub(&self, issue_id: &str) -> Result<()> {
-        let until = fmt_ts(self.now + self.opts.agent_lease);
-        self.conn.execute(
-            "UPDATE claim SET lease_until = max(lease_until, ?3)
-             WHERE issue_id = ?1 AND actor = ?2 AND released_at IS NULL AND lease_until IS NOT NULL",
-            params![issue_id, self.actor_str(), until],
-        )?;
-        Ok(())
-    }
-
-    fn agent_gate(&self, issue_id: &str, claim: &Option<Claim>) -> Result<()> {
-        if self.actor().is_agent() && claim.as_ref().is_none_or(|c| c.actor != self.actor_str()) {
-            return Err(Error::new(
-                Code::NotPermitted,
-                "agent actors may only write to issues they currently claim",
-            )
-            .with_issue(issue_id));
-        }
-        Ok(())
-    }
-
-    /// Change field values only.
-    pub fn edit(&self, id: &str, assigns: &[Assign]) -> Result<Map<String, Value>> {
+    /// Change the authored fields. Returns `{field: {from, to}}`.
+    pub fn edit(&self, id: &str, e: Edit) -> Result<Map<String, Value>> {
         let id = self.resolve_id(id)?;
         let mut issue = self.issue(&id)?;
         let claim = self.active_claim(&id)?;
         self.agent_gate(&id, &claim)?;
-        let ty = self.schema.ty(&issue.ty)?.clone();
-        let before = self.unmet_fields(
-            &issue,
-            &ty,
-            &issue.status.clone(),
-            issue.resolution.clone().as_deref(),
-        );
-        let changes = self.apply_assigns(&mut issue, &ty, assigns)?;
+        let mut changes = Map::new();
+        if let Some(t) = e.title {
+            let t = t.trim().to_string();
+            if t.is_empty() {
+                return Err(Error::new(Code::InvalidField, "the title cannot be empty"));
+            }
+            if t != issue.title {
+                changes.insert("title".into(), json!({"from": issue.title, "to": t}));
+                issue.title = t;
+            }
+        }
+        if let Some(d) = e.description
+            && d != issue.description
+        {
+            changes.insert(
+                "description".into(),
+                json!({"from": issue.description, "to": d}),
+            );
+            issue.description = d;
+        }
+        if let Some(p) = e.priority {
+            let p = check_priority(&p)?;
+            if p != issue.priority {
+                changes.insert("priority".into(), json!({"from": issue.priority, "to": p}));
+                issue.priority = p;
+            }
+        }
+        if let Some(a) = e.agent {
+            let a = a.filter(|a| !a.trim().is_empty());
+            if a != issue.agent {
+                changes.insert("agent".into(), json!({"from": issue.agent, "to": a}));
+                issue.agent = a;
+            }
+        }
         if changes.is_empty() {
             return Ok(changes);
         }
-        let after = self.unmet_fields(
-            &issue,
-            &ty,
-            &issue.status.clone(),
-            issue.resolution.clone().as_deref(),
-        );
-        let newly: Vec<String> = after.into_iter().filter(|f| !before.contains(f)).collect();
-        if !newly.is_empty() {
-            return Err(Error::new(
-                Code::RequirementsUnmet,
-                format!(
-                    "{} is required while the issue is '{}'",
-                    newly.join(", "),
-                    issue.status
-                ),
-            )
-            .with_issue(&id)
-            .with_detail("missing_fields", json!(newly)));
-        }
         self.save_issue(&issue)?;
         self.event(Some(&id), "set", json!({"changes": changes}))?;
-        self.touch_lease_pub(&id)?;
+        self.touch_lease(&id)?;
         Ok(changes)
     }
 
@@ -630,24 +449,25 @@ impl Ctx<'_> {
     // Claims
     // ------------------------------------------------------------------
 
+    /// Open blockers of an issue.
+    pub fn blocked_by(&self, id: &str) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare(
+            "SELECT d.src FROM dep d JOIN issue b ON b.id = d.src
+             WHERE d.dst = ?1 AND b.state <> 'closed' ORDER BY d.src",
+        )?;
+        let v = st
+            .query_map([id], |r| r.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(v)
+    }
+
     pub fn claim(&self, id: &str, opts: ClaimOpts) -> Result<Claim> {
         let id = self.resolve_id(id)?;
         let mut issue = self.issue(&id)?;
-        let ty = self.schema.ty(&issue.ty)?.clone();
         let me = self.actor_str();
         if let Some(obo) = &opts.on_behalf_of {
             self.ensure_actor(&me, Some(obo))?;
         }
-        let Some(first) = ty.first_active().cloned() else {
-            return Err(Error::new(
-                Code::InvalidTransition,
-                format!(
-                    "type '{}' has no intermediate status, so it cannot be claimed",
-                    ty.name
-                ),
-            )
-            .with_issue(&id));
-        };
         let existing = self.active_claim(&id)?;
         let lease = opts.lease.or(if self.actor().is_agent() {
             Some(self.opts.agent_lease)
@@ -655,8 +475,7 @@ impl Ctx<'_> {
             None
         });
         let lease_until = lease.map(|d| fmt_ts(self.now + d));
-        let mut payload = json!({});
-        let from = issue.status.clone();
+        let mut stolen_from = None;
         if let Some(c) = &existing {
             if c.actor == me && !opts.steal {
                 return Ok(c.clone());
@@ -670,52 +489,32 @@ impl Ctx<'_> {
                 .with_detail("claimant", c.actor.clone())
                 .with_hint(format!("trk claim {id} --steal")));
             }
-            self.conn.execute(
-                "UPDATE claim SET released_at = ?2, release_reason = 'stolen' WHERE id = ?1",
-                params![c.id, self.ts()],
-            )?;
-            self.event(Some(&id), "release", json!({"claim": c.id, "claimant": c.actor, "reason": "stolen", "from": from, "to": from}))?;
-            payload["stolen_from"] = json!(c.actor);
-            // Fields may still be supplied with a steal.
-            let changes = self.apply_assigns(&mut issue, &ty, &opts.assigns)?;
-            if !changes.is_empty() {
-                self.save_issue(&issue)?;
-                self.event(Some(&id), "set", json!({"changes": changes}))?;
-            }
+            self.release(c, "stolen", json!({"from": "claimed", "to": "claimed"}))?;
+            stolen_from = Some(c.actor.clone());
         } else {
-            if issue.status_category != "open" {
+            if issue.state != State::Open {
+                let hint = match issue.state {
+                    State::Waiting | State::Closed => format!("trk reopen {id}"),
+                    _ => String::new(),
+                };
+                let mut e = self.invalid_state(&issue, "only open issues can be claimed");
+                if !hint.is_empty() {
+                    e = e.with_hint(hint);
+                }
+                return Err(e);
+            }
+            let blockers = self.blocked_by(&id)?;
+            if !blockers.is_empty() {
                 return Err(Error::new(
-                    Code::InvalidTransition,
-                    format!(
-                        "{id} is '{}'; only open issues can be claimed",
-                        issue.status
-                    ),
+                    Code::Blocked,
+                    format!("{id} is blocked by {}", blockers.join(", ")),
                 )
-                .with_issue(&id));
+                .with_issue(&id)
+                .with_detail("blocked_by", json!(blockers))
+                .with_hint("close its blockers first, or remove the edge with `trk dep rm`"));
             }
-            let mut assigns = opts.assigns.clone();
-            if let Some(b) = &opts.branch
-                && ty.type_field("branch").is_some()
-                && !is_present(issue.get("branch").as_ref())
-                && !assigns.iter().any(|a| a.field == "branch")
-            {
-                assigns.push(Assign::set("branch", b.clone()));
-            }
-            let changes = self.apply_assigns(&mut issue, &ty, &assigns)?;
-            let u = self.unmet(&issue, &ty, &first.name, None)?;
-            if !u.is_empty() {
-                return Err(self.unmet_error(
-                    u,
-                    &issue,
-                    format!("{} cannot enter '{}'", ty.name, first.name),
-                    format!("trk claim {id}"),
-                ));
-            }
-            issue.status = first.name.clone();
+            issue.state = State::Claimed;
             self.save_issue(&issue)?;
-            if !changes.is_empty() {
-                self.event(Some(&id), "set", json!({"changes": changes}))?;
-            }
         }
         self.conn.execute(
             "INSERT INTO claim (issue_id, actor, claimed_at, lease_until, worktree, host, agent, terminal)
@@ -724,11 +523,11 @@ impl Ctx<'_> {
         )?;
         let claim_id = self.conn.last_insert_rowid();
         let mut p = json!({
-            "claim": claim_id, "from": from, "to": issue.status, "lease_until": lease_until,
-            "worktree": opts.worktree, "host": opts.host, "agent": opts.agent, "terminal": opts.terminal,
+            "claim": claim_id, "lease_until": lease_until, "worktree": opts.worktree,
+            "host": opts.host, "agent": opts.agent, "terminal": opts.terminal,
         });
-        if let Some(s) = payload.get("stolen_from") {
-            p["stolen_from"] = s.clone();
+        if let Some(s) = stolen_from {
+            p["stolen_from"] = json!(s);
         }
         self.event(Some(&id), "claim", p)?;
         self.active_claim(&id)?
@@ -738,14 +537,16 @@ impl Ctx<'_> {
     /// Bind the launching claimant's session after the terminal address is known.
     pub fn bind_terminal(&self, id: &str, terminal: &str) -> Result<()> {
         let id = self.resolve_id(id)?;
-        let claim = self.active_claim(&id)?.ok_or_else(|| {
-            Error::new(Code::InvalidTransition, format!("{id} is not claimed")).with_issue(&id)
-        })?;
+        let issue = self.issue(&id)?;
+        let claim = self
+            .active_claim(&id)?
+            .ok_or_else(|| self.invalid_state(&issue, "it is not claimed"))?;
         if claim.actor != self.actor_str() {
-            return Err(
-                Error::new(Code::NotClaimant, format!("{id} is claimed by {}", claim.actor))
-                    .with_issue(&id),
-            );
+            return Err(Error::new(
+                Code::NotClaimant,
+                format!("{id} is claimed by {}", claim.actor),
+            )
+            .with_issue(&id));
         }
         self.conn.execute(
             "UPDATE claim SET terminal = ?2 WHERE id = ?1",
@@ -761,40 +562,31 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    fn to_open(&self, issue: &mut Issue, claim: &Claim, extra: Value) -> Result<()> {
+        issue.state = State::Open;
+        self.save_issue(issue)?;
+        let mut p = json!({"from": "claimed", "to": "open"});
+        if let (Value::Object(p), Value::Object(e)) = (&mut p, extra) {
+            p.extend(e);
+        }
+        self.release(claim, "unclaimed", p)
+    }
+
     /// Release the active claim and return the issue to open.
     pub fn unclaim(&self, id: &str, force: bool, note: Option<&str>) -> Result<()> {
         let id = self.resolve_id(id)?;
         let mut issue = self.issue(&id)?;
         let claim = self.active_claim(&id)?;
         let Some(c) = claim.clone() else {
-            return Err(
-                Error::new(Code::InvalidTransition, format!("{id} is not claimed")).with_issue(&id),
-            );
+            return Err(self.invalid_state(&issue, "it is not claimed"));
         };
         self.agent_gate(&id, &claim)?;
         let forced = self.claimant_check(&issue, &claim, force, "unclaim")?;
-        let ty = self.schema.ty(&issue.ty)?.clone();
-        let open = ty
-            .open_status()
-            .map(|s| s.name.clone())
-            .unwrap_or_else(|| "open".into());
-        let from = issue.status.clone();
         // The note goes first: it is written while the claim still exists.
         if let Some(n) = note {
             self.note(&id, n, None, false)?;
         }
-        self.conn.execute(
-            "UPDATE claim SET released_at = ?2, release_reason = 'unclaimed' WHERE id = ?1",
-            params![c.id, self.ts()],
-        )?;
-        issue.status = open.clone();
-        self.save_issue(&issue)?;
-        self.event(
-            Some(&id),
-            "release",
-            json!({"claim": c.id, "claimant": c.actor, "reason": "unclaimed", "from": from, "to": open, "forced": forced}),
-        )?;
-        Ok(())
+        self.to_open(&mut issue, &c, json!({"forced": forced}))
     }
 
     /// Release a claim on behalf of `trk reap`.
@@ -803,35 +595,16 @@ impl Ctx<'_> {
             .active_claim(id)?
             .ok_or_else(|| not_found("active claim on", id))?;
         let mut issue = self.issue(id)?;
-        let ty = self.schema.ty(&issue.ty)?.clone();
-        let open = ty
-            .open_status()
-            .map(|s| s.name.clone())
-            .unwrap_or_else(|| "open".into());
-        let from = issue.status.clone();
         self.note(id, why, None, false)?;
-        self.conn.execute(
-            "UPDATE claim SET released_at = ?2, release_reason = 'unclaimed' WHERE id = ?1",
-            params![claim.id, self.ts()],
-        )?;
-        issue.status = open.clone();
-        self.save_issue(&issue)?;
-        self.event(
-            Some(id),
-            "release",
-            json!({"claim": claim.id, "claimant": claim.actor, "reason": "unclaimed", "reaped": true, "from": from, "to": open}),
-        )?;
-        Ok(())
+        self.to_open(&mut issue, &claim, json!({"reaped": true}))
     }
 
     pub fn renew(&self, id: &str, lease: Option<jiff::SignedDuration>) -> Result<Claim> {
         let id = self.resolve_id(id)?;
-        let claim = self.active_claim(&id)?;
-        let Some(c) = claim else {
-            return Err(
-                Error::new(Code::InvalidTransition, format!("{id} is not claimed")).with_issue(&id),
-            );
-        };
+        let issue = self.issue(&id)?;
+        let c = self
+            .active_claim(&id)?
+            .ok_or_else(|| self.invalid_state(&issue, "it is not claimed"))?;
         if c.actor != self.actor_str() {
             return Err(
                 Error::new(Code::NotClaimant, format!("{id} is claimed by {}", c.actor))
@@ -854,167 +627,277 @@ impl Ctx<'_> {
     }
 
     // ------------------------------------------------------------------
-    // Move / close
+    // Close / wait / reopen
     // ------------------------------------------------------------------
 
-    pub fn move_to(&self, id: &str, to: &str, assigns: &[Assign], force: bool) -> Result<()> {
+    /// Close from open, claimed or waiting.
+    pub fn close(&self, id: &str, reason: &str, note: Option<&str>, force: bool) -> Result<()> {
         let id = self.resolve_id(id)?;
         let mut issue = self.issue(&id)?;
-        let ty = self.schema.ty(&issue.ty)?.clone();
         let claim = self.active_claim(&id)?;
         self.agent_gate(&id, &claim)?;
-        let target = ty.status(to).ok_or_else(|| {
-            Error::new(
-                Code::InvalidTransition,
-                format!("'{to}' is not a status of {}", ty.name),
-            )
-            .with_issue(&id)
-            .with_hint(format!(
-                "statuses: {}",
-                ty.statuses
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ))
-        })?;
-        match target.category {
-            Category::Open => {
-                return Err(Error::new(
-                    Code::InvalidTransition,
-                    "returning to open releases the claim",
-                )
-                .with_issue(&id)
-                .with_hint(format!("trk unclaim {id}")));
-            }
-            Category::Closed => {
-                return Err(
-                    Error::new(Code::InvalidTransition, "closing needs a resolution")
-                        .with_issue(&id)
-                        .with_hint(format!(
-                            "trk close {id} --resolution <{}>",
-                            ty.resolutions.join("|")
-                        )),
-                );
-            }
-            Category::Active => {}
+        if issue.is_closed() {
+            return Err(self.invalid_state(&issue, "it is already closed"));
         }
-        if claim.is_none() {
-            return Err(
-                Error::new(Code::InvalidTransition, format!("{id} is not claimed"))
-                    .with_issue(&id)
-                    .with_hint(format!("trk claim {id}")),
-            );
-        }
-        let forced = self.claimant_check(&issue, &claim, force, "move")?;
-        if !ty.has_transition(&issue.status, to) {
-            let allowed = ty
-                .transitions
-                .get(&issue.status)
-                .cloned()
-                .unwrap_or_default();
-            return Err(Error::new(
-                Code::InvalidTransition,
-                format!("{}: no transition {} → {to}", ty.name, issue.status),
-            )
-            .with_issue(&id)
-            .with_detail("allowed", json!(allowed)));
-        }
-        let changes = self.apply_assigns(&mut issue, &ty, assigns)?;
-        let u = self.unmet(&issue, &ty, to, None)?;
-        if !u.is_empty() {
-            return Err(self.unmet_error(
-                u,
-                &issue,
-                format!("{} cannot enter '{to}'", ty.name),
-                format!("trk move {id} {to}"),
-            ));
-        }
-        let from = issue.status.clone();
-        issue.status = to.to_string();
-        self.save_issue(&issue)?;
-        if !changes.is_empty() {
-            self.event(Some(&id), "set", json!({"changes": changes}))?;
-        }
-        self.event(
-            Some(&id),
-            "move",
-            json!({"from": from, "to": to, "forced": forced}),
-        )?;
-        self.touch_lease_pub(&id)?;
-        Ok(())
-    }
-
-    pub fn close(&self, id: &str, resolution: &str, assigns: &[Assign], force: bool) -> Result<()> {
-        let id = self.resolve_id(id)?;
-        let mut issue = self.issue(&id)?;
-        let ty = self.schema.ty(&issue.ty)?.clone();
-        let claim = self.active_claim(&id)?;
-        self.agent_gate(&id, &claim)?;
-        if issue.status_category == "closed" {
-            return Err(
-                Error::new(Code::InvalidTransition, format!("{id} is already closed"))
-                    .with_issue(&id),
-            );
-        }
-        if !ty.resolutions.iter().any(|r| r == resolution) {
+        if !CLOSE_REASONS.contains(&reason) {
             return Err(Error::new(
                 Code::InvalidField,
-                format!("'{resolution}' is not a resolution of {}", ty.name),
+                format!("invalid close reason '{reason}'"),
             )
             .with_issue(&id)
-            .with_detail("allowed", json!(ty.resolutions)));
-        }
-        let closed = ty
-            .closed_status()
-            .cloned()
-            .ok_or_else(|| Error::new(Code::SchemaInvalid, "type has no closed status"))?;
-        if !ty.has_transition(&issue.status, &closed.name) {
-            return Err(Error::new(
-                Code::InvalidTransition,
-                format!(
-                    "{}: no transition {} → {}",
-                    ty.name, issue.status, closed.name
-                ),
-            )
-            .with_issue(&id));
+            .with_detail("allowed", json!(CLOSE_REASONS)));
         }
         let forced = self.claimant_check(&issue, &claim, force, "close")?;
-        let changes = self.apply_assigns(&mut issue, &ty, assigns)?;
-        let u = self.unmet(&issue, &ty, &closed.name, Some(resolution))?;
-        if !u.is_empty() {
-            return Err(self.unmet_error(
-                u,
-                &issue,
-                format!("{} cannot close as '{resolution}'", ty.name),
-                format!("trk close {id} --resolution {resolution}"),
-            ));
+        if let Some(n) = note.filter(|n| !n.trim().is_empty()) {
+            self.note(&id, n, None, false)?;
         }
-        let from = issue.status.clone();
-        issue.status = closed.name.clone();
-        issue.resolution = Some(resolution.to_string());
+        let from = issue.state;
+        issue.state = State::Closed;
+        issue.close_reason = Some(reason.to_string());
         issue.closed_at = Some(self.ts());
+        Self::clear_waiting(&mut issue);
         self.save_issue(&issue)?;
-        if !changes.is_empty() {
-            self.event(Some(&id), "set", json!({"changes": changes}))?;
-        }
         self.event(
             Some(&id),
             "close",
-            json!({"from": from, "resolution": resolution, "forced": forced}),
+            json!({"from": from, "reason": reason, "forced": forced}),
         )?;
         if let Some(c) = claim {
-            self.conn.execute(
-                "UPDATE claim SET released_at = ?2, release_reason = 'closed' WHERE id = ?1",
-                params![c.id, self.ts()],
-            )?;
-            self.event(
-                Some(&id),
-                "release",
-                json!({"claim": c.id, "claimant": c.actor, "reason": "closed"}),
-            )?;
+            self.release(&c, "closed", json!({}))?;
         }
         Ok(())
+    }
+
+    /// End a session without closing: the issue waits for `check` to pass,
+    /// or for a human when there is no check. On an issue that is already
+    /// waiting this replaces the check, interval and reason.
+    pub fn wait(&self, id: &str, opts: WaitOpts) -> Result<()> {
+        let id = self.resolve_id(id)?;
+        let mut issue = self.issue(&id)?;
+        let claim = self.active_claim(&id)?;
+        self.agent_gate(&id, &claim)?;
+        let check = opts
+            .check
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty());
+        let reason = opts
+            .reason
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty());
+        if check.is_none() && reason.is_none() {
+            return Err(Error::new(
+                Code::InvalidField,
+                "waiting needs a check command, a reason, or both",
+            )
+            .with_issue(&id)
+            .with_hint(format!(
+                "trk wait {id} --check 'CMD' [--every 5m] [--reason TEXT]"
+            )));
+        }
+        if let Some(d) = opts.interval
+            && d.as_secs() <= 0
+        {
+            return Err(Error::new(
+                Code::InvalidField,
+                "the check interval must be positive",
+            ));
+        }
+        let interval = match (&check, opts.interval) {
+            (Some(_), Some(d)) => Some(d.as_secs()),
+            (Some(_), None) => Some(self.opts.check_interval.as_secs()),
+            (None, _) => None,
+        };
+        let from = issue.state;
+        let forced = match from {
+            State::Claimed => self.claimant_check(&issue, &claim, opts.force, "set waiting")?,
+            State::Waiting => false,
+            _ => {
+                return Err(self
+                    .invalid_state(&issue, "only a claimed issue can start waiting")
+                    .with_hint(format!("trk claim {id}")));
+            }
+        };
+        if from == State::Claimed {
+            issue.wait_cwd = claim.as_ref().and_then(|c| c.worktree.clone());
+        }
+        issue.state = State::Waiting;
+        issue.waiting_reason = reason;
+        issue.waiting_check = check;
+        issue.check_interval = interval;
+        // The first check is due at once: a merge should not wait an interval.
+        issue.next_check_at = issue.waiting_check.as_ref().map(|_| self.ts());
+        issue.last_check_at = None;
+        issue.last_check_exit = None;
+        self.save_issue(&issue)?;
+        self.event(
+            Some(&id),
+            "wait",
+            json!({
+                "from": from, "reason": issue.waiting_reason, "check": issue.waiting_check,
+                "interval": interval, "cwd": issue.wait_cwd, "forced": forced,
+            }),
+        )?;
+        if let Some(c) = claim {
+            self.release(&c, "waiting", json!({}))?;
+        }
+        Ok(())
+    }
+
+    /// Return a waiting or closed issue to open.
+    pub fn reopen(&self, id: &str, note: Option<&str>) -> Result<()> {
+        let id = self.resolve_id(id)?;
+        let mut issue = self.issue(&id)?;
+        self.agent_gate(&id, &None)?;
+        if !matches!(issue.state, State::Waiting | State::Closed) {
+            return Err(self.invalid_state(&issue, "only waiting or closed issues can be reopened"));
+        }
+        if let Some(n) = note.filter(|n| !n.trim().is_empty()) {
+            self.note(&id, n, None, false)?;
+        }
+        let from = issue.state;
+        issue.state = State::Open;
+        issue.close_reason = None;
+        issue.closed_at = None;
+        Self::clear_waiting(&mut issue);
+        self.save_issue(&issue)?;
+        self.event(Some(&id), "reopen", json!({"from": from}))?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // The waiting queue
+    // ------------------------------------------------------------------
+
+    /// Waiting issues with a check, in the order `trk check` runs them:
+    /// priority, then due time. `all` ignores the due time.
+    pub fn check_queue(&self, all: bool) -> Result<Vec<Issue>> {
+        let mut st = self.conn.prepare(&format!(
+            "SELECT {ISSUE_COLS} FROM issue i
+             WHERE i.state = 'waiting' AND i.waiting_check IS NOT NULL
+               AND (?1 OR i.next_check_at IS NULL OR i.next_check_at <= ?2)
+             ORDER BY i.priority, i.next_check_at, i.id"
+        ))?;
+        let v = st
+            .query_map(params![all, self.ts()], row_to_issue)?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(v)
+    }
+
+    /// The pid, host and start time of the running `trk check`, if any.
+    pub fn check_lock(&self) -> Result<Option<(i64, Option<String>, String)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT pid, host, started_at FROM check_lock WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?)
+    }
+
+    /// Take the check lock, replacing whoever held it.
+    pub fn check_lock_take(&self, pid: i64, host: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO check_lock (id, pid, host, started_at) VALUES (1, ?1, ?2, ?3)",
+            params![pid, host, self.ts()],
+        )?;
+        Ok(())
+    }
+
+    pub fn check_lock_release(&self, pid: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM check_lock WHERE id = 1 AND pid = ?1", [pid])?;
+        Ok(())
+    }
+
+    /// Record one run of an issue's check. `check` is the command that ran:
+    /// if the issue is no longer waiting on exactly that command, a human
+    /// changed it meanwhile and the run is dropped.
+    pub fn check_record(&self, id: &str, check: &str, run: &CheckRun) -> Result<CheckResult> {
+        let mut issue = self.issue(id)?;
+        if issue.state != State::Waiting || issue.waiting_check.as_deref() != Some(check) {
+            return Ok(CheckResult::Skipped);
+        }
+        if run.exit == Some(CHECK_RETRY_EXIT) && !run.timed_out {
+            let every = issue
+                .check_interval
+                .unwrap_or_else(|| self.opts.check_interval.as_secs());
+            issue.last_check_at = Some(self.ts());
+            issue.last_check_exit = Some(i64::from(CHECK_RETRY_EXIT));
+            issue.next_check_at = Some(fmt_ts(self.now + jiff::SignedDuration::from_secs(every)));
+            // Not an event: a long wait would otherwise flood the history.
+            // `updated_at` is left alone for the same reason.
+            self.conn.execute(
+                "UPDATE issue SET last_check_at = ?2, last_check_exit = ?3, next_check_at = ?4
+                 WHERE id = ?1",
+                params![
+                    id,
+                    issue.last_check_at,
+                    issue.last_check_exit,
+                    issue.next_check_at
+                ],
+            )?;
+            return Ok(CheckResult::Retry);
+        }
+        let reason = issue.waiting_reason.clone();
+        if run.exit == Some(0) && !run.timed_out {
+            issue.state = State::Closed;
+            issue.close_reason = Some("done".into());
+            issue.closed_at = Some(self.ts());
+            Self::clear_waiting(&mut issue);
+            self.save_issue(&issue)?;
+            self.event(
+                Some(id),
+                "check",
+                json!({"result": "passed", "exit": 0, "check": check, "reason": reason}),
+            )?;
+            self.event(
+                Some(id),
+                "close",
+                json!({"from": "waiting", "reason": "done", "by_check": true}),
+            )?;
+            return Ok(CheckResult::Passed);
+        }
+        let what = if run.timed_out {
+            "timed out".to_string()
+        } else {
+            match run.exit {
+                Some(c) => format!("exited with {c}"),
+                None => "did not run to completion".to_string(),
+            }
+        };
+        let out = tail(run.output.trim_end(), CHECK_OUTPUT_TAIL);
+        let mut body = format!("The waiting check {what}; the issue is open again.\n");
+        if let Some(r) = &reason {
+            body.push_str(&format!("\nIt was waiting for: {r}\n"));
+        }
+        if let Some(cwd) = &issue.wait_cwd {
+            body.push_str(&format!("\nDirectory: `{cwd}`\n"));
+        }
+        body.push_str(&format!("\nCheck:\n\n```sh\n{check}\n```\n"));
+        if out.is_empty() {
+            body.push_str("\nIt printed nothing.\n");
+        } else {
+            body.push_str(&format!("\nOutput:\n\n```\n{out}\n```\n"));
+        }
+        self.note(id, &body, None, false)?;
+        issue.state = State::Open;
+        Self::clear_waiting(&mut issue);
+        self.save_issue(&issue)?;
+        self.event(
+            Some(id),
+            "check",
+            json!({
+                "result": "failed", "exit": run.exit, "timed_out": run.timed_out,
+                "check": check, "reason": reason,
+            }),
+        )?;
+        self.event(
+            Some(id),
+            "reopen",
+            json!({"from": "waiting", "by_check": true}),
+        )?;
+        Ok(CheckResult::Failed)
     }
 
     // ------------------------------------------------------------------
@@ -1061,7 +944,7 @@ impl Ctx<'_> {
             "UPDATE issue SET updated_at = ?2 WHERE id = ?1",
             params![id, self.ts()],
         )?;
-        self.touch_lease_pub(&id)?;
+        self.touch_lease(&id)?;
         Ok(seq)
     }
 
@@ -1091,36 +974,20 @@ impl Ctx<'_> {
     }
 
     // ------------------------------------------------------------------
-    // Dependencies
+    // Dependencies: `blocker` blocks `blocked`
     // ------------------------------------------------------------------
 
-    fn dep_insert(&self, src: &str, kind: &str, dst: &str) -> Result<bool> {
-        let k = self.schema.dep_kind(kind)?.clone();
-        if src == dst {
-            return Err(Error::new(Code::Cycle, "an issue cannot depend on itself"));
+    fn dep_insert(&self, blocker: &str, blocked: &str) -> Result<bool> {
+        if blocker == blocked {
+            return Err(Error::new(Code::Cycle, "an issue cannot block itself"));
         }
-        let s = self.issue(src)?;
-        let d = self.issue(dst)?;
-        if !k.allows(&s.ty, &d.ty) {
-            return Err(Error::new(
-                Code::InvalidField,
-                format!("'{kind}' is not allowed from {} to {}", s.ty, d.ty),
-            )
-            .with_detail(
-                "allowed",
-                json!(
-                    k.pairs
-                        .iter()
-                        .map(|(a, b)| format!("{a} → {b}"))
-                        .collect::<Vec<_>>()
-                ),
-            ));
-        }
+        self.issue(blocker)?;
+        self.issue(blocked)?;
         let exists: bool = self
             .conn
             .query_row(
-                "SELECT 1 FROM dep WHERE src = ?1 AND dst = ?2 AND kind = ?3",
-                params![src, dst, kind],
+                "SELECT 1 FROM dep WHERE src = ?1 AND dst = ?2",
+                params![blocker, blocked],
                 |_| Ok(true),
             )
             .optional()?
@@ -1128,44 +995,43 @@ impl Ctx<'_> {
         if exists {
             return Ok(false);
         }
-        if k.acyclic {
-            let cyc: bool = self
-                .conn
-                .query_row(
-                    "WITH RECURSIVE reach(id) AS (
-                       SELECT ?2
-                       UNION
-                       SELECT d.dst FROM dep d JOIN reach r ON d.src = r.id WHERE d.kind = ?3
-                     )
-                     SELECT 1 FROM reach WHERE id = ?1 LIMIT 1",
-                    params![src, dst, kind],
-                    |_| Ok(true),
-                )
-                .optional()?
-                .unwrap_or(false);
-            if cyc {
-                return Err(Error::new(
-                    Code::Cycle,
-                    format!("{src} {kind} {dst} would create a cycle"),
-                ));
-            }
+        // Refused if the blocker is already reachable from the blocked issue.
+        let cyc: bool = self
+            .conn
+            .query_row(
+                "WITH RECURSIVE reach(id) AS (
+                   SELECT ?2
+                   UNION
+                   SELECT d.dst FROM dep d JOIN reach r ON d.src = r.id
+                 )
+                 SELECT 1 FROM reach WHERE id = ?1 LIMIT 1",
+                params![blocker, blocked],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if cyc {
+            return Err(Error::new(
+                Code::Cycle,
+                format!("{blocker} blocks {blocked} would create a cycle"),
+            ));
         }
         self.conn.execute(
-            "INSERT INTO dep (src, dst, kind, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![src, dst, kind, self.actor_str(), self.ts()],
+            "INSERT INTO dep (src, dst, created_by, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![blocker, blocked, self.actor_str(), self.ts()],
         )?;
-        let p = json!({"src": src, "kind": kind, "dst": dst});
-        self.event(Some(src), "dep_add", p.clone())?;
-        self.event(Some(dst), "dep_add", p)?;
+        let p = json!({"blocker": blocker, "blocked": blocked});
+        self.event(Some(blocker), "dep_add", p.clone())?;
+        self.event(Some(blocked), "dep_add", p)?;
         self.conn.execute(
             "UPDATE issue SET updated_at = ?3 WHERE id IN (?1, ?2)",
-            params![src, dst, self.ts()],
+            params![blocker, blocked, self.ts()],
         )?;
         Ok(true)
     }
 
-    fn dep_authorize(&self, src: &str, dst: &str) -> Result<()> {
-        if self.actor().is_agent() && !self.is_claimed_by_me(src)? && !self.is_claimed_by_me(dst)? {
+    fn dep_authorize(&self, a: &str, b: &str) -> Result<()> {
+        if self.actor().is_agent() && !self.is_claimed_by_me(a)? && !self.is_claimed_by_me(b)? {
             return Err(Error::new(
                 Code::NotPermitted,
                 "agent actors may only add or remove edges touching an issue they claim",
@@ -1174,37 +1040,37 @@ impl Ctx<'_> {
         Ok(())
     }
 
-    pub fn dep_add(&self, src: &str, kind: &str, dst: &str) -> Result<bool> {
-        let src = self.resolve_id(src)?;
-        let dst = self.resolve_id(dst)?;
-        self.dep_authorize(&src, &dst)?;
-        let added = self.dep_insert(&src, kind, &dst)?;
-        self.touch_lease_pub(&src)?;
-        self.touch_lease_pub(&dst)?;
+    /// `blocker` blocks `blocked`. Returns false when the edge already existed.
+    pub fn dep_add(&self, blocker: &str, blocked: &str) -> Result<bool> {
+        let blocker = self.resolve_id(blocker)?;
+        let blocked = self.resolve_id(blocked)?;
+        self.dep_authorize(&blocker, &blocked)?;
+        let added = self.dep_insert(&blocker, &blocked)?;
+        self.touch_lease(&blocker)?;
+        self.touch_lease(&blocked)?;
         Ok(added)
     }
 
-    pub fn dep_rm(&self, src: &str, kind: &str, dst: &str) -> Result<()> {
-        let src = self.resolve_id(src)?;
-        let dst = self.resolve_id(dst)?;
-        self.schema.dep_kind(kind)?;
-        self.dep_authorize(&src, &dst)?;
+    pub fn dep_rm(&self, blocker: &str, blocked: &str) -> Result<()> {
+        let blocker = self.resolve_id(blocker)?;
+        let blocked = self.resolve_id(blocked)?;
+        self.dep_authorize(&blocker, &blocked)?;
         let n = self.conn.execute(
-            "DELETE FROM dep WHERE src = ?1 AND dst = ?2 AND kind = ?3",
-            params![src, dst, kind],
+            "DELETE FROM dep WHERE src = ?1 AND dst = ?2",
+            params![blocker, blocked],
         )?;
         if n == 0 {
             return Err(Error::new(
                 Code::NotFound,
-                format!("no edge {src} {kind} {dst}"),
+                format!("{blocker} does not block {blocked}"),
             ));
         }
-        let p = json!({"src": src, "kind": kind, "dst": dst});
-        self.event(Some(&src), "dep_rm", p.clone())?;
-        self.event(Some(&dst), "dep_rm", p)?;
+        let p = json!({"blocker": blocker, "blocked": blocked});
+        self.event(Some(&blocker), "dep_rm", p.clone())?;
+        self.event(Some(&blocked), "dep_rm", p)?;
         self.conn.execute(
             "UPDATE issue SET updated_at = ?3 WHERE id IN (?1, ?2)",
-            params![src, dst, self.ts()],
+            params![blocker, blocked, self.ts()],
         )?;
         Ok(())
     }

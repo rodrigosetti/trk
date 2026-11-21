@@ -18,90 +18,91 @@ fn names(tools: &[trk_agent::ToolDef]) -> Vec<&str> {
 }
 
 #[test]
-fn implementer_tools_for_code_change() {
-    let schema = seed().compile().unwrap();
+fn every_agent_gets_the_six_tools_unless_it_narrows_them() {
     let a = load_agent(&seed(), "implementer").unwrap();
-    let tools = agent_tools(&schema, &schema.types["code-change"], &a);
+    let tools = agent_tools(&a);
     assert_eq!(
         names(&tools),
         [
             "get_task",
             "add_note",
-            "add_link",
             "report_followup",
             "hand_back",
-            "resume_work",
-            "submit_for_review",
-            "close_as_abandoned",
-            "set_branch",
-            "set_pr_url",
-            "request_review_followup"
+            "close",
+            "wait"
         ]
     );
-    let submit = tools
-        .iter()
-        .find(|t| t.name == "submit_for_review")
-        .unwrap();
+    let wait = tools.iter().find(|t| t.name == "wait").unwrap();
+    assert_eq!(wait.input_schema["required"], serde_json::json!(["reason"]));
+    assert!(wait.description.contains("exit 75"), "{}", wait.description);
+    let close = tools.iter().find(|t| t.name == "close").unwrap();
     assert_eq!(
-        submit.input_schema["required"],
-        serde_json::json!(["pr_url"])
+        close.input_schema["properties"]["reason"]["enum"],
+        serde_json::json!(["done", "abandoned"])
     );
-    assert_eq!(submit.input_schema["properties"]["pr_url"]["format"], "uri");
-    assert!(
-        submit.description.starts_with("Call after the PR is open"),
-        "override applied"
-    );
-    let followup = tools
-        .iter()
-        .find(|t| t.name == "request_review_followup")
-        .unwrap();
-    assert_eq!(
-        followup.input_schema["required"],
-        serde_json::json!(["title", "context"])
-    );
+    let mut narrow = a.clone();
+    narrow.trk_tools.include = vec!["get_*".into(), "close".into(), "nope".into()];
+    assert_eq!(names(&agent_tools(&narrow)), ["get_task", "close"]);
+    assert_eq!(trk_agent::tools::unmatched_includes(&narrow), ["nope"]);
 }
 
 #[test]
-fn close_tools_carry_requirements() {
-    let schema = seed().compile().unwrap();
-    let cat = trk_agent::catalogue(&schema, &schema.types["decision"]);
-    let decided = cat.iter().find(|t| t.name == "close_as_decided").unwrap();
-    assert_eq!(
-        decided.input_schema["required"],
-        serde_json::json!(["record_url", "outcome", "chosen", "rationale", "deciders"])
-    );
+fn a_broken_agent_file_does_not_stop_the_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join("agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(agents.join("good.toml"), "name = \"good\"\n").unwrap();
+    std::fs::write(
+        agents.join("old.toml"),
+        "name = \"old\"\n[trk_tools.composed.x]\ndescription = \"gone\"\n",
+    )
+    .unwrap();
+    let cfg = ConfigDir::new(dir.path());
+    assert_eq!(load_agent(&cfg, "good").unwrap().name, "good");
+    assert!(load_agent(&cfg, "old").is_err());
+    let d = trk_agent::check::check_agents(&cfg, &UserConfig::default());
     assert!(
-        decided.description.contains("closed as approved"),
-        "gate is described: {}",
-        decided.description
-    );
-    let superseded = cat
-        .iter()
-        .find(|t| t.name == "close_as_superseded")
-        .unwrap();
-    assert!(
-        superseded.input_schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("supersedes"))
-    );
-    let research = trk_agent::catalogue(&schema, &schema.types["research"]);
-    let conf = research
-        .iter()
-        .find(|t| t.name == "set_confidence")
-        .unwrap();
-    assert_eq!(
-        conf.input_schema["properties"]["value"]["enum"],
-        serde_json::json!(["low", "medium", "high"])
+        d.iter()
+            .any(|x| x.file.as_deref() == Some("agents/old.toml"))
     );
 }
 
 #[test]
 fn seed_agents_check_clean() {
-    let schema = seed().compile().unwrap();
-    let d = trk_agent::check::check_agents(&seed(), &schema, &user_config());
+    let d = trk_agent::check::check_agents(&seed(), &user_config());
     let errors: Vec<_> = d.iter().filter(|x| x.level == Level::Error).collect();
     assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
+fn the_briefing_carries_description_notes_and_blockers() {
+    let a = load_agent(&seed(), "implementer").unwrap();
+    let tools = agent_tools(&a);
+    let issue = serde_json::json!({
+        "id": "orch-abc", "project": "orch", "title": "Add leases", "priority": "P1",
+        "description": "Claims need leases.", "state": "claimed",
+        "notes": [{"at": "2026-11-20T10:00:00Z", "actor": "human:a@b.c", "body": "The waiting check exited with 1"}],
+        "deps": {"blocked_by": [], "blocks": [{"id": "orch-m1", "state": "open", "title": "MVP"}]},
+    });
+    let input = trk_agent::prompt::PromptInput {
+        issue: &issue,
+        agent: &a,
+        tools: &tools,
+        worktree: Some("/wt/orch-abc"),
+        actor: "agent:omp:u1",
+        harness: Some("omp"),
+    };
+    let rules = trk_agent::prompt::instructions(&seed(), &input).unwrap();
+    assert!(rules.contains("Exit 75: not yet"), "{rules}");
+    assert!(rules.contains("/wt/orch-abc"));
+    let b = trk_agent::prompt::briefing(&seed(), &input, None).unwrap();
+    assert!(b.contains("Claims need leases."), "{b}");
+    assert!(b.contains("The waiting check exited with 1"), "{b}");
+    assert!(b.contains("blocks orch-m1 (open): MVP"), "{b}");
+    assert!(b.contains("priority P1"), "{b}");
+    assert!(!b.contains("## Instructions"));
+    let folded = trk_agent::prompt::briefing(&seed(), &input, Some(&rules)).unwrap();
+    assert!(folded.contains("## Instructions"));
 }
 
 #[test]

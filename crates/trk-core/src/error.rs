@@ -26,7 +26,7 @@ pub struct Coded {
     pub issue: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
-    /// Extra keys merged into the JSON error object (missing_fields, unmet_gates, …).
+    /// Extra keys merged into the JSON error object (claimant, blocked_by, …).
     #[serde(flatten)]
     pub detail: Map<String, Value>,
 }
@@ -41,14 +41,14 @@ pub enum Code {
     NotFound,
     AmbiguousId,
     UnknownRepo,
-    RequirementsUnmet,
     InvalidField,
-    InvalidTransition,
+    InvalidState,
+    Blocked,
     Cycle,
-    SchemaInvalid,
+    ConfigInvalid,
+    OldDatabase,
     ClaimedByOther,
     NotClaimant,
-    GateUnmet,
     Busy,
     NotPermitted,
 }
@@ -63,14 +63,14 @@ impl Code {
             Code::NotFound => "not_found",
             Code::AmbiguousId => "ambiguous_id",
             Code::UnknownRepo => "unknown_repo",
-            Code::RequirementsUnmet => "requirements_unmet",
             Code::InvalidField => "invalid_field",
-            Code::InvalidTransition => "invalid_transition",
+            Code::InvalidState => "invalid_state",
+            Code::Blocked => "blocked",
             Code::Cycle => "cycle",
-            Code::SchemaInvalid => "schema_invalid",
+            Code::ConfigInvalid => "config_invalid",
+            Code::OldDatabase => "old_database",
             Code::ClaimedByOther => "claimed_by_other",
             Code::NotClaimant => "not_claimant",
-            Code::GateUnmet => "gate_unmet",
             Code::Busy => "busy",
             Code::NotPermitted => "not_permitted",
         }
@@ -78,17 +78,13 @@ impl Code {
 
     pub fn exit_code(self) -> i32 {
         match self {
-            Code::Internal | Code::DbCorrupt => 1,
+            Code::Internal | Code::DbCorrupt | Code::OldDatabase => 1,
             Code::BadArgs | Code::BadQuery => 2,
             Code::NotFound | Code::AmbiguousId | Code::UnknownRepo => 3,
-            Code::RequirementsUnmet
-            | Code::InvalidField
-            | Code::InvalidTransition
-            | Code::Cycle
-            | Code::SchemaInvalid => 4,
+            Code::InvalidField | Code::InvalidState | Code::Cycle | Code::ConfigInvalid => 4,
             Code::ClaimedByOther
             | Code::NotClaimant
-            | Code::GateUnmet
+            | Code::Blocked
             | Code::Busy
             | Code::NotPermitted => 5,
         }

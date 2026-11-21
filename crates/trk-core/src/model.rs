@@ -1,7 +1,7 @@
 //! Domain types for rows in the data tables.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::error::{Code, Error, Result};
 
@@ -87,22 +87,66 @@ impl std::fmt::Display for ActorId {
     }
 }
 
+/// The four states of an issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum State {
+    Open,
+    Claimed,
+    Waiting,
+    Closed,
+}
+
+impl State {
+    pub const ALL: [State; 4] = [State::Open, State::Claimed, State::Waiting, State::Closed];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            State::Open => "open",
+            State::Claimed => "claimed",
+            State::Waiting => "waiting",
+            State::Closed => "closed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<State> {
+        State::ALL.into_iter().find(|x| x.as_str() == s)
+    }
+}
+
+impl std::fmt::Display for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+pub const PRIORITIES: [&str; 4] = ["P0", "P1", "P2", "P3"];
+pub const DEFAULT_PRIORITY: &str = "P2";
+pub const CLOSE_REASONS: [&str; 2] = ["done", "abandoned"];
+
+/// Exit code of a waiting check that means "not yet, check again later"
+/// (`EX_TEMPFAIL`). 0 closes the issue; anything else returns it to open.
+pub const CHECK_RETRY_EXIT: i32 = 75;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Issue {
     pub id: String,
     pub project: String,
-    #[serde(rename = "type")]
-    pub ty: String,
+    pub repo_id: Option<i64>,
+    pub state: State,
     pub title: String,
-    pub context: String,
-    pub status: String,
-    pub status_category: String,
-    pub resolution: Option<String>,
-    pub outcome: Option<String>,
-    pub owner: Option<String>,
-    pub links: Vec<Value>,
-    pub tags: Vec<String>,
-    pub fields: Map<String, Value>,
+    pub description: String,
+    pub priority: String,
+    pub agent: Option<String>,
+    pub close_reason: Option<String>,
+    pub waiting_reason: Option<String>,
+    pub waiting_check: Option<String>,
+    /// Seconds between checks.
+    pub check_interval: Option<i64>,
+    pub next_check_at: Option<String>,
+    pub last_check_at: Option<String>,
+    pub last_check_exit: Option<i64>,
+    pub wait_cwd: Option<String>,
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
@@ -110,28 +154,8 @@ pub struct Issue {
 }
 
 impl Issue {
-    /// The value of a shared or type field, as stored.
-    pub fn get(&self, name: &str) -> Option<Value> {
-        match name {
-            "title" => Some(Value::String(self.title.clone())),
-            "context" => Some(Value::String(self.context.clone())),
-            "outcome" => self.outcome.clone().map(Value::String),
-            "owner" => self.owner.clone().map(Value::String),
-            "links" => Some(Value::Array(self.links.clone())),
-            "tags" => Some(Value::Array(
-                self.tags.iter().cloned().map(Value::String).collect(),
-            )),
-            "id" => Some(Value::String(self.id.clone())),
-            "type" => Some(Value::String(self.ty.clone())),
-            "status" => Some(Value::String(self.status.clone())),
-            "resolution" => self.resolution.clone().map(Value::String),
-            "project" => Some(Value::String(self.project.clone())),
-            _ => self.fields.get(name).cloned(),
-        }
-    }
-
     pub fn is_closed(&self) -> bool {
-        self.status_category == "closed"
+        self.state == State::Closed
     }
 }
 
@@ -162,16 +186,13 @@ pub struct Event {
     pub payload: Value,
 }
 
+/// The other end of a `blocks` edge.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Edge {
-    pub kind: String,
     pub id: String,
-    #[serde(rename = "type")]
-    pub ty: String,
-    pub status: String,
-    pub status_category: String,
-    pub resolution: Option<String>,
     pub title: String,
+    pub state: State,
+    pub priority: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

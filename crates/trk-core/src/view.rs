@@ -3,13 +3,11 @@
 
 use std::collections::BTreeMap;
 
-use rusqlite::params;
 use serde_json::{Map, Value, json};
 
 use crate::error::Result;
 use crate::model::*;
 use crate::query;
-use crate::registry::*;
 use crate::store::{CLAIM_COLS, Ctx, ISSUE_COLS, row_to_claim, row_to_issue};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -44,6 +42,13 @@ impl With {
     }
 }
 
+fn rank(priority: &str) -> i64 {
+    priority
+        .strip_prefix('P')
+        .and_then(|r| r.parse().ok())
+        .unwrap_or(2)
+}
+
 impl Ctx<'_> {
     pub fn claim_json(&self, c: &Claim) -> Value {
         json!({
@@ -59,210 +64,74 @@ impl Ctx<'_> {
     }
 
     fn edge_json(e: &Edge) -> Value {
-        json!({
-            "kind": e.kind, "id": e.id, "type": e.ty, "title": e.title,
-            "status": e.status, "status_category": e.status_category, "resolution": e.resolution,
-        })
+        json!({"id": e.id, "title": e.title, "state": e.state, "priority": e.priority})
     }
 
-    /// Fields still missing for each status (and resolution) reachable next.
-    pub fn next_map(&self, issue: &Issue, ty: &TypeDef) -> Result<Value> {
-        let mut targets: Vec<String> = vec![];
-        match ty.category_of(&issue.status) {
-            Some(Category::Open) => {
-                if let Some(a) = ty.first_active() {
-                    targets.push(a.name.clone());
-                }
-                targets.extend(
-                    ty.transitions
-                        .get(&issue.status)
-                        .cloned()
-                        .unwrap_or_default(),
-                );
-            }
-            Some(Category::Active) => {
-                targets.extend(
-                    ty.transitions
-                        .get(&issue.status)
-                        .cloned()
-                        .unwrap_or_default(),
-                );
-            }
-            _ => {}
-        }
-        let mut out = Map::new();
-        for t in targets {
-            if out.contains_key(&t) {
-                continue;
-            }
-            match ty.category_of(&t) {
-                Some(Category::Active) => {
-                    let u = self.unmet(issue, ty, &t, None)?;
-                    let mut m = u.fields.clone();
-                    m.extend(u.edges.iter().map(|e| format!("edge:{e}")));
-                    out.insert(t, json!(m));
-                }
-                Some(Category::Closed) => {
-                    let mut per = Map::new();
-                    for r in &ty.resolutions {
-                        let u = self.unmet(issue, ty, &t, Some(r))?;
-                        let mut m = u.fields.clone();
-                        m.extend(u.edges.iter().map(|e| format!("edge:{e}")));
-                        per.insert(r.clone(), json!(m));
-                    }
-                    out.insert(t, Value::Object(per));
-                }
-                _ => {}
-            }
-        }
-        Ok(Value::Object(out))
-    }
-
-    /// Unmet gates on statuses ahead of the current one (not counting
-    /// blocking kinds, which are reported as `blocked_by`).
-    pub fn gates_unmet(&self, issue: &Issue, ty: &TypeDef) -> Result<Vec<Value>> {
-        if issue.is_closed() {
-            return Ok(vec![]);
-        }
-        let mut out = vec![];
-        let mut seen = std::collections::BTreeSet::new();
-        for r in &ty.requirements {
-            let ReqKind::InEdgesClosed { dep_kind, .. } = &r.kind else {
-                continue;
-            };
-            if r.to_status == issue.status
-                || self
-                    .schema
-                    .dep_kinds
-                    .get(dep_kind)
-                    .is_some_and(|k| k.blocks_ready)
-            {
-                continue;
-            }
-            if !seen.insert((r.to_status.clone(), r.resolution.clone())) {
-                continue;
-            }
-            let u = self.unmet(issue, ty, &r.to_status, r.resolution.as_deref())?;
-            for mut g in u.gates {
-                if self
-                    .schema
-                    .dep_kinds
-                    .get(g["kind"].as_str().unwrap_or(""))
-                    .is_some_and(|k| k.blocks_ready)
-                {
-                    continue;
-                }
-                if let Some(res) = &r.resolution {
-                    g["resolution"] = json!(res);
-                }
-                if !out.contains(&g) {
-                    out.push(g);
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    pub fn blocked_by(&self, id: &str) -> Result<Vec<String>> {
-        let mut st = self.conn.prepare(
-            "SELECT d.src FROM dep d
-             JOIN dep_kind k ON k.name = d.kind AND k.blocks_ready = 1
-             JOIN issue_view b ON b.id = d.src
-             WHERE d.dst = ?1 AND b.status_category <> 'closed' ORDER BY d.src",
-        )?;
-        let v = st
-            .query_map([id], |r| r.get(0))?
-            .collect::<std::result::Result<_, _>>()?;
-        Ok(v)
-    }
-
-    pub fn derived(&self, issue: &Issue, ty: &TypeDef, claim: &Option<Claim>) -> Result<Value> {
-        let blocked_by = self.blocked_by(&issue.id)?;
-        let ready = issue.status_category == "open" && claim.is_none() && blocked_by.is_empty();
-        let source_priority = issue
-            .fields
-            .get("priority")
-            .and_then(Value::as_str)
-            .unwrap_or("P2");
-        let source_rank = source_priority
-            .strip_prefix('P')
-            .and_then(|rank| rank.parse::<i64>().ok())
-            .unwrap_or(2);
-        let mut st = self.conn.prepare(
-            "SELECT d.dst, json_extract(b.fields, '$.priority')
-             FROM dep d
-             JOIN dep_kind k ON k.name = d.kind AND k.blocks_ready = 1
-             JOIN issue_view b ON b.id = d.dst
-             WHERE d.src = ?1 AND b.status_category <> 'closed'
-             ORDER BY d.dst",
-        )?;
-        let unblocks: Vec<Value> = st
-            .query_map([&issue.id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?
-            .filter_map(|row| match row {
-                Ok((id, priority))
-                    if priority
-                        .strip_prefix('P')
-                        .and_then(|rank| rank.parse::<i64>().ok())
-                        .is_some_and(|rank| rank < source_rank) =>
-                {
-                    Some(Ok(json!({"id": id, "priority": priority})))
-                }
-                Ok(_) => None,
-                Err(e) => Some(Err(e)),
-            })
-            .collect::<std::result::Result<_, _>>()?;
+    /// `ready`, `blocked_by`, `due`, blocker progress, and the open issues of
+    /// higher priority this one holds up.
+    pub fn derived(&self, issue: &Issue, blockers: &[Edge], blocks: &[Edge]) -> Value {
+        let blocked_by: Vec<&str> = blockers
+            .iter()
+            .filter(|b| b.state != State::Closed)
+            .map(|b| b.id.as_str())
+            .collect();
+        let ready = issue.state == State::Open && blocked_by.is_empty();
+        let due = issue.state == State::Waiting
+            && issue.waiting_check.is_some()
+            && issue
+                .next_check_at
+                .as_deref()
+                .is_none_or(|t| t <= self.ts().as_str());
+        let mine = rank(&issue.priority);
+        let unblocks: Vec<Value> = blocks
+            .iter()
+            .filter(|b| b.state != State::Closed && rank(&b.priority) < mine)
+            .map(|b| json!({"id": b.id, "priority": b.priority}))
+            .collect();
         let mut d = json!({
             "ready": ready,
             "blocked_by": blocked_by,
-            "gates_unmet": self.gates_unmet(issue, ty)?,
-            "next": self.next_map(issue, ty)?,
+            "due": due,
             "unblocks_higher_priority": unblocks,
         });
-        if issue.ty == "milestone" || ty.requirements.iter().any(|r| matches!(&r.kind, ReqKind::InEdgesClosed { dep_kind, .. } if dep_kind == "blocks")) {
-            let (total, closed): (i64, i64) = self.conn.query_row(
-                "SELECT count(b.id), count(b.id) FILTER (WHERE b.status_category = 'closed')
-                 FROM dep d JOIN issue_view b ON b.id = d.src WHERE d.dst = ?1 AND d.kind = 'blocks'",
-                [&issue.id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )?;
-            d["progress"] = json!({"total": total, "closed": closed});
+        if !blockers.is_empty() {
+            let closed = blockers.iter().filter(|b| b.state == State::Closed).count();
+            d["progress"] = json!({"total": blockers.len(), "closed": closed});
         }
-        Ok(d)
+        d
     }
 
-    /// The issue object: the shape `show --json` emits and `--from` accepts.
+    /// The issue object: the shape `show --json` emits.
     pub fn issue_json(&self, issue: &Issue, with: With) -> Result<Value> {
-        let ty = self.schema.ty(&issue.ty)?;
         let claim = self.active_claim(&issue.id)?;
         let mut o = Map::new();
         o.insert("id".into(), json!(issue.id));
-        o.insert("type".into(), json!(issue.ty));
         o.insert("project".into(), json!(issue.project));
+        let repo = match issue.repo_id {
+            Some(r) => self.repo_by_id(r)?.map(
+                |r| json!({"id": r.id, "remote_url": r.remote_url, "local_path": r.local_path}),
+            ),
+            None => None,
+        };
+        o.insert("repo".into(), json!(repo));
         o.insert("title".into(), json!(issue.title));
-        o.insert("context".into(), json!(issue.context));
-        o.insert("status".into(), json!(issue.status));
-        o.insert("status_category".into(), json!(issue.status_category));
-        o.insert("resolution".into(), json!(issue.resolution));
-        o.insert("outcome".into(), json!(issue.outcome));
-        o.insert("owner".into(), json!(issue.owner));
-        o.insert("links".into(), json!(issue.links));
-        o.insert("tags".into(), json!(issue.tags));
-        // Every type field, null when unset, in type order.
-        let mut fields = Map::new();
-        for tf in &ty.fields {
-            fields.insert(
-                tf.field.clone(),
-                issue.fields.get(&tf.field).cloned().unwrap_or(Value::Null),
-            );
-        }
-        for (k, v) in &issue.fields {
-            if !fields.contains_key(k) {
-                fields.insert(k.clone(), v.clone());
-            }
-        }
-        o.insert("fields".into(), Value::Object(fields));
+        o.insert("description".into(), json!(issue.description));
+        o.insert("state".into(), json!(issue.state));
+        o.insert("priority".into(), json!(issue.priority));
+        o.insert("agent".into(), json!(issue.agent));
+        o.insert("close_reason".into(), json!(issue.close_reason));
+        let waiting = (issue.state == State::Waiting).then(|| {
+            json!({
+                "reason": issue.waiting_reason,
+                "check": issue.waiting_check,
+                "interval": issue.check_interval,
+                "next_check_at": issue.next_check_at,
+                "last_check_at": issue.last_check_at,
+                "last_check_exit": issue.last_check_exit,
+                "cwd": issue.wait_cwd,
+            })
+        });
+        o.insert("waiting".into(), json!(waiting));
         o.insert(
             "claim".into(),
             claim
@@ -270,20 +139,18 @@ impl Ctx<'_> {
                 .map(|c| self.claim_json(c))
                 .unwrap_or(Value::Null),
         );
+        let blocks = self.edges(&issue.id, true)?;
+        let blockers = self.edges(&issue.id, false)?;
         if with.deps {
-            let out: Vec<Value> = self
-                .edges(&issue.id, true)?
-                .iter()
-                .map(Self::edge_json)
-                .collect();
-            let inn: Vec<Value> = self
-                .edges(&issue.id, false)?
-                .iter()
-                .map(Self::edge_json)
-                .collect();
-            o.insert("deps".into(), json!({"out": out, "in": inn}));
+            o.insert(
+                "deps".into(),
+                json!({
+                    "blocked_by": blockers.iter().map(Self::edge_json).collect::<Vec<_>>(),
+                    "blocks": blocks.iter().map(Self::edge_json).collect::<Vec<_>>(),
+                }),
+            );
         }
-        o.insert("derived".into(), self.derived(issue, ty, &claim)?);
+        o.insert("derived".into(), self.derived(issue, &blockers, &blocks));
         o.insert("created_by".into(), json!(issue.created_by));
         o.insert("created_at".into(), json!(issue.created_at));
         o.insert("updated_at".into(), json!(issue.updated_at));
@@ -351,7 +218,7 @@ impl Ctx<'_> {
                 }
             )
         });
-        let compiled = query::compile(&terms, &self.schema, self)?;
+        let compiled = query::compile(&terms, self)?;
         let mut sql = format!(
             "SELECT {ISSUE_COLS} FROM issue_view i WHERE {}",
             compiled.where_sql
@@ -361,10 +228,7 @@ impl Ctx<'_> {
             sql.push_str(" AND i.project_id = ?");
             params.push(rusqlite::types::Value::Text(p.to_string()));
         }
-        sql.push_str(&format!(
-            " ORDER BY {}",
-            query::order_by(sort, &self.schema, ready)?
-        ));
+        sql.push_str(&format!(" ORDER BY {}", query::order_by(sort, ready)?));
         if let Some(n) = limit {
             sql.push_str(&format!(" LIMIT {n}"));
         }
@@ -395,7 +259,7 @@ impl Ctx<'_> {
     /// Active agent claims with their agent, harness, terminal and lease.
     pub fn runs(&self) -> Result<Vec<Value>> {
         let mut st = self.conn.prepare(&format!(
-            "SELECT {CLAIM_COLS}, a.harness, a.meta, i.title, i.status
+            "SELECT {CLAIM_COLS}, a.harness, a.meta, i.title
              FROM claim c JOIN actor a ON a.id = c.actor JOIN issue i ON i.id = c.issue_id
              WHERE c.released_at IS NULL AND a.kind = 'agent' ORDER BY c.claimed_at"
         ))?;
@@ -404,16 +268,14 @@ impl Ctx<'_> {
             let harness: Option<String> = r.get(12)?;
             let meta: String = r.get(13)?;
             let title: String = r.get(14)?;
-            let status: String = r.get(15)?;
-            Ok((c, harness, meta, title, status))
+            Ok((c, harness, meta, title))
         })?;
         let mut out = vec![];
         for row in rows {
-            let (c, harness, meta, title, status) = row?;
+            let (c, harness, meta, title) = row?;
             let mut v = self.claim_json(&c);
             v["issue"] = json!(c.issue_id);
             v["title"] = json!(title);
-            v["status"] = json!(status);
             v["harness"] = json!(harness);
             v["meta"] = serde_json::from_str(&meta).unwrap_or(json!({}));
             out.push(v);
@@ -421,27 +283,14 @@ impl Ctx<'_> {
         Ok(out)
     }
 
-    /// Issues counted by status category per type (for `whoami`-style summaries).
+    /// Issues counted by state.
     pub fn counts(&self) -> Result<BTreeMap<String, i64>> {
         let mut st = self
             .conn
-            .prepare("SELECT status_category, count(*) FROM issue_view GROUP BY status_category")?;
+            .prepare("SELECT state, count(*) FROM issue GROUP BY state")?;
         let v = st
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
             .collect::<std::result::Result<_, _>>()?;
         Ok(v)
-    }
-
-    /// Recent schema events (for `trk schema` output).
-    pub fn last_schema_event(&self) -> Result<Option<Value>> {
-        use rusqlite::OptionalExtension;
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT at, actor, json_extract(payload, '$.commit') FROM event WHERE op = 'schema' ORDER BY seq DESC LIMIT 1",
-                params![],
-                |r| Ok(json!({"at": r.get::<_, String>(0)?, "actor": r.get::<_, String>(1)?, "commit": r.get::<_, Option<String>>(2)?})),
-            )
-            .optional()?)
     }
 }

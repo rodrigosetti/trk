@@ -1,5 +1,5 @@
-//! trk-agent: agent definitions, tool generation from a type's state machine,
-//! the tool executor, prompt rendering, harness profiles and the launch spec.
+//! trk-agent: agent definitions, the fixed trk tool set and its executor,
+//! prompt rendering, harness profiles and the launch spec.
 
 pub mod agent;
 pub mod check;
