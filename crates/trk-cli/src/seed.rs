@@ -2,6 +2,18 @@
 
 pub const FILES: &[(&str, &str)] = &[
     (
+        "types/code-change.toml",
+        include_str!("../../../seed/types/code-change.toml"),
+    ),
+    (
+        "types/research.toml",
+        include_str!("../../../seed/types/research.toml"),
+    ),
+    (
+        "types/review.toml",
+        include_str!("../../../seed/types/review.toml"),
+    ),
+    (
         "agents/implementer.toml",
         include_str!("../../../seed/agents/implementer.toml"),
     ),
@@ -38,7 +50,6 @@ pub const FILES: &[(&str, &str)] = &[
 /// Files of the six-type configuration that `trk init` no longer writes and
 /// nothing reads. Reported, never deleted.
 pub const STALE: &[&str] = &[
-    "types",
     "fields.toml",
     "dep-kinds.toml",
     "agents/decider.toml",

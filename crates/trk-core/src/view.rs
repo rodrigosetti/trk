@@ -118,7 +118,7 @@ impl Ctx<'_> {
         o.insert("description".into(), json!(issue.description));
         o.insert("state".into(), json!(issue.state));
         o.insert("priority".into(), json!(issue.priority));
-        o.insert("agent".into(), json!(issue.agent));
+        o.insert("type".into(), json!(issue.issue_type));
         o.insert("close_reason".into(), json!(issue.close_reason));
         let waiting = (issue.state == State::Waiting).then(|| {
             json!({

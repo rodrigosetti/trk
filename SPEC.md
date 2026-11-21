@@ -6,14 +6,14 @@ Nov 21, 2026 · @Rodrigo Setti
 
 `trk` is a local issue tracker and agent launcher in one Rust binary. It keeps the work of every repository in one SQLite database in the user's home directory. Humans use the CLI. Agents work through a per-issue MCP server. `trk run <ID>` starts an agent session on one issue in a persistent terminal (herdr-core, `hc`), with focused instructions and only that issue's tools.
 
-There is one kind of issue and one state machine. An agent session ends in one of two ways: the issue is **closed**, or it is **waiting** for something outside the session, described by a shell command that `trk check` runs until it passes, fails, or says "not yet".
+Issues have routing-only types and share one state machine. An agent session ends in one of two ways: the issue is **closed**, or it is **waiting** for something outside the session, described by a shell command that `trk check` runs until it passes, fails, or says "not yet".
 
 **Terms.** An *agent* is instructions plus tools. A *harness* is the program that runs an agent: Claude Code, pi, omp, Codex, OpenCode. A *launcher* is where the harness runs: `hc`. A *check* is the shell command of a waiting issue.
 
 **Goals**
 
 - One database for work across many repositories, with blockers allowed between projects.
-- A model small enough to hold in the head: four states, three authored fields, one dependency kind.
+- A model small enough to hold in the head: four states, routing-only types, one dependency kind.
 - First-class claims by humans (`human:<email>`) and agent sessions (`agent:<harness>:<id>`), with leases.
 - A complete, append-only history: every change and every note is an attributed, timestamped event.
 - "Done" means landed. Work that is finished but not merged, reviewed or decided is waiting, not closed, and still blocks what depends on it.
@@ -23,7 +23,7 @@ There is one kind of issue and one state machine. An agent session ends in one o
 
 **Non-goals**
 
-- Issue types, custom fields, configurable workflows, required evidence on close. They existed in an earlier design and were removed: a check command expresses what they tried to enforce.
+- Custom type fields, configurable workflows, required evidence on close. Types only describe and route work; a check command expresses completion requirements.
 - Issue hierarchies. Grouping is done with `blocks` edges.
 - Sync between machines, multiple users over a network, or a web UI.
 - Storing state that can be read from elsewhere at any time (CI status, PR review state). A check reads it when it runs.
@@ -39,7 +39,7 @@ There is one kind of issue and one state machine. An agent session ends in one o
 | `description` | markdown: what is needed, why, how to tell it is done |
 | notes | an append-only log, stored as events |
 | `priority` | `P0` urgent, `P1` high, `P2` normal (default), `P3` low; orders `trk ready` only |
-| `agent` | the agent definition `trk run` uses; empty means the default agent |
+| `type` | required routing type; defaults to `code-change` |
 | `repo` | the repository the work happens in; filled from the directory the issue is created in |
 
 Everything else on an issue is state the tool owns: `state`, `close_reason`, the waiting fields, timestamps and `created_by`.
@@ -81,7 +81,7 @@ Other relationships are written in descriptions and notes. A review, an approval
 | Need | Expressed as |
 | --- | --- |
 | B needs A first | `A blocks B` |
-| Review before landing | a review issue (agent `reviewer`) that blocks the next step |
+| Review before landing | a review issue (type `review`, routed to `reviewer`) that blocks the next step |
 | A decision by a person | an issue left waiting with no check and the question as its reason |
 | A milestone | an issue blocked by everything in it |
 | Work discovered on the way | a follow-up issue; the create event records `followup_of` |
@@ -186,6 +186,7 @@ A check is written by an agent and executed later, unattended, with the user's p
 
 | Piece | Defines |
 | --- | --- |
+| Type | Name, description and agent routing; no workflow or custom fields |
 | Agent | Who does the work: instructions, briefing, other MCP servers, harness preference, built-in tool level |
 | Harness profile | How to run an agent in one harness: command, arguments, environment, files, how MCP servers and instructions are passed |
 | Launcher | Where it runs: three command templates for `hc` |
@@ -213,7 +214,30 @@ prefer        = ["omp", "claude-code"]   # first installed wins; `trk run --harn
 builtin_tools = "default"                # default | read-only | none
 ```
 
-The agent for a run is the first of: `trk run --agent X`, the issue's `agent`, `[run] default_agent` (`implementer`). The seed has three agents: `implementer`, `reviewer` (read-only built-in tools) and `researcher`. They differ in instructions, not in tools. `trk agent check` validates agent files, templates and harness profiles.
+The agent for a run is `trk run --agent X` (a one-off override), otherwise the issue type's `agent`.
+The seed types are `code-change` (description `code change`, agent `implementer`),
+`research` (agent `researcher`) and `review` (agent `reviewer`, read-only built-in tools).
+A type file is `types/<name>.toml` with `name`, `description` and `agent`.
+`trk agent check` validates agent files, templates and harness profiles.
+
+Global types come from the user config's `types/*.toml`. Repository `.trk/types/*.toml`
+override types by `name`, field by field; an omitted description inherits the global description.
+Repository `.trk/agents/*.toml` replaces the whole global definition with the same name.
+Prompt paths resolve relative to the configuration directory supplying the agent: global config
+for global agents, the repo's `.trk/` for repo agents. No partial agent merge or prompt fallback.
+
+Discovery uses the issue's registered repository and its canonical primary checkout, even
+outside that repo or inside a linked worktree. All worktrees share the primary checkout's `.trk/`.
+Issues without a repository use only global configuration. Launcher settings, harness profiles
+and harness preferences remain global; a repository agent's `harness.prefer` is ignored.
+Optional global `[run] harness_prefer` is an array overriding global agents' harness preferences.
+When absent, a repo agent inherits only the same-name global agent's preferences; a new repo
+agent uses installed global harness profiles. `trk run --harness` overrides these preferences.
+
+Selecting a repository-supplied agent requires explicit `--trust-repo` for each `trk run`
+and `trk mcp` invocation. This authorizes executable MCP definitions and prompt instructions,
+not a persistent trust setting. A repository type mapping to a global agent requires no trust.
+`trk show` and `trk run --dry-run` expose routing provenance before execution.
 
 ### The trk MCP server
 
@@ -243,7 +267,7 @@ Notes are in the briefing because they are the issue's memory across sessions. A
 ### `trk run`
 
 ```
-trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]
+trk run <ID> [--agent A] [--harness H] [--trust-repo] [--fg] [--print] [--dry-run]
 ```
 
 1. Check the issue is ready, and resolve its agent and harness.
@@ -323,13 +347,14 @@ One binary, one database file, one write path. Every interface (the CLI for huma
 
 ```
 ~/.config/trk/
-  config.toml          # user, leases, check interval and timeout, default agent,
+  config.toml          # user, leases, check interval and timeout,
                        # launcher templates, harness profiles, named views
   agents/*.toml        # one file per agent
+  types/*.toml         # name, description, agent routing
   prompts/*.j2         # MiniJinja templates for instructions and briefings
 ```
 
-Nothing in the config directory is compiled into the database. Agents and prompts are read when a session starts.
+Types, agents and prompts are read when routing is resolved. Migrated legacy routing is captured explicitly, rather than depending on a later default-agent setting.
 
 ### Repository resolution
 
@@ -344,6 +369,7 @@ When `--project` is not given, the CLI runs `git rev-parse --show-toplevel` and 
 - Expired claim leases are swept at the start of every write transaction: one indexed `UPDATE`, so no daemon is needed.
 - The schema is applied on open, keyed on SQLite's `user_version`. `trk backup <path>` uses `VACUUM INTO` to write a consistent copy.
 - A database written by the earlier six-type design is refused with `old_database`. There is no migration; `scripts/import-v1.sh` recreates an export of its open issues.
+- The preceding current-model database migrates persisted issue agents into generated `migrated-agent-<hex>` types, where `<hex>` is the lowercase hexadecimal encoding of the agent's UTF-8 bytes. Explicit assignments retain their agent; NULL assignments capture the old `[run].default_agent` or `implementer` when absent. The issue's required `type` replaces `agent` with no CLI/API aliases or compatibility shims. Claim `agent` remains the actual launched agent, and lifecycle/check behavior is unchanged.
 
 ### Issue IDs
 
@@ -420,8 +446,8 @@ Every command builds one typed result, then renders it in the requested format. 
 | `trk list [QUERY] [--all-projects] [--fields F,..] [--sort F] [--limit N]` | Query issues; defaults to the current project's scope; `@view` runs a saved view |
 | `trk ready [QUERY] [--all-projects]` | Ready issues; defaults to the current project's scope |
 | `trk show <ID>... [--with notes,events,deps,claims]` | Full issue with derived state |
-| `trk create [TITLE] [-d TEXT] [-p P] [--agent A] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; opens `$EDITOR` when there is no title on a TTY |
-| `trk edit <ID> [-t TITLE] [-d TEXT] [-p P] [--agent A] [--dry-run]` | Change the authored fields; `$EDITOR` with no options |
+| `trk create [TITLE] [-d TEXT] [-p P] [--type T] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; type defaults to `code-change`; opens `$EDITOR` when there is no title on a TTY |
+| `trk edit <ID> [-t TITLE] [-d TEXT] [-p P] [--type T] [--dry-run]` | Change the authored fields; `$EDITOR` with no options |
 | `trk claim <ID> [--lease 30m] [--worktree PATH] [--steal]` | open → claimed |
 | `trk unclaim <ID> [-m NOTE] [--force]` / `trk renew <ID>` | claimed → open / extend the lease |
 | `trk close <ID> [-r done\|abandoned] [-m NOTE] [--force] [--dry-run]` | Close from open, claimed or waiting |
@@ -432,11 +458,11 @@ Every command builds one typed result, then renders it in the requested format. 
 | `trk dep add\|rm <BLOCKER> <BLOCKED>` | Add or remove a blocks edge |
 | `trk log <ID>` | Timeline: events and notes |
 | **Agent sessions** |  |
-| `trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]` | Start an agent session on the issue through the launcher |
+| `trk run <ID> [--agent A] [--harness H] [--trust-repo] [--fg] [--print] [--dry-run]` | Start an agent session; agent override is one-off |
 | `trk runs` | Active agent claims with agent, harness, terminal and lease |
 | `trk attach <ID>` / `trk send <ID> TEXT` | Attach to or type into the session |
 | `trk reap` | Release claims whose session has ended, with a note |
-| `trk mcp --issue ID --actor A --agent N` | The per-issue MCP server (started by the harness, not by hand) |
+| `trk mcp --issue ID --actor A --agent N [--trust-repo]` | The per-issue MCP server (started by the harness, not by hand) |
 | `trk agent list` / `preview <agent> [--issue ID]` / `check` | Inspect and validate agent definitions |
 | **Setup** |  |
 | `trk init [--force]` | Write the default config and create the database |
@@ -445,7 +471,7 @@ Every command builds one typed result, then renders it in the requested format. 
 | `trk whoami` | Resolved actor, project, config, database, issue counts, running check |
 | `trk backup <PATH>` | Consistent copy via `VACUUM INTO` |
 
-`-d` and `-c` take text, `@file`, or `@-` for stdin. In the interactive editor, `title`, `priority` and `agent` are TOML front matter and the description is the markdown body; if validation fails on save, the file reopens with the errors added as comments. `--dry-run` runs every check and returns the would-be result or the error, and writes nothing.
+`-d` and `-c` take text, `@file`, or `@-` for stdin. In the interactive editor, `title`, `priority` and required `type` are TOML front matter and the description is the markdown body; if validation fails on save, the file reopens with the errors added as comments. `--dry-run` runs every check and returns the would-be result or the error, and writes nothing.
 
 ### Query language
 
@@ -458,7 +484,7 @@ pred   := name op value | name 'in' '(' value (',' value)* ')'
 op     := '=' | '!=' | '<' | '<=' | '>' | '>=' | '~'      # '~' = full-text or glob
 flag   := 'ready' | 'blocked' | 'due' | 'stale-lease'
 value  := word | quoted | 'me' | '.' | reltime              # reltime: -7d, -12h
-name   := 'id' | 'state' | 'project' | 'priority' | 'agent' | 'reason' | 'claimed-by'
+name   := 'id' | 'state' | 'project' | 'priority' | 'type' | 'reason' | 'claimed-by'
         | 'created-by' | 'title' | 'created' | 'updated' | 'closed' | 'next-check'
         | 'text' | 'blocks' | 'blocked-by'
 ```
@@ -484,7 +510,7 @@ List and ready queries default to the current registered repository's project, e
 ```json
 {
   "ok": true,
-  "schema_version": 2,
+  "schema_version": 3,
   "data": {
     "id": "orch-4kq",
     "project": "orch",
@@ -493,7 +519,7 @@ List and ready queries default to the current registered repository's project, e
     "description": "Crashed agents must release their claims.",
     "state": "waiting",
     "priority": "P1",
-    "agent": null,
+    "type": "code-change",
     "close_reason": null,
     "waiting": {
       "reason": "merge into main",
@@ -528,14 +554,14 @@ List and ready queries default to the current registered repository's project, e
 - `derived` is computed when the output is built, never stored. An issue with blockers also gets `derived.progress` (`{total, closed}`).
 - `trk check` returns `{"busy": bool, "results": [{issue, result, exit, timed_out, duration_ms, state, next_check_at, output?}]}` with `result` one of `passed`, `retry`, `failed`, `skipped`. A failed check is a result, not an error: the command exits 0.
 - Timestamps are RFC 3339 UTC in JSON. Relative times appear only in pretty mode.
-- Within a `schema_version`, keys are only ever added. Renaming or removing a key bumps the version. Version 2 is the single-type model.
+- Within a `schema_version`, keys are only ever added. Renaming or removing a key bumps the version. Version 3 replaces the former issue `agent` with required `type`; claim `agent` is unchanged.
 
 ### Errors and exit codes
 
 In JSON mode, errors are written to stdout in the same envelope:
 
 ```json
-{"ok": false, "schema_version": 2, "error": {
+{"ok": false, "schema_version": 3, "error": {
   "code": "blocked",
   "message": "orch-9xa is blocked by orch-4kq",
   "issue": "orch-9xa",

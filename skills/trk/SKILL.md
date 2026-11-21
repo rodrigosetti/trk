@@ -5,7 +5,7 @@ description: Use when the user tracks work with trk, the local issue tracker and
 
 # trk
 
-trk keeps the work of every repository in one local database. An issue has a title, a description, notes, a priority and one of four states. Use the `trk` CLI.
+trk keeps the work of every repository in one local database. An issue has a title, a description, notes, a priority, a required type (default `code-change`) and one of four states. Use the `trk` CLI.
 
 ```
 open → claimed → closed
@@ -22,7 +22,7 @@ If you have trk MCP tools (`get_task`, `hand_back`, `wait`) or `TRK_ACTOR` start
 - Pass `--json` on every command and read the envelope: `{"ok": true, "data": …}` or `{"ok": false, "error": {"code", "message", "hint"}}`. On an error, do what `hint` says and retry. Do not guess around it.
 - Never rely on the interactive editor: give the title and description on the command line. Long text goes through stdin: `-d @-`.
 - You act as the user, with their default actor. Do not pass `--as` unless they ask.
-- State changes only through `claim`, `unclaim`, `close`, `wait`, `reopen` and `trk check`. `edit` changes title, description, priority and agent.
+- State changes only through `claim`, `unclaim`, `close`, `wait`, `reopen` and `trk check`. `edit` changes title, description, priority and type.
 - Do not use `--force`, `--steal` or close someone else's claim unless the user asks.
 - Issue ids look like `orch-4kq`; a unique suffix such as `4kq` also works.
 
@@ -51,10 +51,10 @@ printf '%s\n' "Crashed agents must release their claims. Add a lease to agent" \
   trk create "Add claim leases" --json -p P1 -d @-
 
 trk create "Enable leases in prod" --json --blocked-by orch-4kq
-trk create "Review the lease change" --json --agent reviewer --blocks orch-9xa
+trk create "Review the lease change" --json --type review --blocks orch-9xa
 ```
 
-`--blocked-by ID` and `--blocks ID` add blocker edges at creation. There are no issue types: a review, a decision or a milestone is an issue whose description says so, linked with blockers. `--agent` names the agent definition `trk run` uses for it (`trk agent list --json`).
+`--blocked-by ID` and `--blocks ID` add blocker edges at creation. Types route work to agents: `code-change` → `implementer`, `research` → `researcher`, `review` → `reviewer`. Change a type with `trk edit <ID> --type research --json`; query with `trk list 'type=review' --json`. Types do not change lifecycle rules.
 
 ## Work an issue yourself
 
@@ -128,6 +128,16 @@ trk reap --json                           # release claims whose session has end
 ```
 
 Only ready issues can be run. A session ends by closing, waiting or handing back; an issue whose check failed is ready again, and its notes tell the next session why. Do not run `trk attach`: it takes over the terminal interactively, so suggest it to the user instead.
+
+`trk run --agent NAME` overrides routing for that run only. Inspect routing sources with `trk show`
+or `trk run --dry-run`. Repo `.trk/types/*.toml` partially overrides global types by name;
+repo `.trk/agents/*.toml` replaces whole agents and roots prompts in `.trk/`. Configuration comes
+from the issue repo's registered canonical primary checkout, shared by all worktrees, not cwd.
+Repo-less issues use globals only. Launcher/harness preferences stay global: `[run] harness_prefer`
+overrides global agents' preferences; otherwise repo agents inherit same-name global preferences,
+or use installed global profiles when new. Repo `harness.prefer` is ignored. Running a repo agent
+needs explicit `--trust-repo` on each run/MCP invocation; a repo type routing to a global agent
+is safe without it. Do not grant trust silently.
 
 ## More
 

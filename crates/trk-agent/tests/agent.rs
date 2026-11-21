@@ -128,6 +128,7 @@ fn launch_spec_for_omp() {
         briefing: "Do it's thing".into(),
         instructions: "rules".into(),
         tools: vec!["get_task".into(), "add_note".into()],
+        trust_repo: false,
     })
     .unwrap();
     // read-only builtin tools are inserted before the briefing argument.
@@ -210,6 +211,7 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
         briefing: briefing.to_string(),
         instructions: "rules".into(),
         tools: vec!["get_task".into(), "add_note".into()],
+        trust_repo: false,
     })
     .unwrap();
     for (path, contents) in &spec.files {

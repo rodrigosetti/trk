@@ -116,7 +116,7 @@ impl Env {
         let (code, v) = self.run(args);
         assert_eq!(code, 0, "{args:?} failed: {v:#}");
         assert_eq!(v["ok"], true);
-        assert_eq!(v["schema_version"], 2);
+        assert_eq!(v["schema_version"], 3);
         v["data"].clone()
     }
 
@@ -241,21 +241,17 @@ fn redact(v: &mut Value, ids: &[(String, &str)]) {
 fn issue_lifecycle_and_json_format() {
     let e = Env::new();
     let a = e.create(&["Add claim leases", "-d", "Claims need leases.", "-p", "p1"]);
-    let b = e.create(&[
-        "-t",
-        "Use leases",
-        "--blocked-by",
-        &a,
-        "--agent",
-        "reviewer",
-    ]);
+    let b = e.create(&["-t", "Use leases", "--blocked-by", &a, "--type", "review"]);
     let v = e.ok(&["show", &a]);
     assert_eq!(v["state"], "open");
     assert_eq!(v["priority"], "P1");
+    assert_eq!(v["type"], "code-change");
+    assert!(v.get("agent").is_none());
     assert_eq!(v["repo"]["remote_url"], "github.com/acme/orch");
     assert_eq!(v["deps"]["blocks"][0]["id"], json!(b));
     assert_eq!(v["derived"]["ready"], true);
-    assert_eq!(e.ok(&["show", &b])["agent"], "reviewer");
+    assert_eq!(e.ok(&["show", &b])["type"], "review");
+    assert_eq!(e.ok(&["list", "type=review"])[0]["id"], json!(b));
 
     // Ready is open with every blocker closed.
     let ready = e.ok(&["ready"]);
@@ -269,11 +265,11 @@ fn issue_lifecycle_and_json_format() {
         &a,
         "-t",
         "Add leases to claims",
-        "--agent",
-        "implementer",
+        "--type",
+        "research",
     ]);
-    e.ok(&["edit", &a, "--agent", ""]);
-    assert_eq!(e.ok(&["show", &a])["agent"], Value::Null);
+    e.ok(&["edit", &a, "--type", "code-change"]);
+    assert_eq!(e.ok(&["show", &a])["type"], "code-change");
     e.ok(&["note", &a, "start with the sweep"]);
     let v = e.ok(&["claim", &a]);
     assert_eq!(v["state"], "claimed");
@@ -302,6 +298,9 @@ fn issue_lifecycle_and_json_format() {
     assert_eq!(e.ok(&["list", "due"])[0]["id"], json!(a));
 
     let mut snap = e.ok(&["show", &a, "--with", "notes,events,claims"]);
+    assert_eq!(snap["routing"]["agent"], "implementer");
+    // Routing has its own tests; keep this snapshot focused on lifecycle state.
+    snap.as_object_mut().unwrap().remove("routing");
     redact(&mut snap, &[(a.clone(), "<A>"), (b.clone(), "<B>")]);
     insta::assert_json_snapshot!("show_waiting", snap);
 
@@ -352,7 +351,26 @@ fn issue_lifecycle_and_json_format() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2);
     let who = e.ok(&["whoami"]);
     assert_eq!(who["issues"]["closed"], 2);
-    assert_eq!(who["default_agent"], "implementer");
+    assert_eq!(who["default_type"], "code-change");
+    assert!(who.get("default_agent").is_none());
+}
+
+#[test]
+fn issue_agent_flags_are_rejected() {
+    let e = Env::new();
+    let id = e.create(&["Type-only issue"]);
+    for args in [
+        vec!["create", "Old flag", "--agent", "implementer"],
+        vec!["edit", &id, "--agent", "reviewer"],
+    ] {
+        let out = e.cmd().args(&args).output().unwrap();
+        assert!(!out.status.success(), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("--agent"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
 
 #[test]
@@ -543,8 +561,10 @@ fn errors_and_exit_codes() {
     let id = e.create(&["Thing"]);
     e.err(&["show", "nope-zzz"], 3, "not_found");
     e.err(&["list", "bogus"], 2, "bad_query");
-    e.err(&["list", "type=decision"], 2, "bad_query");
+    e.err(&["list", "agent=implementer"], 2, "bad_query");
     e.err(&["create", "X", "-p", "P7"], 4, "invalid_field");
+    e.err(&["create", "X", "--type", ""], 4, "invalid_field");
+    e.err(&["edit", &id, "--type", ""], 4, "invalid_field");
     e.err(&["close", &id, "--reason", "merged"], 4, "invalid_field");
     e.err(&["unclaim", &id], 4, "invalid_state");
     e.err(&["reopen", &id], 4, "invalid_state");
@@ -706,12 +726,13 @@ fn init_reports_stale_files_and_agents_check() {
     let e = Env::new();
     let cfg = e.dir.path().join("config");
     assert!(cfg.join("agents/implementer.toml").exists());
-    assert!(!cfg.join("types").exists());
-    std::fs::create_dir_all(cfg.join("types")).unwrap();
+    assert!(cfg.join("types/code-change.toml").exists());
+    assert!(cfg.join("types/research.toml").exists());
+    assert!(cfg.join("types/review.toml").exists());
     std::fs::write(cfg.join("fields.toml"), "").unwrap();
     let v = e.ok(&["init"]);
     assert_eq!(v["written"].as_array().unwrap().len(), 0);
-    assert_eq!(v["stale"], json!(["types", "fields.toml"]));
+    assert_eq!(v["stale"], json!(["fields.toml"]));
     assert_eq!(e.ok(&["agent", "check"])["ok"], true);
     std::fs::write(
         cfg.join("agents/broken.toml"),
@@ -733,7 +754,7 @@ fn agent_preview_and_run_dry_run() {
     let list = e.ok(&["agent", "list"]);
     assert_eq!(list.as_array().unwrap().len(), 3);
     assert_eq!(list[0]["name"], "implementer");
-    assert_eq!(list[0]["default"], true);
+    assert!(list[0].get("default").is_none());
     let p = e.ok(&["agent", "preview", "implementer"]);
     assert!(
         p["instructions"]
@@ -780,8 +801,8 @@ fn agent_preview_and_run_dry_run() {
     // Nothing was claimed or created.
     assert_eq!(e.ok(&["show", &id])["claim"], Value::Null);
     assert!(!Path::new(spec["worktree"].as_str().unwrap()).exists());
-    // The issue's agent wins over the default; --agent wins over both.
-    e.ok(&["edit", &id, "--agent", "reviewer"]);
+    // The issue type selects its agent; --agent overrides that routing.
+    e.ok(&["edit", &id, "--type", "review"]);
     assert_eq!(
         e.ok(&["run", &id, "--harness", "omp", "--dry-run"])["agent"],
         "reviewer"
@@ -798,7 +819,7 @@ fn agent_preview_and_run_dry_run() {
         ])["agent"],
         "researcher"
     );
-    e.ok(&["edit", &id, "--agent", ""]);
+    e.ok(&["edit", &id, "--type", "code-change"]);
     // --print claims, creates the worktree on a branch named after the issue,
     // and writes the files.
     let spec = e.ok(&["run", &id, "--harness", "omp", "--print"]);
@@ -825,6 +846,112 @@ fn agent_preview_and_run_dry_run() {
     let done = e.create(&["Done"]);
     e.ok(&["close", &done]);
     e.err(&["run", &done, "--dry-run"], 4, "invalid_state");
+}
+
+#[test]
+fn repository_routing_and_agent_prompts_require_trust() {
+    let e = Env::new();
+    let local = e.repo().join(".trk");
+    std::fs::create_dir_all(local.join("types")).unwrap();
+    std::fs::write(
+        local.join("types/code-change.toml"),
+        "agent = \"researcher\"\n",
+    )
+    .unwrap();
+    let id = e.create(&["Use repo routing"]);
+    let shown = e.ok(&["show", &id]);
+    assert_eq!(shown["type"], "code-change");
+    assert_eq!(shown["routing"]["agent"], "researcher");
+    assert_eq!(shown["routing"]["requires_trust"], false);
+    let out = e
+        .cmd()
+        .args(["--format", "pretty", "show", &id])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    for expected in [
+        "type code-change",
+        "Routing",
+        "agent   researcher",
+        "types/code-change.toml",
+        "agents/researcher.toml",
+        "prompts ",
+        "trust   not required",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?}: {text}");
+    }
+    // A routing-only override selects trusted global policy and cannot
+    // redirect its prompt loader into repository templates.
+    let spec = e.ok(&["run", &id, "--harness", "omp", "--dry-run"]);
+    assert_eq!(spec["agent"], "researcher");
+    assert_eq!(e.ok(&["show", &id])["claim"], Value::Null);
+    assert_eq!(
+        spec["routing"]["description"],
+        shown["routing"]["description"]
+    );
+    assert_eq!(
+        spec["routing"]["prompt_directory"],
+        json!(e.dir.path().join("config"))
+    );
+
+    // Agent overrides replace the whole global definition, and their prompt
+    // includes resolve from the supplying repository configuration directory.
+    std::fs::create_dir_all(local.join("agents")).unwrap();
+    std::fs::create_dir_all(local.join("prompts")).unwrap();
+    std::fs::write(
+        local.join("agents/researcher.toml"),
+        "name = \"researcher\"\ninstructions = \"prompts/local.j2\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        local.join("prompts/local.j2"),
+        "{% include 'prompts/fragment.j2' %}",
+    )
+    .unwrap();
+    std::fs::write(
+        local.join("prompts/fragment.j2"),
+        "Repository-local instructions",
+    )
+    .unwrap();
+    let listed = e.ok(&["agent", "list"]);
+    let researcher = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "researcher")
+        .unwrap();
+    assert_eq!(researcher["description"], Value::Null);
+    assert_eq!(researcher["harness"], json!(["omp", "claude-code"]));
+    let (code, denied) = e.run(&["agent", "preview", "researcher", "--issue", &id]);
+    assert_ne!(code, 0, "{denied:#}");
+    assert!(denied["error"].to_string().contains("trust"), "{denied:#}");
+    let inspection = e.ok(&["run", &id, "--harness", "omp", "--dry-run"]);
+    assert_eq!(inspection["requires_trust"], true);
+    assert!(inspection.get("instructions").is_none());
+    e.err(
+        &["run", &id, "--harness", "omp", "--print"],
+        5,
+        "not_permitted",
+    );
+    assert_eq!(e.ok(&["show", &id])["claim"], Value::Null);
+    let preview = e.ok(&[
+        "agent",
+        "preview",
+        "researcher",
+        "--issue",
+        &id,
+        "--trust-repo",
+    ]);
+    assert_eq!(preview["instructions"], "Repository-local instructions");
+    let trusted = e.ok(&["run", &id, "--harness", "omp", "--dry-run", "--trust-repo"]);
+    assert_eq!(trusted["instructions"], "Repository-local instructions");
+    assert!(
+        trusted["mcp_servers"]["mcpServers"]["trk"]["args"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("--trust-repo"))
+    );
 }
 
 /// Talk to `trk mcp` over stdio like a harness would: the session ends by
@@ -921,13 +1048,17 @@ fn mcp_server_over_stdio() {
     assert!(!err);
     assert_eq!(v["messages_for_you"][0]["body"], "keep it small");
     assert_eq!(v["task"]["state"], "claimed");
+    let (err, task) = call(&mut req, "get_task", json!({}));
+    assert!(!err, "{task}");
+    assert_eq!(task["type"], "code-change");
+    assert_eq!(task["routing"]["agent"], "implementer");
     let (err, v) = call(&mut req, "close", json!({"reason": "merged", "note": "x"}));
     assert!(err);
     assert_eq!(v["error"]["code"], "invalid_field");
     let (err, v) = call(
         &mut req,
         "report_followup",
-        json!({"title": "Also add bye.txt", "description": "Symmetry."}),
+        json!({"title": "Also add bye.txt", "description": "Symmetry.", "type": "research"}),
     );
     assert!(!err, "{v}");
     let followup = v["result"]["created"].as_str().unwrap().to_string();
@@ -993,6 +1124,7 @@ fn mcp_server_over_stdio() {
     assert_eq!(e.ok(&["show", &id])["close_reason"], "done");
     let f = e.ok(&["show", &followup, "--with", "events"]);
     assert_eq!(f["created_by"], json!(actor));
+    assert_eq!(f["type"], "research");
     assert_eq!(f["events"][0]["payload"]["followup_of"], json!(id));
     assert_eq!(f["repo"]["remote_url"], "github.com/acme/orch");
 }
@@ -1139,4 +1271,208 @@ fn run_warns_when_the_repo_tracks_the_skill() {
         .unwrap();
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("tracked in this repo"));
+}
+
+#[test]
+fn issue_repository_selects_runtime_policy_even_outside_it_and_in_worktrees() {
+    let e = Env::new();
+    let first = e.create(&["Global route"]);
+    assert_eq!(
+        e.ok(&["run", &first, "--dry-run", "--harness", "omp"])["agent"],
+        "implementer"
+    );
+
+    let second_repo = e.dir.path().join("second");
+    std::fs::create_dir_all(&second_repo).unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec![
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    ] {
+        assert!(
+            StdCommand::new("git")
+                .current_dir(&second_repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    e.ok(&[
+        "repo",
+        "add",
+        second_repo.to_str().unwrap(),
+        "--project",
+        "orch",
+    ]);
+    let output = e
+        .cmd()
+        .current_dir(&second_repo)
+        .args(["--json", "create", "Second route"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let second: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let second = second["data"]["id"].as_str().unwrap();
+    for (repo, agent) in [(e.repo(), "pr"), (second_repo.clone(), "merge")] {
+        let cfg = repo.join(".trk");
+        std::fs::create_dir_all(cfg.join("types")).unwrap();
+        std::fs::create_dir_all(cfg.join("agents")).unwrap();
+        std::fs::write(
+            cfg.join("types/code-change.toml"),
+            format!("agent = '{agent}'\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            cfg.join("agents").join(format!("{agent}.toml")),
+            format!("name = '{agent}'\n"),
+        )
+        .unwrap();
+    }
+    for (id, expected) in [(first.as_str(), "pr"), (second, "merge")] {
+        // The caller is deliberately in neither registered repository.
+        let output = e
+            .cmd()
+            .current_dir(e.dir.path())
+            .args([
+                "--json",
+                "run",
+                id,
+                "--dry-run",
+                "--harness",
+                "omp",
+                "--trust-repo",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let spec: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(spec["data"]["agent"], expected);
+        assert_eq!(spec["data"]["type"], "code-change");
+    }
+
+    // A pending issue sees policy edits; the persisted type never changes.
+    std::fs::write(
+        e.repo().join(".trk/types/code-change.toml"),
+        "agent = 'reviewer'\n",
+    )
+    .unwrap();
+    assert_eq!(
+        e.ok(&["run", &first, "--dry-run", "--harness", "omp"])["agent"],
+        "reviewer"
+    );
+    assert_eq!(
+        e.ok(&[
+            "run",
+            &first,
+            "--dry-run",
+            "--harness",
+            "omp",
+            "--agent",
+            "implementer"
+        ])["agent"],
+        "implementer"
+    );
+    assert_eq!(e.ok(&["show", &first])["type"], "code-change");
+
+    let linked = e.dir.path().join("linked");
+    assert!(
+        StdCommand::new("git")
+            .current_dir(e.repo())
+            .args([
+                "worktree",
+                "add",
+                "-q",
+                linked.to_str().unwrap(),
+                "-b",
+                "linked"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    // Conflicting worktree-local policy must not affect the primary policy.
+    std::fs::create_dir_all(linked.join(".trk/types")).unwrap();
+    std::fs::write(
+        linked.join(".trk/types/code-change.toml"),
+        "agent = 'missing'\n",
+    )
+    .unwrap();
+    e.ok(&["repo", "add", linked.to_str().unwrap(), "--project", "orch"]);
+    let output = e
+        .cmd()
+        .current_dir(&linked)
+        .args(["--json", "run", &first, "--dry-run", "--harness", "omp"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let spec: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(spec["data"]["agent"], "reviewer");
+}
+
+#[test]
+fn new_repo_type_and_missing_routes_are_explicit() {
+    let e = Env::new();
+    let cfg = e.repo().join(".trk");
+    std::fs::create_dir_all(cfg.join("types")).unwrap();
+    std::fs::create_dir_all(cfg.join("agents")).unwrap();
+    std::fs::write(
+        cfg.join("types/release.toml"),
+        "description = 'Publish the release'\nagent = 'publisher'\n",
+    )
+    .unwrap();
+    std::fs::write(cfg.join("agents/publisher.toml"), "name = 'publisher'\n[trk_tools]\ninclude = ['get_task', 'wait']\n[[mcp]]\nname = 'deploy'\ncommand = 'deploy-command'\n").unwrap();
+    let id = e.create(&["Release", "--type", "release"]);
+    let spec = e.ok(&["run", &id, "--dry-run", "--harness", "omp", "--trust-repo"]);
+    assert_eq!(spec["agent"], "publisher");
+    assert_eq!(
+        spec["mcp_servers"]["mcpServers"]["deploy"]["command"],
+        "deploy-command"
+    );
+    assert_eq!(spec["routing"]["description"], "Publish the release");
+    e.ok(&["edit", &id, "--type", "unknown"]);
+    e.err(
+        &["run", &id, "--dry-run", "--agent", "implementer"],
+        3,
+        "not_found",
+    );
+    e.ok(&["edit", &id, "--type", "release"]);
+    e.err(
+        &["run", &id, "--dry-run", "--agent", "unknown"],
+        3,
+        "not_found",
+    );
+    std::fs::write(
+        cfg.join("types/release.toml"),
+        "description = 'Publish the release'\nagent = 'missing'\n",
+    )
+    .unwrap();
+    let error = e.err(&["run", &id, "--dry-run"], 3, "not_found");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("missing agent 'missing'")
+    );
 }

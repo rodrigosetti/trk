@@ -119,9 +119,9 @@ enum Cmd {
         /// P0 urgent, P1 high, P2 normal (default), P3 low
         #[arg(short = 'p', long)]
         priority: Option<String>,
-        /// Agent definition for `trk run` (default: the configured default agent)
-        #[arg(long)]
-        agent: Option<String>,
+        /// Issue type (default: code-change)
+        #[arg(long = "type")]
+        issue_type: Option<String>,
         /// An issue that must close before this one is ready (repeatable)
         #[arg(long = "blocked-by", value_name = "ID")]
         blocked_by: Vec<String>,
@@ -134,7 +134,7 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Change title, description, priority or agent; $EDITOR with no options
+    /// Change title, description, priority or type; $EDITOR with no options
     Edit {
         id: String,
         #[arg(short = 't', long)]
@@ -144,9 +144,9 @@ enum Cmd {
         description: Option<String>,
         #[arg(short = 'p', long)]
         priority: Option<String>,
-        /// Agent definition; an empty value clears it
-        #[arg(long)]
-        agent: Option<String>,
+        /// Issue type
+        #[arg(long = "type")]
+        issue_type: Option<String>,
         #[arg(long)]
         dry_run: bool,
     },
@@ -268,6 +268,9 @@ enum Cmd {
         /// Print the launch spec without claiming or writing anything
         #[arg(long)]
         dry_run: bool,
+        /// Allow repository-local routing and agent configuration
+        #[arg(long)]
+        trust_repo: bool,
     },
     /// Active agent claims with agent, harness, terminal and lease
     Runs,
@@ -285,6 +288,9 @@ enum Cmd {
         actor: String,
         #[arg(long)]
         agent: String,
+        /// Allow repository-local routing and agent configuration
+        #[arg(long)]
+        trust_repo: bool,
     },
     /// Inspect agent definitions
     Agent {
@@ -334,6 +340,9 @@ enum AgentCmd {
         /// Render for this issue instead of a sample
         #[arg(long)]
         issue: Option<String>,
+        /// Allow repository-local routing and agent configuration
+        #[arg(long)]
+        trust_repo: bool,
     },
     /// Check agent definitions, their templates and harness profiles
     Check,
@@ -428,10 +437,11 @@ fn main() {
         issue,
         actor,
         agent,
+        trust_repo,
     } = &cli.cmd
     {
         // The MCP server owns stdout; errors go to stderr.
-        let code = match mcp(&g, issue, actor, agent) {
+        let code = match mcp(&g, issue, actor, agent, *trust_repo) {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("trk mcp: {e:#}");
@@ -449,7 +459,7 @@ fn main() {
     }
 }
 
-fn mcp(g: &Global, issue: &str, actor: &str, agent: &str) -> anyhow::Result<()> {
+fn mcp(g: &Global, issue: &str, actor: &str, agent: &str, trust_repo: bool) -> anyhow::Result<()> {
     let env = Env::new(g)?;
     let now = std::env::var("TRK_NOW").ok().and_then(|s| s.parse().ok());
     trk_mcp::serve(trk_mcp::McpArgs {
@@ -460,10 +470,12 @@ fn mcp(g: &Global, issue: &str, actor: &str, agent: &str) -> anyhow::Result<()> 
             agent_lease: env.agent_lease()?,
             current_repo: None,
             check_interval: trk_core::config::parse_duration(&env.user.check.interval)?,
+            migration_config: Some(env.config.path.clone()),
         },
         issue: issue.to_string(),
         actor: actor.to_string(),
         agent: agent.to_string(),
+        trust_repo,
     })
 }
 
@@ -540,7 +552,11 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
             let w = With::parse(&with);
             let mut items = vec![];
             for id in &ids {
-                items.push(store.read(env.actor.as_deref(), |c| c.show(id, w))?);
+                let mut issue = store.read(env.actor.as_deref(), |c| c.show(id, w))?;
+                let cfg = trk_agent::routing::RoutingConfig::for_issue(&env.config, &issue)?;
+                issue["routing"] =
+                    json!(cfg.resolve(issue["type"].as_str().unwrap_or_default(), None)?);
+                items.push(issue);
             }
             if items.len() == 1 {
                 Ok(Out::Issue(items.pop().unwrap()))
@@ -553,7 +569,7 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
             title,
             description,
             priority,
-            agent,
+            issue_type,
             blocked_by,
             blocks,
             id,
@@ -569,7 +585,7 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
                     .transpose()?
                     .unwrap_or_default(),
                 priority,
-                agent,
+                issue_type,
                 blocked_by,
                 blocks,
                 ..Default::default()
@@ -581,7 +597,7 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
             title,
             description,
             priority,
-            agent,
+            issue_type,
             dry_run,
         } => edit(
             &env,
@@ -590,7 +606,7 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
                 title,
                 description: description.as_deref().map(read_value).transpose()?,
                 priority,
-                agent: agent.map(|a| Some(a).filter(|a| !a.trim().is_empty())),
+                issue_type,
             },
             dry_run,
         ),
@@ -814,6 +830,7 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
             fg,
             print,
             dry_run,
+            trust_repo,
         } => run::run(
             &env,
             run::RunArgs {
@@ -823,6 +840,7 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
                 fg,
                 print,
                 dry_run,
+                trust_repo,
             },
         ),
         Cmd::Runs => run::runs(&env),
@@ -1047,7 +1065,10 @@ fn create(env: &Env, mut new: NewIssue, dry_run: bool) -> Result<Out> {
                 .priority
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PRIORITY.to_string()),
-            agent: new.agent.clone().unwrap_or_default(),
+            issue_type: new
+                .issue_type
+                .clone()
+                .unwrap_or_else(|| "code-change".into()),
             description: if new.description.is_empty() {
                 "<!-- What is needed and why, with enough context to start cold. -->\n".into()
             } else {
@@ -1060,7 +1081,7 @@ fn create(env: &Env, mut new: NewIssue, dry_run: bool) -> Result<Out> {
             attempt(NewIssue {
                 title: d.title,
                 priority: Some(d.priority).filter(|p| !p.trim().is_empty()),
-                agent: Some(d.agent).filter(|a| !a.trim().is_empty()),
+                issue_type: Some(d.issue_type),
                 description: if placeholder {
                     String::new()
                 } else {
@@ -1077,8 +1098,10 @@ fn create(env: &Env, mut new: NewIssue, dry_run: bool) -> Result<Out> {
 fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
     let actor = env.actor()?.to_string();
     let mut store = env.store()?;
-    let nothing =
-        e.title.is_none() && e.description.is_none() && e.priority.is_none() && e.agent.is_none();
+    let nothing = e.title.is_none()
+        && e.description.is_none()
+        && e.priority.is_none()
+        && e.issue_type.is_none();
     if !nothing {
         return store
             .write(&actor, dry_run, |c| {
@@ -1090,7 +1113,7 @@ fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
     }
     if !editor::is_tty() {
         return Err(bad_args("nothing to change")
-            .with_hint("pass -t TITLE, -d DESCRIPTION, -p PRIORITY or --agent NAME"));
+            .with_hint("pass -t TITLE, -d DESCRIPTION, -p PRIORITY or --type NAME"));
     }
     let cur = store.read(None, |c| {
         let id = c.resolve_id(&id)?;
@@ -1099,7 +1122,7 @@ fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
     let doc = editor::Doc {
         title: cur.title.clone(),
         priority: cur.priority.clone(),
-        agent: cur.agent.clone().unwrap_or_default(),
+        issue_type: cur.issue_type.clone(),
         description: cur.description.clone(),
     };
     let v = editor::edit_loop(&doc, |d| {
@@ -1110,7 +1133,7 @@ fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
                     title: Some(d.title),
                     description: Some(d.description),
                     priority: Some(d.priority),
-                    agent: Some(Some(d.agent).filter(|a| !a.trim().is_empty())),
+                    issue_type: Some(d.issue_type),
                 },
             )?;
             c.show(&cur.id, SHOWN)
@@ -1175,7 +1198,7 @@ fn whoami(env: &Env) -> Result<Out> {
         "config": env.config.path,
         "config_commit": env.config.git_commit(),
         "db": env.db,
-        "default_agent": env.default_agent(),
+        "default_type": "code-change",
         "issues": counts,
         "check_running": lock.map(|(pid, host, started)| json!({"pid": pid, "host": host, "started_at": started})),
     });
@@ -1207,28 +1230,38 @@ fn diag_text(d: &[trk_core::config::Diagnostic]) -> String {
 }
 
 fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
+    let local_config = || {
+        trk_agent::routing::RoutingConfig::for_repository(
+            &env.config,
+            env.git.as_ref().map(|g| std::path::Path::new(&g.toplevel)),
+        )
+    };
     match cmd {
         AgentCmd::List => {
-            let agents = trk_agent::load_agents(&env.config)?;
-            let default = env.default_agent();
+            let cfg = local_config()?;
+            let agents = cfg.agents()?;
+            let types = cfg.types()?;
             let mut items = vec![];
             let mut text = String::new();
-            for a in agents.values() {
+            for resolved in agents.values() {
+                let a = &resolved.agent;
                 let tools: Vec<String> = trk_agent::agent_tools(a)
                     .into_iter()
                     .map(|t| t.name)
                     .collect();
                 text.push_str(&format!(
-                    "{:<12} {}{}\n             harness: {}  builtin_tools: {}\n             tools: {}\n",
+                    "{:<12} {}\n             harness: {}  builtin_tools: {}\n             tools: {}\n",
                     a.name,
                     a.description.clone().unwrap_or_default(),
-                    if a.name == default { "  (default)" } else { "" },
                     a.harness.prefer.join(" > "),
                     a.harness.builtin_tools,
                     tools.join(", "),
                 ));
                 items.push(json!({"name": a.name, "description": a.description,
-                                  "default": a.name == default, "tools": tools,
+                                  "tools": tools,
+                                  "source": resolved.config.path.join("agents").join(format!("{}.toml", a.name)),
+                                  "prompt_directory": resolved.config.path,
+                                  "types": types.values().filter(|r| r.agent == a.name).collect::<Vec<_>>(),
                                   "harness": a.harness.prefer, "builtin_tools": a.harness.builtin_tools}));
             }
             if text.is_empty() {
@@ -1237,7 +1270,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             Ok(Out::Text(text, Value::Array(items)))
         }
         AgentCmd::Check => {
-            let d = trk_agent::check::check_agents(&env.config, &env.user);
+            let d = local_config()?.check(&env.user);
             let errors = d.iter().filter(|x| x.level == Level::Error).count();
             let data = json!({"ok": errors == 0, "diagnostics": d});
             if errors > 0 {
@@ -1268,8 +1301,11 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             };
             Ok(Out::Text(text, data))
         }
-        AgentCmd::Preview { agent, issue } => {
-            let a = trk_agent::load_agent(&env.config, &agent)?;
+        AgentCmd::Preview {
+            agent,
+            issue,
+            trust_repo,
+        } => {
             let issue_json = match &issue {
                 Some(id) => {
                     let store = env.store()?;
@@ -1286,6 +1322,14 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 }
                 None => trk_agent::check::sample_issue(),
             };
+            let cfg = trk_agent::routing::RoutingConfig::for_issue(&env.config, &issue_json)?;
+            let routing = cfg.resolve(
+                issue_json["type"].as_str().unwrap_or_default(),
+                Some(&agent),
+            )?;
+            cfg.require_trust(&routing, trust_repo)?;
+            let resolved = cfg.load(&routing)?;
+            let a = resolved.agent;
             let tools = trk_agent::agent_tools(&a);
             let input = trk_agent::prompt::PromptInput {
                 issue: &issue_json,
@@ -1295,8 +1339,8 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 actor: "agent:<harness>:<session>",
                 harness: None,
             };
-            let instructions = trk_agent::prompt::instructions(&env.config, &input)?;
-            let briefing = trk_agent::prompt::briefing(&env.config, &input, None)?;
+            let instructions = trk_agent::prompt::instructions(&resolved.config, &input)?;
+            let briefing = trk_agent::prompt::briefing(&resolved.config, &input, None)?;
             let tool_json: Vec<Value> = tools
                 .iter()
                 .map(|t| json!({"name": t.name, "description": t.description, "input_schema": t.input_schema}))
@@ -1307,7 +1351,11 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 .map(|m| json!({"name": m.name, "command": m.command, "args": m.args}))
                 .collect();
             let mut text = format!(
-                "== instructions (MCP server) ==\n{instructions}\n\n== briefing (initial prompt) ==\n{briefing}\n\n== trk tools ==\n",
+                "== routing ==\ntype: {} · agent: {}\nagent source: {}\nprompts: {}\n\n== instructions (MCP server) ==\n{instructions}\n\n== briefing (initial prompt) ==\n{briefing}\n\n== trk tools ==\n",
+                routing.issue_type,
+                routing.agent,
+                routing.agent_source.display(),
+                routing.prompt_directory.display(),
             );
             for tl in &tools {
                 let req: Vec<String> = tl.input_schema["required"]
@@ -1336,7 +1384,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             }
             Ok(Out::Text(
                 text,
-                json!({"agent": a.name, "instructions": instructions, "briefing": briefing, "tools": tool_json, "mcp": others}),
+                json!({"agent": a.name, "type": routing.issue_type, "routing": routing, "instructions": instructions, "briefing": briefing, "tools": tool_json, "mcp": others}),
             ))
         }
     }

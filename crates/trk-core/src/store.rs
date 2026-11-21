@@ -4,19 +4,18 @@
 //! leases, validate, check claims, write rows, append events, commit. Reads
 //! use deferred transactions.
 
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use rusqlite_migration::{M, Migrations};
+use rusqlite_migration::{HookError, M, Migrations};
 use serde_json::{Value, json};
 
 use crate::error::{Code, Error, Result, bad_args, not_found};
 use crate::model::*;
 
-const MIGRATIONS: &[M<'static>] = &[M::up(include_str!("schema.sql"))];
-
 pub const ISSUE_COLS: &str = "i.id, i.project_id, i.repo_id, i.state, i.title, i.description, \
-     i.priority, i.agent, i.close_reason, i.waiting_reason, i.waiting_check, i.check_interval, \
+     i.priority, i.type, i.close_reason, i.waiting_reason, i.waiting_check, i.check_interval, \
      i.next_check_at, i.last_check_at, i.last_check_exit, i.wait_cwd, i.created_by, i.created_at, \
      i.updated_at, i.closed_at";
 
@@ -31,6 +30,9 @@ pub struct StoreOpts {
     pub current_repo: Option<String>,
     /// Time between checks of a waiting issue that does not set its own.
     pub check_interval: jiff::SignedDuration,
+    /// Global config directory used only to preserve routing when migrating
+    /// databases with authored agent assignments.
+    pub migration_config: Option<PathBuf>,
 }
 
 impl Default for StoreOpts {
@@ -40,6 +42,7 @@ impl Default for StoreOpts {
             agent_lease: jiff::SignedDuration::from_mins(30),
             current_repo: None,
             check_interval: jiff::SignedDuration::from_mins(5),
+            migration_config: None,
         }
     }
 }
@@ -93,7 +96,18 @@ impl Store {
                  open issues with scripts/import-v1.sh",
             ));
         }
-        Migrations::from_slice(MIGRATIONS).to_latest(&mut conn)?;
+        let config_dir = opts.migration_config.clone();
+        let migrations = [
+            M::up(include_str!("schema.sql")),
+            M::up_with_hook(
+                include_str!("schema-v2.sql"),
+                move |tx: &rusqlite::Transaction| {
+                    migrate_issue_types(tx, config_dir.as_deref())
+                        .map_err(|e| HookError::Hook(e.to_string()))
+                },
+            ),
+        ];
+        Migrations::from_slice(&migrations).to_latest(&mut conn)?;
         Ok(Store { conn, opts })
     }
 
@@ -161,6 +175,118 @@ impl Store {
             .execute("VACUUM INTO ?1", params![path.to_string_lossy()])?;
         Ok(())
     }
+}
+
+/// Files are published before removing any old routing data. A failed database
+/// transaction may leave matching files behind; reopening safely reuses them.
+fn migrate_issue_types(conn: &Connection, config_dir: Option<&Path>) -> Result<()> {
+    let has_issues: bool =
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM issue)", [], |r| r.get(0))?;
+    if has_issues {
+        let config_dir = config_dir.ok_or_else(|| {
+            Error::new(
+                Code::ConfigInvalid,
+                "migrating issue agents requires the global config directory (StoreOpts.migration_config)",
+            )
+        })?;
+        let default_agent = migration_default_agent(config_dir)?;
+        let mut stmt = conn.prepare("SELECT DISTINCT coalesce(agent, ?1) FROM issue")?;
+        let agents = stmt
+            .query_map([&default_agent], |r| r.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        let types_dir = config_dir.join("types");
+        std::fs::create_dir_all(&types_dir)?;
+        for agent in agents {
+            publish_migrated_type(&types_dir, &agent)?;
+        }
+        conn.execute(
+            "UPDATE issue SET type = 'migrated-agent-' || lower(hex(coalesce(agent, ?1)))",
+            [&default_agent],
+        )?;
+    }
+    conn.execute_batch("ALTER TABLE issue DROP COLUMN agent;")?;
+    Ok(())
+}
+
+fn migration_default_agent(config_dir: &Path) -> Result<String> {
+    let path = config_dir.join("config.toml");
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok("implementer".into()),
+        Err(e) => return Err(e.into()),
+    };
+    let config: toml::Value = toml::from_str(&source)
+        .map_err(|e| Error::new(Code::ConfigInvalid, format!("{}: {e}", path.display())))?;
+    match config.get("run").and_then(|run| run.get("default_agent")) {
+        None => Ok("implementer".into()),
+        Some(toml::Value::String(agent)) => Ok(agent.clone()),
+        Some(_) => Err(Error::new(
+            Code::ConfigInvalid,
+            format!("{}: run.default_agent must be a string", path.display()),
+        )),
+    }
+}
+
+fn publish_migrated_type(types_dir: &Path, agent: &str) -> Result<()> {
+    use std::fmt::Write as _;
+
+    let mut name = String::with_capacity("migrated-agent-".len() + agent.len() * 2);
+    name.push_str("migrated-agent-");
+    for byte in agent.bytes() {
+        write!(&mut name, "{byte:02x}").expect("writing a string cannot fail");
+    }
+    let definition = toml::Value::Table(toml::map::Map::from_iter([
+        ("name".into(), toml::Value::String(name.clone())),
+        (
+            "description".into(),
+            toml::Value::String(format!(
+                "Migrated issue agent assignment; routes to agent {agent:?}."
+            )),
+        ),
+        ("agent".into(), toml::Value::String(agent.into())),
+    ]));
+    let path = types_dir.join(format!("{name}.toml"));
+    let matches_existing = || -> Result<()> {
+        let existing = std::fs::read_to_string(&path)?;
+        if toml::from_str::<toml::Value>(&existing).ok().as_ref() != Some(&definition) {
+            return Err(Error::new(
+                Code::ConfigInvalid,
+                format!(
+                    "{} conflicts with the migrated type for agent {agent:?}; preserve or move it before retrying migration",
+                    path.display()
+                ),
+            ));
+        }
+        Ok(())
+    };
+    if path.try_exists()? {
+        return matches_existing();
+    }
+    let content = toml::to_string(&definition)
+        .map_err(|e| Error::new(Code::Internal, format!("serializing migrated type: {e}")))?;
+    let temporary = types_dir.join(format!(".{name}-{:016x}.tmp", rand::random::<u64>()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let result = (|| -> Result<()> {
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        // A hard link publishes complete contents atomically without replacing
+        // an existing definition, including one published by another process.
+        match std::fs::hard_link(&temporary, &path) {
+            Ok(()) => {
+                std::fs::File::open(types_dir)?.sync_all()?;
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => matches_existing(),
+            Err(e) => Err(e.into()),
+        }
+    })();
+    drop(file);
+    std::fs::remove_file(temporary)?;
+    result
 }
 
 // ----------------------------------------------------------------------
@@ -481,7 +607,7 @@ pub fn row_to_issue(r: &rusqlite::Row) -> rusqlite::Result<Issue> {
         title: r.get(4)?,
         description: r.get(5)?,
         priority: r.get(6)?,
-        agent: r.get(7)?,
+        issue_type: r.get(7)?,
         close_reason: r.get(8)?,
         waiting_reason: r.get(9)?,
         waiting_check: r.get(10)?,

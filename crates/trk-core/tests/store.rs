@@ -113,7 +113,7 @@ fn create_defaults_and_validation() {
     let i = s.read(None, |c| c.issue(&id)).unwrap();
     assert_eq!(i.state, State::Open);
     assert_eq!(i.priority, "P2");
-    assert_eq!(i.agent, None);
+    assert_eq!(i.issue_type, trk_core::model::DEFAULT_TYPE);
     let e = s.write(HUMAN, false, |c| c.create(new("  "))).unwrap_err();
     assert_eq!(e.code(), Code::InvalidField);
     let e = s
@@ -664,4 +664,304 @@ fn an_old_database_is_refused() {
     let e = Store::open(&path, StoreOpts::default()).err().unwrap();
     assert_eq!(e.code(), Code::OldDatabase);
     assert!(e.hint().unwrap().contains("import-v1.sh"));
+}
+
+#[test]
+fn issue_types_are_required_authored_fields() {
+    let (_dir, mut s) = setup();
+    for invalid in ["", " \n "] {
+        let error = s
+            .write(HUMAN, false, |c| {
+                c.create(NewIssue {
+                    issue_type: Some(invalid.into()),
+                    ..new("Invalid type")
+                })
+            })
+            .unwrap_err();
+        assert_eq!(error.code(), Code::InvalidField);
+    }
+    let id = s
+        .write(HUMAN, false, |c| {
+            c.create(NewIssue {
+                issue_type: Some(" review ".into()),
+                ..new("Typed issue")
+            })
+        })
+        .unwrap();
+    assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().issue_type, "review");
+    let changes = s
+        .write(HUMAN, false, |c| {
+            c.edit(
+                &id,
+                Edit {
+                    issue_type: Some("investigation".into()),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    assert_eq!(changes["type"]["from"], "review");
+    assert_eq!(changes["type"]["to"], "investigation");
+    for invalid in ["", " \n "] {
+        let error = s
+            .write(HUMAN, false, |c| {
+                c.edit(
+                    &id,
+                    Edit {
+                        issue_type: Some(invalid.into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap_err();
+        assert_eq!(error.code(), Code::InvalidField);
+    }
+    assert_eq!(
+        s.read(None, |c| c.issue(&id)).unwrap().issue_type,
+        "investigation"
+    );
+    let shown = s.read(None, |c| c.show(&id, With::default())).unwrap();
+    assert_eq!(shown["type"], "investigation");
+    assert!(shown.get("agent").is_none());
+    let serialized = serde_json::to_value(s.read(None, |c| c.issue(&id)).unwrap()).unwrap();
+    assert_eq!(serialized["type"], "investigation");
+    assert!(serialized.get("agent").is_none());
+    assert!(
+        s.conn()
+            .execute("UPDATE issue SET type = '' WHERE id = ?1", [&id])
+            .is_err()
+    );
+}
+
+#[test]
+fn queries_and_sorts_use_type_not_issue_agent() {
+    let (_dir, mut s) = setup();
+    let default = create(&mut s, "Default");
+    let custom = s
+        .write(HUMAN, false, |c| {
+            c.create(NewIssue {
+                issue_type: Some("review".into()),
+                ..new("Custom")
+            })
+        })
+        .unwrap();
+    assert_eq!(ids(&s, "type=code-change"), [default.clone()]);
+    assert_eq!(ids(&s, "type=review"), [custom.clone()]);
+    let sorted = s
+        .read(None, |c| c.list("", None, Some("-type"), None))
+        .unwrap();
+    assert_eq!(sorted[0]["id"], custom);
+    assert_eq!(sorted[1]["id"], default);
+    assert_eq!(
+        s.read(None, |c| c.list("agent=implementer", None, None, None))
+            .unwrap_err()
+            .code(),
+        Code::BadQuery
+    );
+    assert!(trk_core::query::order_by(Some("agent"), false).is_err());
+}
+
+fn old_agent_database(path: &std::path::Path, agents: &[Option<&str>]) {
+    let conn = rusqlite::Connection::open(path).unwrap();
+    conn.execute_batch(include_str!("../src/schema.sql"))
+        .unwrap();
+    conn.execute_batch(
+        "PRAGMA user_version = 1;
+         INSERT INTO project VALUES ('orch', 'Orchestra', '2026-11-20T10:00:00Z');
+         INSERT INTO actor (id, kind, first_seen)
+         VALUES ('human:alice@example.com', 'human', '2026-11-20T10:00:00Z');",
+    )
+    .unwrap();
+    for (index, agent) in agents.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO issue
+             (id, project_id, title, agent, created_by, created_at, updated_at)
+             VALUES (?1, 'orch', 'Old issue', ?2, ?3, '2026-11-20T10:00:00Z', '2026-11-20T10:00:00Z')",
+            rusqlite::params![format!("orch-{index}"), agent, HUMAN],
+        )
+        .unwrap();
+    }
+}
+
+fn migrated_type(agent: &str) -> String {
+    let hex: String = agent.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format!("migrated-agent-{hex}")
+}
+
+fn assert_new_issue_schema(conn: &rusqlite::Connection) {
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(issue)")
+        .unwrap()
+        .query_map([], |row| row.get(1))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(columns.iter().any(|column| column == "type"));
+    assert!(!columns.iter().any(|column| column == "agent"));
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn migrating_agents_preserves_explicit_and_implicit_routing_and_claims() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    let config = dir.path().join("config");
+    old_agent_database(&path, &[None, Some("custom reviewer"), Some("réviseur")]);
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO harness VALUES ('omp');
+             INSERT INTO actor (id, kind, harness, first_seen)
+             VALUES ('agent:omp:s1', 'agent', 'omp', '2026-11-20T10:00:00Z');
+             UPDATE issue SET state = 'claimed' WHERE id = 'orch-0';
+             INSERT INTO claim (issue_id, actor, claimed_at, agent)
+             VALUES ('orch-0', 'agent:omp:s1', '2026-11-20T10:00:00Z', 'actual-launched-agent');
+             INSERT INTO dep (src, dst, created_by, created_at)
+             VALUES ('orch-0', 'orch-1', 'human:alice@example.com', '2026-11-20T10:00:00Z');
+             INSERT INTO event (issue_id, actor, at, op, payload)
+             VALUES ('orch-0', 'human:alice@example.com', '2026-11-20T10:00:00Z', 'note', '{\"body\":\"migration history\"}');",
+        )
+        .unwrap();
+    }
+    let s = Store::open(
+        &path,
+        StoreOpts {
+            migration_config: Some(config.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_new_issue_schema(s.conn());
+    for (index, agent) in ["implementer", "custom reviewer", "réviseur"]
+        .iter()
+        .enumerate()
+    {
+        let name = migrated_type(agent);
+        let issue = s.read(None, |c| c.issue(&format!("orch-{index}"))).unwrap();
+        assert_eq!(issue.issue_type, name);
+        let source =
+            std::fs::read_to_string(config.join("types").join(format!("{name}.toml"))).unwrap();
+        let definition: toml::Value = toml::from_str(&source).unwrap();
+        assert_eq!(definition["name"].as_str(), Some(name.as_str()));
+        assert_eq!(definition["agent"].as_str(), Some(*agent));
+        assert!(
+            definition["description"]
+                .as_str()
+                .unwrap()
+                .contains("Migrated")
+        );
+        assert!(definition["description"].as_str().unwrap().contains(agent));
+    }
+    assert_eq!(
+        s.read(None, |c| c.active_claim("orch-0"))
+            .unwrap()
+            .unwrap()
+            .agent
+            .as_deref(),
+        Some("actual-launched-agent")
+    );
+    assert_eq!(ids(&s, "blocked"), ["orch-1"]);
+    assert_eq!(ids(&s, "text~history"), ["orch-0"]);
+    assert_eq!(s.read(None, |c| c.events("orch-0")).unwrap().len(), 1);
+}
+
+#[test]
+fn migration_uses_old_config_default_without_affecting_new_issues() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    old_agent_database(&path, &[None, Some("implementer")]);
+    let config = dir.path().join("config");
+    std::fs::create_dir(&config).unwrap();
+    std::fs::write(
+        config.join("config.toml"),
+        "[run]\ndefault_agent = 'old-default'\n",
+    )
+    .unwrap();
+    let mut s = Store::open(
+        &path,
+        StoreOpts {
+            migration_config: Some(config),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        s.read(None, |c| c.issue("orch-0")).unwrap().issue_type,
+        migrated_type("old-default")
+    );
+    assert_eq!(
+        s.read(None, |c| c.issue("orch-1")).unwrap().issue_type,
+        migrated_type("implementer")
+    );
+    let id = create(&mut s, "After migration");
+    assert_eq!(
+        s.read(None, |c| c.issue(&id)).unwrap().issue_type,
+        "code-change"
+    );
+}
+
+#[test]
+fn migration_requires_config_and_refuses_conflicting_types_without_losing_agents() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    old_agent_database(&path, &[None, Some("reviewer")]);
+    let error = Store::open(&path, StoreOpts::default()).err().unwrap();
+    assert!(error.to_string().contains("migration_config"));
+    let config = dir.path().join("config");
+    let types = config.join("types");
+    std::fs::create_dir_all(&types).unwrap();
+    let conflict = types.join(format!("{}.toml", migrated_type("reviewer")));
+    std::fs::write(&conflict, "name = 'unrelated'\nagent = 'wrong'\n").unwrap();
+    let opts = StoreOpts {
+        migration_config: Some(config),
+        ..Default::default()
+    };
+    let error = Store::open(&path, opts.clone()).err().unwrap();
+    assert!(error.to_string().contains("conflicts"));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row("SELECT agent FROM issue WHERE id = 'orch-1'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "reviewer"
+    );
+    assert!(conn.prepare("SELECT type FROM issue").is_err());
+    drop(conn);
+    std::fs::remove_file(conflict).unwrap();
+    let s = Store::open(&path, opts.clone()).unwrap();
+    assert_new_issue_schema(s.conn());
+    drop(s);
+    // A second old database reuses the matching files produced by the first.
+    let second = dir.path().join("second.db");
+    old_agent_database(&second, &[None, Some("reviewer")]);
+    let s = Store::open(&second, opts).unwrap();
+    assert_new_issue_schema(s.conn());
+    assert_eq!(
+        s.read(None, |c| c.issue("orch-1")).unwrap().issue_type,
+        migrated_type("reviewer")
+    );
+    drop(s);
+    // Once migrated, opening needs no migration-only configuration.
+    assert_new_issue_schema(Store::open(&second, StoreOpts::default()).unwrap().conn());
+}
+
+#[test]
+fn empty_databases_need_no_migration_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let fresh = Store::open(&dir.path().join("fresh.db"), StoreOpts::default()).unwrap();
+    assert_new_issue_schema(fresh.conn());
+    let old = dir.path().join("empty-old.db");
+    old_agent_database(&old, &[]);
+    let migrated = Store::open(&old, StoreOpts::default()).unwrap();
+    assert_new_issue_schema(migrated.conn());
 }

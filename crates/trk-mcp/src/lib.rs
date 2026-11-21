@@ -31,6 +31,7 @@ pub struct McpArgs {
     pub issue: String,
     pub actor: String,
     pub agent: String,
+    pub trust_repo: bool,
 }
 
 struct Inner {
@@ -40,6 +41,7 @@ struct Inner {
     agent: AgentDef,
     tools: Vec<ToolDef>,
     instructions: String,
+    routing: trk_agent::routing::Routing,
 }
 
 #[derive(Clone)]
@@ -53,8 +55,7 @@ impl TrkServer {
     /// Load the agent, select its tools, render the instructions.
     pub fn new(args: McpArgs) -> anyhow::Result<TrkServer> {
         let store = Store::open(&args.db, args.opts.clone())?;
-        let agent = trk_agent::load_agent(&args.config, &args.agent)?;
-        let (tools, issue_json, worktree) = store.read(Some(&args.actor), |c| {
+        let (issue_json, worktree) = store.read(Some(&args.actor), |c| {
             let id = c.resolve_id(&args.issue)?;
             let issue = c.show(
                 &id,
@@ -63,10 +64,18 @@ impl TrkServer {
                     ..Default::default()
                 },
             )?;
-            let tools = trk_agent::agent_tools(&agent);
             let worktree = issue["claim"]["worktree"].as_str().map(String::from);
-            Ok((tools, issue, worktree))
+            Ok((issue, worktree))
         })?;
+        let config = trk_agent::routing::RoutingConfig::for_issue(&args.config, &issue_json)?;
+        let routing = config.resolve(
+            issue_json["type"].as_str().unwrap_or_default(),
+            Some(&args.agent),
+        )?;
+        config.require_trust(&routing, args.trust_repo)?;
+        let resolved = config.load(&routing)?;
+        let agent = resolved.agent;
+        let tools = trk_agent::agent_tools(&agent);
         let input = trk_agent::prompt::PromptInput {
             issue: &issue_json,
             agent: &agent,
@@ -75,7 +84,7 @@ impl TrkServer {
             actor: &args.actor,
             harness: args.actor.split(':').nth(1),
         };
-        let instructions = trk_agent::prompt::instructions(&args.config, &input)?;
+        let instructions = trk_agent::prompt::instructions(&resolved.config, &input)?;
         let issue = issue_json["id"].as_str().unwrap_or(&args.issue).to_string();
         Ok(TrkServer {
             inner: Arc::new(Inner {
@@ -88,6 +97,7 @@ impl TrkServer {
                 agent,
                 tools,
                 instructions,
+                routing,
             }),
         })
     }
@@ -117,6 +127,9 @@ impl TrkServer {
             Ok(v) => (true, v),
             Err(e) => (false, json!({"ok": false, "error": error_json(&e)})),
         };
+        if ok && name == "get_task" {
+            out["routing"] = json!(self.inner.routing);
+        }
         if self.inner.agent.inbox {
             let msgs = store.write(&self.inner.session.actor, false, |c| {
                 if c.active_claim(&self.inner.session.issue)?

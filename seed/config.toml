@@ -18,8 +18,10 @@ timeout  = "10m"
 [run]
 # Where `trk run` creates git worktrees (default: <data dir>/worktrees).
 # worktrees = "~/trk-worktrees"
-# The agent for issues that do not name one.
-default_agent = "implementer"
+# Optional global harness order, overriding global agents' preferences.
+# Repo harness.prefer is ignored; without this, same-name global agent
+# preferences apply, or installed global profiles for new repo agents.
+# harness_prefer = ["omp", "claude-code"]
 
 # Launcher templates. Placeholders: {name} (terminal name), {cwd},
 # {shell_command} (cd + env + harness argv), {text}.

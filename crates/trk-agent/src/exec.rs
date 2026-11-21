@@ -78,6 +78,7 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
                     description,
                     priority,
                     repo_id: parent.repo_id,
+                    issue_type: opt_arg(&a, "type").map(String::from),
                     blocks: if blocks_this {
                         vec![id.clone()]
                     } else {

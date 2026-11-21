@@ -14,3 +14,4 @@ minijinja = { workspace = true, features = ["serde", "json", "preserve_order"] }
 [dev-dependencies]
 toml.workspace = true
 tempfile.workspace = true
+rusqlite.workspace = true

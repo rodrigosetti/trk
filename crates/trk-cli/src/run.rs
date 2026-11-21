@@ -90,6 +90,7 @@ pub struct RunArgs {
     pub fg: bool,
     pub print: bool,
     pub dry_run: bool,
+    pub trust_repo: bool,
 }
 
 /// Terminal names: 1-32 of a-z 0-9 - _.
@@ -232,12 +233,22 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         }
         return Err(e);
     }
-    let agent_name = a
-        .agent
-        .clone()
-        .or_else(|| issue["agent"].as_str().map(String::from))
-        .unwrap_or_else(|| env.default_agent());
-    let agent = trk_agent::load_agent(&env.config, &agent_name)?;
+    let routing_config = trk_agent::routing::RoutingConfig::for_issue(&env.config, &issue)?;
+    let routing = routing_config.resolve(
+        issue["type"].as_str().unwrap_or_default(),
+        a.agent.as_deref(),
+    )?;
+    // Inspect untrusted policy without rendering its prompts or claiming.
+    if a.dry_run && routing.requires_trust && !a.trust_repo {
+        return Ok(Out::Data(json!({
+            "issue": id, "type": routing.issue_type, "agent": routing.agent,
+            "routing": routing, "requires_trust": true,
+        })));
+    }
+    routing_config.require_trust(&routing, a.trust_repo)?;
+    let resolved = routing_config.load(&routing)?;
+    let agent = resolved.agent;
+    let agent_name = agent.name.clone();
     let profiles = harness::profiles(&env.user)?;
     let hname = harness::choose(&agent, &profiles, a.harness.as_deref())?;
     let profile = profiles[&hname].clone();
@@ -309,13 +320,13 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         actor: &actor,
         harness: Some(&hname),
     };
-    let instructions = trk_agent::prompt::instructions(&env.config, &input)?;
+    let instructions = trk_agent::prompt::instructions(&resolved.config, &input)?;
     let fold = if profile.server_instructions {
         None
     } else {
         Some(instructions.as_str())
     };
-    let briefing = trk_agent::prompt::briefing(&env.config, &input, fold)?;
+    let briefing = trk_agent::prompt::briefing(&resolved.config, &input, fold)?;
     let mut trk_env = BTreeMap::new();
     trk_env.insert(
         "TRK_DB".to_string(),
@@ -348,8 +359,11 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         briefing,
         instructions,
         tools: tools.iter().map(|t| t.name.clone()).collect(),
+        trust_repo: a.trust_repo,
     })?;
-    let spec_json = serde_json::to_value(&spec)?;
+    let mut spec_json = serde_json::to_value(&spec)?;
+    spec_json["type"] = json!(routing.issue_type);
+    spec_json["routing"] = json!(routing);
     if a.dry_run {
         return Ok(Out::Data(spec_json));
     }
@@ -454,7 +468,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         text,
         json!({"issue": id, "agent": agent_name, "harness": hname, "actor": actor, "terminal": terminal,
                "worktree": wt_str, "session_dir": spec.session_dir, "launcher_output": output, "briefing_sent": sent,
-               "placement": placement,
+               "placement": placement, "type": routing.issue_type, "routing": routing,
                "warnings": warnings}),
     ))
 }

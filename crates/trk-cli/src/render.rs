@@ -308,12 +308,34 @@ impl Renderer {
                 .unwrap_or_default(),
             i["created_at"].as_str().map(age).unwrap_or_default(),
             i["created_by"].as_str().unwrap_or(""),
-            i["agent"]
+            i["type"]
                 .as_str()
-                .map(|a| format!(" · agent {a}"))
+                .map(|t| format!(" · type {t}"))
                 .unwrap_or_default()
         );
         s.push_str(&format!("{}\n", self.dim(&meta)));
+        if let Some(routing) = i.get("routing").filter(|r| !r.is_null()) {
+            s.push_str(&format!("\n{}\n", self.bold("Routing")));
+            if let Some(agent) = routing["agent"].as_str() {
+                s.push_str(&format!("  agent   {agent}\n"));
+            }
+            if let Some(sources) = routing["type_sources"].as_array() {
+                for source in sources.iter().filter_map(Value::as_str) {
+                    s.push_str(&format!("  type    {source}\n"));
+                }
+            }
+            if let Some(source) = routing["agent_source"].as_str() {
+                s.push_str(&format!("  source  {source}\n"));
+            }
+            if let Some(directory) = routing["prompt_directory"].as_str() {
+                s.push_str(&format!("  prompts {directory}\n"));
+            }
+            s.push_str(if routing["requires_trust"].as_bool() == Some(true) {
+                "  trust   required (--trust-repo)\n"
+            } else {
+                "  trust   not required\n"
+            });
+        }
         let description = i["description"].as_str().unwrap_or("");
         if !description.trim().is_empty() {
             s.push('\n');

@@ -186,6 +186,7 @@ impl Env {
             agent_lease: self.agent_lease()?,
             current_repo: None,
             check_interval: parse_duration(&self.user.check.interval)?,
+            migration_config: Some(self.config.path.clone()),
         };
         let mut store = Store::open(&self.db, opts)?;
         store.opts.current_repo = self
@@ -227,15 +228,6 @@ impl Env {
                 }
             })),
         }
-    }
-
-    /// The agent for issues that do not name one.
-    pub fn default_agent(&self) -> String {
-        self.user
-            .run
-            .default_agent
-            .clone()
-            .unwrap_or_else(|| trk_core::config::DEFAULT_AGENT.to_string())
     }
 
     pub fn check_timeout(&self) -> Result<std::time::Duration> {

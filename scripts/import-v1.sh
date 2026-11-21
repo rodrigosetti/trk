@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Import the open issues of a six-type trk database into the current one.
 #
-# trk no longer has issue types, type fields or dependency kinds other than
-# "blocks", and the binary does not migrate old databases. This script
-# recreates an export made with the OLD binary under the new model.
+# trk has routing-only types, no custom type fields and only "blocks" edges.
+# The binary refuses six-type databases. This script recreates an export made
+# with the OLD binary under the new model.
 #
 # 1. With the old binary, export (before upgrading):
 #
@@ -26,7 +26,8 @@
 #   context                  becomes the description, followed by the outcome,
 #                            the type's fields, links, tags and non-blocking
 #                            edges as plain text
-#   agent                    kept when the agent still exists
+#   agent                    researcher/reviewer select research/review; otherwise code-change
+#                            the original agent is also retained in description details
 #   notes                    replayed in order, each prefixed with its author and date
 #   blocks edges             kept when both issues are in the export
 #   claimed issues           come back open, with a note saying who had them
@@ -65,7 +66,6 @@ jq -r '.data[] | [.project, (.local_path // ""), (.remote_url // "")] | @tsv' "$
     echo "    $project  $target"
   done
 
-AGENTS="$(t agent list | jq -c '[.data[].name]')"
 IDS="$(jq -sc '[.[].id]' "$DIR/issues.jsonl")"
 
 # The description: the old context, then everything that no longer has a field.
@@ -73,7 +73,7 @@ DESCRIPTION='
   def text: if type == "array" then map(tostring) | join(", ") else tostring end;
   def present: . != null and . != "" and . != [];
   (.fields // {} | to_entries
-     | map(select(.key != "priority" and .key != "agent" and (.value | present)))) as $fields
+     | map(select(.key != "priority" and (.value | present)))) as $fields
   | ((.deps.out // []) | map(select(.kind != "blocks")
        | "- this \(.kind) \(.id) (\(.type), \(.status)): \(.title)")) as $out
   | ((.deps.in // []) | map(select(.kind != "blocks")
@@ -103,7 +103,7 @@ while IFS= read -r issue; do
   project="$(jq -r .project <<<"$issue")"
   title="$(jq -r .title <<<"$issue")"
   priority="$(jq -r '.fields.priority // "P2"' <<<"$issue")"
-  agent="$(jq -r --argjson agents "$AGENTS" '.fields.agent // "" | select(. as $a | $agents | index($a)) // ""' <<<"$issue")"
+  issue_type="$(jq -r 'if .fields.agent == "researcher" then "research" elif .fields.agent == "reviewer" then "review" else "code-change" end' <<<"$issue")"
   # A new issue takes the repo of the directory it is created in.
   repo="$(jq -r '.fields.repo // ""' <<<"$issue")"
   cwd="/"
@@ -111,8 +111,7 @@ while IFS= read -r issue; do
     path="$(jq -r --arg r "$repo" '.data[] | select(.remote_url == $r or .local_path == $r) | .local_path // ""' "$DIR/repos.json" | head -1)"
     if [ -n "$path" ] && [ -d "$path" ]; then cwd="$path"; fi
   fi
-  args=(--project "$project" create "$title" --id "$id" -p "$priority" -d @-)
-  [ -n "$agent" ] && args+=(--agent "$agent")
+  args=(--project "$project" create "$title" --id "$id" -p "$priority" --type "$issue_type" -d @-)
   jq -r "$DESCRIPTION" <<<"$issue" | (cd "$cwd" && t "${args[@]}") >/dev/null
   # Notes, oldest first, with who wrote them and when.
   jq -c '.notes // [] | .[]' <<<"$issue" | while IFS= read -r note; do

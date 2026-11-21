@@ -1,4 +1,4 @@
-//! Interactive editing: `title`, `priority` and `agent` are TOML front matter
+//! Interactive editing: `title`, `priority` and `type` are TOML front matter
 //! between `+++` lines and the description is the markdown body. When
 //! validation fails on save, the file reopens with the errors as comments.
 
@@ -13,13 +13,23 @@ pub fn is_tty() -> bool {
 }
 
 /// The authored fields of an issue, as edited.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Doc {
     pub title: String,
     pub priority: String,
-    /// Empty means the default agent.
-    pub agent: String,
+    pub issue_type: String,
     pub description: String,
+}
+
+impl Default for Doc {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            priority: String::new(),
+            issue_type: "code-change".into(),
+            description: String::new(),
+        }
+    }
 }
 
 fn toml_str(s: &str) -> String {
@@ -36,10 +46,7 @@ pub fn document(errors: &[String], d: &Doc) -> String {
         "priority = {}  # P0 urgent, P1 high, P2 normal, P3 low\n",
         toml_str(&d.priority)
     ));
-    s.push_str(&format!(
-        "agent    = {}  # empty: the default agent\n",
-        toml_str(&d.agent)
-    ));
+    s.push_str(&format!("type     = {}\n", toml_str(&d.issue_type)));
     s.push_str("+++\n");
     s.push_str(&d.description);
     if !d.description.ends_with('\n') {
@@ -59,6 +66,9 @@ pub fn parse(doc: &str) -> Result<Doc> {
         .ok_or_else(|| bad("front matter is not closed with +++".into()))?;
     let table: toml::Table =
         toml::from_str(front).map_err(|e| bad(format!("front matter: {e}")))?;
+    if !table.contains_key("type") {
+        return Err(bad("front matter requires 'type'".into()));
+    }
     let mut d = Doc {
         description: body.trim().to_string(),
         ..Default::default()
@@ -71,7 +81,8 @@ pub fn parse(doc: &str) -> Result<Doc> {
         match k.as_str() {
             "title" => d.title = v,
             "priority" => d.priority = v,
-            "agent" => d.agent = v,
+            "type" if !v.trim().is_empty() => d.issue_type = v,
+            "type" => return Err(bad("type must not be empty".into())),
             other => return Err(bad(format!("unknown key '{other}' in the front matter"))),
         }
     }
@@ -140,7 +151,7 @@ mod tests {
         let d = Doc {
             title: "Say \"hello\"".into(),
             priority: "P1".into(),
-            agent: String::new(),
+            issue_type: "code-change".into(),
             description: "Some context\n\nMore.".into(),
         };
         let text = document(&["bad priority".into()], &d);
@@ -148,5 +159,7 @@ mod tests {
         assert_eq!(parse(&text).unwrap(), d);
         assert!(parse("no front matter").is_err());
         assert!(parse("+++\nowner = \"x\"\n+++\n").is_err());
+        assert!(parse("+++\ntitle = \"Missing type\"\n+++\n").is_err());
+        assert!(parse("+++\ntype = \"\"\n+++\n").is_err());
     }
 }

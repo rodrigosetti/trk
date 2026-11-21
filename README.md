@@ -4,7 +4,7 @@ A local issue tracker and agent launcher in one Rust binary. All repositories sh
 database; humans use the CLI, agents work through a per-issue MCP server, and `trk run <ID>` starts
 an agent session on one issue in a persistent terminal (`hc`). See [SPEC.md](SPEC.md) for the design.
 
-An issue has a title, a description, notes, a priority, and one of four states:
+An issue has a title, a description, notes, a priority, a required type (default `code-change`), and one of four states:
 
 ```
 open → claimed → closed
@@ -54,7 +54,7 @@ trk log orch-4kq
 ```
 
 Every command takes `--json` (or `--format pretty|json|jsonl`). Scripts should always pass `--json`;
-JSON output is the versioned API (`schema_version: 2`), and errors use the same envelope with a
+JSON output is the versioned API (`schema_version: 3`), and errors use the same envelope with a
 stable `code`, a `hint`, and exit codes 1–5.
 
 ## Waiting and `trk check`
@@ -113,8 +113,10 @@ trk run orch-4kq --dry-run       # print the launch spec; claims nothing
 trk agent preview implementer --issue orch-4kq        # instructions, briefing, tool schemas
 ```
 
-The agent for a run is `--agent`, else the issue's `agent`, else `[run] default_agent`
-(`implementer`). The harness is `--harness`, else the agent's first installed preference. The seed
+The agent for a run is `--agent` (a one-off override), else the issue type's `agent` mapping.
+The seed types are `code-change` → `implementer`, `research` → `researcher`, and `review` → `reviewer`.
+Use `trk create ... --type review`, `trk edit <ID> --type research`, and `trk list 'type=review'`.
+The harness is `--harness`, else the first installed global preference (see Configuration). The seed
 config prefers `omp` running `openai-codex/gpt-6-luna`. The worktree is
 `<data dir>/worktrees/<ID>` on a branch named after the issue, so a later session on the same
 issue finds the earlier work.
@@ -165,15 +167,40 @@ upgrading trk to refresh a copy.
 
 ```
 ~/.config/trk/            ($TRK_CONFIG / --config)
-  config.toml             user, leases, check interval and timeout, default agent,
+  config.toml             user, leases, check interval and timeout,
                           launcher templates, harness profiles, saved views
   agents/*.toml           instructions, briefing, other MCP servers, harness preferences
+  types/*.toml            name, description, agent routing
   prompts/*.j2            MiniJinja templates
 ```
 
 There is no schema to apply: states, the close reasons (`done`, `abandoned`), priorities and the
 one dependency kind (`blocks`) are fixed. Agents and prompts are read when a session starts;
 `trk agent check` validates them.
+
+Repository routing lives in the registered issue repository's canonical primary checkout:
+`.trk/types/*.toml` overrides global types by `name`, field by field (omitted descriptions inherit).
+`.trk/agents/*.toml` replaces a global agent definition in full; its prompt paths are rooted in
+the supplying `.trk/` directory, not the global config. Global agents use global prompt paths.
+All worktrees share this configuration, even when a command runs outside the repository.
+Issues without a repository use global configuration only.
+
+Launcher settings, harness profiles and harness preferences stay global. Optional `[run] harness_prefer`
+overrides global agents' preferences. Without it, a repo agent inherits its same-name global
+agent's preference; a new repo agent uses installed global profiles. Repo `harness.prefer` is ignored.
+Selecting a repository agent requires explicit `--trust-repo`
+on each `trk run` or `trk mcp` invocation, because prompts and MCP commands can execute code.
+A repo type that only routes to a global agent does not require trust. `trk show` and
+`trk run --dry-run` expose routing provenance so you can inspect the selected sources first.
+
+The previous current-model database migrates issue `agent` assignments to generated
+`migrated-agent-<hex>` types, where `<hex>` encodes the agent's UTF-8 bytes. Explicit assignments
+are preserved; NULL assignments capture the old `[run].default_agent`, or `implementer`.
+There are no old-field aliases. The earlier six-type database is still refused.
+Run `trk init` after upgrading to add missing seed types without overwriting existing configuration.
+Without trust, a dry-run selecting a repository agent prints routing only; pass `--trust-repo`
+to render its full launch specification. `trk agent preview --issue ID` uses that issue's repository
+and requires the same explicit trust before rendering repository prompts.
 
 The database defaults to `$XDG_DATA_HOME/trk/trk.db` (macOS: `~/Library/Application Support/trk/trk.db`);
 override with `TRK_DB` / `--db`. Worktrees go to `<data dir>/worktrees/<ID>`, session scratch to

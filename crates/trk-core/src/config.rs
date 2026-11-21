@@ -123,14 +123,13 @@ fn default_check_timeout() -> String {
     "10m".into()
 }
 
-pub const DEFAULT_AGENT: &str = "implementer";
-
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RunSection {
     /// Where `trk run` creates worktrees; default `<data dir>/worktrees`.
     pub worktrees: Option<String>,
-    /// The agent for issues that do not name one; default `implementer`.
-    pub default_agent: Option<String>,
+    /// Installed-harness preferences remain global.
+    #[serde(default)]
+    pub harness_prefer: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

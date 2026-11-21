@@ -31,7 +31,7 @@ pub struct NewIssue {
     pub title: String,
     pub description: String,
     pub priority: Option<String>,
-    pub agent: Option<String>,
+    pub issue_type: Option<String>,
     /// `None`: the repo of the working directory, when it belongs to the project.
     pub repo_id: Option<i64>,
     /// Issues that block the new one.
@@ -48,8 +48,7 @@ pub struct Edit {
     pub title: Option<String>,
     pub description: Option<String>,
     pub priority: Option<String>,
-    /// `Some(None)` clears the agent.
-    pub agent: Option<Option<String>>,
+    pub issue_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -118,6 +117,15 @@ fn check_priority(p: &str) -> Result<String> {
     }
 }
 
+fn check_type(issue_type: &str) -> Result<&str> {
+    let issue_type = issue_type.trim();
+    if issue_type.is_empty() {
+        Err(Error::new(Code::InvalidField, "the type cannot be empty"))
+    } else {
+        Ok(issue_type)
+    }
+}
+
 fn tail(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
@@ -132,7 +140,7 @@ fn tail(s: &str, max: usize) -> &str {
 impl Ctx<'_> {
     fn save_issue(&self, i: &Issue) -> Result<()> {
         self.conn.execute(
-            "UPDATE issue SET state = ?2, title = ?3, description = ?4, priority = ?5, agent = ?6,
+            "UPDATE issue SET state = ?2, title = ?3, description = ?4, priority = ?5, type = ?6,
                     close_reason = ?7, waiting_reason = ?8, waiting_check = ?9, check_interval = ?10,
                     next_check_at = ?11, last_check_at = ?12, last_check_exit = ?13, wait_cwd = ?14,
                     closed_at = ?15, updated_at = ?16
@@ -143,7 +151,7 @@ impl Ctx<'_> {
                 i.title,
                 i.description,
                 i.priority,
-                i.agent,
+                i.issue_type,
                 i.close_reason,
                 i.waiting_reason,
                 i.waiting_check,
@@ -288,6 +296,7 @@ impl Ctx<'_> {
                 .with_hint("trk create -t TITLE [-d DESCRIPTION]"));
         }
         let priority = check_priority(new.priority.as_deref().unwrap_or(DEFAULT_PRIORITY))?;
+        let issue_type = check_type(new.issue_type.as_deref().unwrap_or(DEFAULT_TYPE))?;
         let followup_of = new
             .followup_of
             .as_deref()
@@ -358,9 +367,8 @@ impl Ctx<'_> {
                 )));
             }
         }
-        let agent = new.agent.filter(|a| !a.trim().is_empty());
         self.conn.execute(
-            "INSERT INTO issue (id, project_id, repo_id, state, title, description, priority, agent,
+            "INSERT INTO issue (id, project_id, repo_id, state, title, description, priority, type,
                                 created_by, created_at, updated_at)
              VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
             params![
@@ -370,7 +378,7 @@ impl Ctx<'_> {
                 title,
                 new.description,
                 priority,
-                agent,
+                issue_type,
                 self.actor_str(),
                 self.ts(),
             ],
@@ -380,7 +388,7 @@ impl Ctx<'_> {
             "create",
             json!({
                 "project": new.project, "repo_id": repo_id, "title": title,
-                "description": new.description, "priority": priority, "agent": agent,
+                "description": new.description, "priority": priority, "type": issue_type,
                 "followup_of": followup_of,
             }),
         )?;
@@ -429,11 +437,11 @@ impl Ctx<'_> {
                 issue.priority = p;
             }
         }
-        if let Some(a) = e.agent {
-            let a = a.filter(|a| !a.trim().is_empty());
-            if a != issue.agent {
-                changes.insert("agent".into(), json!({"from": issue.agent, "to": a}));
-                issue.agent = a;
+        if let Some(t) = e.issue_type {
+            let t = check_type(&t)?;
+            if t != issue.issue_type {
+                changes.insert("type".into(), json!({"from": issue.issue_type, "to": t}));
+                issue.issue_type = t.to_owned();
             }
         }
         if changes.is_empty() {

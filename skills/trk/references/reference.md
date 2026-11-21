@@ -23,7 +23,7 @@ Names:
 | `id`, `project`, `title` | as stored |
 | `state` | `open`, `claimed`, `waiting`, `closed` |
 | `priority` | `P0` to `P3` |
-| `agent` | the issue's agent definition |
+| `type` | the issue's required type; defaults to `code-change` |
 | `reason` | the close reason: `done` or `abandoned` |
 | `claimed-by`, `created-by` | an actor |
 | `created`, `updated`, `closed`, `next-check` | times |
@@ -46,7 +46,7 @@ trk list 'text~"feature flag"' --json
 
 Options: `--project ID` (or `TRK_PROJECT`) selects a project, `--all-projects` ignores repo and option/environment scope, `--fields id,state,title` picks the JSON keys, `--sort -updated` sorts (a leading `-` is descending), `--limit N`, and `--format jsonl` prints one object per line. `@name` runs a saved view from config.toml (`@mine`, `@agents`, `@open`, `@waiting`).
 
-Sort keys: `id`, `state`, `project`, `title`, `priority`, `agent`, `created`, `updated`, `closed`, `claimed-by`, `lease`, `next-check`. Without `--sort`, `trk ready` orders by priority then oldest first; `trk list` by most recently updated.
+Sort keys: `id`, `state`, `project`, `title`, `priority`, `type`, `created`, `updated`, `closed`, `claimed-by`, `lease`, `next-check`. Without `--sort`, `trk ready` orders by priority then oldest first; `trk list` by most recently updated.
 
 ## The issue object
 
@@ -54,7 +54,7 @@ Sort keys: `id`, `state`, `project`, `title`, `priority`, `agent`, `created`, `u
 
 | Key | Content |
 | --- | --- |
-| `id`, `project`, `repo`, `title`, `description`, `priority`, `agent` | the authored issue |
+| `id`, `project`, `repo`, `title`, `description`, `priority`, `type` | the authored issue |
 | `state`, `close_reason` | where it is |
 | `claim` | the active claim: `actor`, `claimed_at`, `lease_until`, `worktree`, `agent`, `terminal` |
 | `waiting` | while waiting: `reason`, `check`, `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit`, `cwd` |
@@ -68,8 +68,8 @@ Sort keys: `id`, `state`, `project`, `title`, `priority`, `agent`, `created`, `u
 | --- | --- |
 | `trk list [QUERY]`, `trk ready [QUERY]` | Query issues |
 | `trk show <ID>... [--with notes,events,deps,claims]` | Full issues with derived state |
-| `trk create [TITLE] [-d TEXT] [-p P0..P3] [--agent A] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create |
-| `trk edit <ID> [-t TITLE] [-d TEXT] [-p P0..P3] [--agent A] [--dry-run]` | Change the authored fields; `--agent ""` clears it |
+| `trk create [TITLE] [-d TEXT] [-p P0..P3] [--type T] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; type defaults to `code-change` |
+| `trk edit <ID> [-t TITLE] [-d TEXT] [-p P0..P3] [--type T] [--dry-run]` | Change the authored fields; type cannot be empty |
 | `trk claim <ID> [--lease 30m] [--worktree PATH] [--steal]` | open → claimed |
 | `trk unclaim <ID> [-m NOTE] [--force]` | claimed → open |
 | `trk renew <ID> [--lease 30m]` | Extend a lease |
@@ -80,7 +80,7 @@ Sort keys: `id`, `state`, `project`, `title`, `priority`, `agent`, `created`, `u
 | `trk note <ID> [TEXT or -] [--amends SEQ] [--to-agent]` | Append a note |
 | `trk dep add or rm <BLOCKER> <BLOCKED>` | Blocker edges |
 | `trk log <ID>` | Timeline |
-| `trk run <ID> [--agent A] [--harness H] [--dry-run or --print]` | Start an agent session |
+| `trk run <ID> [--agent A] [--harness H] [--trust-repo] [--dry-run or --print]` | Start an agent session; agent override is one-off |
 | `trk runs`, `trk send <ID> TEXT`, `trk reap` | Watch, steer and clean up sessions |
 | `trk agent list`, `trk agent preview <agent> [--issue ID]`, `trk agent check` | Inspect agents |
 | `trk project add or list`, `trk repo add or list` | Projects and repositories |

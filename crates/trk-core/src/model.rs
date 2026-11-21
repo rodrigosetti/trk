@@ -122,6 +122,7 @@ impl std::fmt::Display for State {
 
 pub const PRIORITIES: [&str; 4] = ["P0", "P1", "P2", "P3"];
 pub const DEFAULT_PRIORITY: &str = "P2";
+pub const DEFAULT_TYPE: &str = "code-change";
 pub const CLOSE_REASONS: [&str; 2] = ["done", "abandoned"];
 
 /// Exit code of a waiting check that means "not yet, check again later"
@@ -137,7 +138,8 @@ pub struct Issue {
     pub title: String,
     pub description: String,
     pub priority: String,
-    pub agent: Option<String>,
+    #[serde(rename = "type")]
+    pub issue_type: String,
     pub close_reason: Option<String>,
     pub waiting_reason: Option<String>,
     pub waiting_check: Option<String>,

@@ -1675,6 +1675,7 @@ name = "trk-agent"
 version = "0.1.0"
 dependencies = [
  "minijinja",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

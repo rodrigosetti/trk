@@ -8,7 +8,7 @@
 //! op     := '=' | '!=' | '<' | '<=' | '>' | '>=' | '~'
 //! flag   := 'ready' | 'blocked' | 'due' | 'stale-lease'
 //! value  := word | quoted | 'me' | '.' | reltime
-//! name   := id | state | project | priority | agent | reason | claimed-by | created-by
+//! name   := id | state | project | priority | type | reason | claimed-by | created-by
 //!         | title | created | updated | closed | next-check | text | blocks | blocked-by
 //! ```
 
@@ -244,7 +244,7 @@ enum Target {
     BlockedBy,
 }
 
-const NAMES: &str = "id state project priority agent reason claimed-by created-by title created updated closed next-check text blocks blocked-by";
+const NAMES: &str = "id state project priority type reason claimed-by created-by title created updated closed next-check text blocks blocked-by";
 
 fn target(name: &str) -> Result<Target> {
     Ok(match name {
@@ -252,7 +252,7 @@ fn target(name: &str) -> Result<Target> {
         "state" | "status" => Target::Column("i.state"),
         "project" => Target::Column("i.project_id"),
         "priority" => Target::Column("i.priority"),
-        "agent" => Target::Column("i.agent"),
+        "type" => Target::Column("i.type"),
         "reason" => Target::Column("i.close_reason"),
         "claimed-by" => Target::Column("i.claimant"),
         "created-by" => Target::Column("i.created_by"),
@@ -487,7 +487,7 @@ pub fn order_by(sort: Option<&str>, ready: bool) -> Result<String> {
             "project" => "i.project_id",
             "title" => "i.title",
             "priority" => "i.priority",
-            "agent" => "i.agent",
+            "type" => "i.type",
             "created" => "i.created_at",
             "updated" => "i.updated_at",
             "closed" => "i.closed_at",
@@ -499,7 +499,7 @@ pub fn order_by(sort: Option<&str>, ready: bool) -> Result<String> {
                     Code::BadArgs,
                     format!("cannot sort by '{f}'"),
                 )
-                .with_hint("sort by: id state project title priority agent created updated closed claimed-by lease next-check"));
+                .with_hint("sort by: id state project title priority type created updated closed claimed-by lease next-check"));
             }
         };
         out.push(format!("{col} {}", if desc { "DESC" } else { "ASC" }));
@@ -553,7 +553,6 @@ mod tests {
             }
         ));
         assert!(matches!(&t[2], Term::Pred { name, .. } if name == "blocks"));
-        assert!(target("type").is_err());
         assert!(parse("bogus").is_err());
         assert!(parse("state=a\"b").is_err());
         assert!(parse("").unwrap().is_empty());

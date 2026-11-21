@@ -6,6 +6,7 @@ pub mod check;
 pub mod exec;
 pub mod harness;
 pub mod prompt;
+pub mod routing;
 pub mod tools;
 
 pub use agent::{AgentDef, load_agent, load_agents};

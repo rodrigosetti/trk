@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use trk_core::config::{ConfigDir, DEFAULT_AGENT, Diagnostic, UserConfig};
+use trk_core::config::{ConfigDir, Diagnostic, UserConfig};
 
 use crate::agent::{AgentDef, BUILTIN_LEVELS, load_agent_file};
 use crate::harness::{installed, profiles};
@@ -16,7 +16,7 @@ pub fn sample_issue() -> Value {
     json!({
         "id": "proj-abc", "project": "proj", "repo": null, "title": "Sample",
         "description": "Sample description", "state": "claimed", "priority": "P2",
-        "agent": null, "close_reason": null, "waiting": null, "claim": null,
+        "type": "code-change", "close_reason": null, "waiting": null, "claim": null,
         "deps": {"blocked_by": [], "blocks": []},
         "derived": {"ready": false, "blocked_by": [], "due": false, "unblocks_higher_priority": []},
         "notes": [],
@@ -24,9 +24,23 @@ pub fn sample_issue() -> Value {
 }
 
 pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
+    check_global(cfg, user, None)
+}
+
+/// Check only effective global definitions; local templates are never rendered
+/// by diagnostics without an explicit trust decision.
+pub(crate) fn check_global(
+    cfg: &ConfigDir,
+    user: &UserConfig,
+    repository: Option<&ConfigDir>,
+) -> Vec<Diagnostic> {
     let mut d = vec![];
     let mut agents: BTreeMap<String, AgentDef> = BTreeMap::new();
     for p in cfg.files_in("agents", "toml") {
+        if repository.is_some_and(|r| r.path.join("agents").join(p.file_name().unwrap()).is_file())
+        {
+            continue;
+        }
         let file = format!("agents/{}", p.file_name().unwrap().to_string_lossy());
         match load_agent_file(&p) {
             Ok(a) => {
@@ -42,12 +56,12 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
             Err(e) => d.push(Diagnostic::error(Some(&file), e.message())),
         }
     }
-    let default = user.run.default_agent.as_deref().unwrap_or(DEFAULT_AGENT);
-    if !agents.contains_key(default) {
-        d.push(Diagnostic::error(
-            Some("config.toml"),
-            format!("the default agent '{default}' has no agents/{default}.toml"),
-        ));
+    let routing = crate::routing::RoutingConfig {
+        global: cfg.clone(),
+        repo: repository.cloned(),
+    };
+    if let Err(e) = routing.types() {
+        d.push(Diagnostic::error(Some("types"), e.message()));
     }
     let profs = match profiles(user) {
         Ok(p) => p,

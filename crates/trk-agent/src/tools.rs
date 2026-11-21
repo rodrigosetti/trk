@@ -1,5 +1,5 @@
-//! The trk tools of a session. The set is fixed: one issue type, one state
-//! machine. An agent may narrow it with `trk_tools.include`.
+//! The fixed trk tools and state machine. Types select agents, not workflows.
+//! An agent may narrow its tools with `trk_tools.include`.
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -79,6 +79,7 @@ pub fn catalogue() -> Vec<ToolDef> {
                     json!({"type": "string", "enum": PRIORITIES, "description": "Default P2"}),
                     false,
                 ),
+                ("type", text("Work type for the new issue; default code-change"), false),
                 (
                     "blocks_this",
                     json!({"type": "boolean", "description": "true if this issue cannot finish until the new one is closed. Hand back after filing it."}),
