@@ -14,7 +14,7 @@ ready  blocked  gated  stale-lease     flags
 
 Values: words, `"quoted strings"`, `me` (the acting actor), `.` (for `project`: this repo's project), relative times such as `-7d`, `-12h` and `-30m`, dates (`2026-11-01`), and globs with `*` (`claimed-by=agent:*`).
 
-Names: `id`, `type`, `status`, `category` (open, active or closed), `resolution`, `project`, `owner`, `claimed-by`, `created-by`, `title`, `created`, `updated`, `closed`, `tag`, `text` (full text over title, context, outcome and notes), `blocks=<ID>`, `blocked-by=<ID>`, `dep:<kind>=<ID>`. Any other name is a field, such as `environment=prod` or `field.environment=prod`.
+Names: `id`, `type`, `status`, `category` (open, active or closed), `resolution`, `project`, `owner`, `priority` (P0–P3), `claimed-by`, `created-by`, `title`, `created`, `updated`, `closed`, `tag`, `text` (full text over title, context, outcome and notes), `blocks=<ID>`, `blocked-by=<ID>`, `dep:<kind>=<ID>`. Any other name is a field, such as `environment=prod` or `field.environment=prod`.
 
 ```bash
 trk list 'type=operation environment=prod category!=closed' --json
@@ -26,6 +26,8 @@ trk list gated --json
 ```
 
 Options: `--fields id,type,status,title` picks the JSON keys, `--sort -updated` sorts (a leading `-` is descending), `--limit N`, and `--format jsonl` prints one object per line. `@name` runs a saved view from config.toml (`@mine`, `@agents`, `@open`).
+`trk ready` defaults to priority P0→P3, then oldest-created, then ID. `--sort` overrides that order; for example `trk ready --sort created` or `trk list 'priority=P1' --sort -updated`. Priorities are project-relative, not a shared cross-project urgency scale.
+
 
 ## Setting fields
 

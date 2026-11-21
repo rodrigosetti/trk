@@ -543,9 +543,13 @@ pub fn compile(terms: &[Term], schema: &Schema, ctx: &dyn QueryCtx) -> Result<Co
 }
 
 /// ORDER BY clause for `--sort`. A leading `-` sorts descending.
-pub fn order_by(sort: Option<&str>, schema: &Schema) -> Result<String> {
+pub fn order_by(sort: Option<&str>, schema: &Schema, ready: bool) -> Result<String> {
     let Some(sort) = sort else {
-        return Ok("i.updated_at DESC, i.id".into());
+        return Ok(if ready {
+            "json_extract(i.fields, '$.priority'), i.created_at, i.id".into()
+        } else {
+            "i.updated_at DESC, i.id".into()
+        });
     };
     let mut out = vec![];
     for part in sort.split(',') {

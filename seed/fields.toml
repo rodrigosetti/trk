@@ -1,5 +1,5 @@
-# Field definitions. `shared = true` fields are columns on every issue; the
-# rest are listed per type in types/*.toml and stored in issue.fields.
+# Field definitions. `shared = true` fields exist on every issue; some use
+# common issue columns and others are stored in issue.fields.
 # Kinds: text markdown int bool date datetime url enum actor repo link list.
 
 [title]
@@ -21,6 +21,12 @@ description = "What happened, written when closing"
 kind = "actor"
 shared = true
 description = "Who is accountable (distinct from the claimant)"
+
+[priority]
+kind = "enum"
+values = ["P0", "P1", "P2", "P3"]
+shared = true
+description = "Project-relative work ordering; P0 urgent through P3 low"
 
 [links]
 kind = "list"

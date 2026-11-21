@@ -176,6 +176,13 @@ impl Ctx<'_> {
                     _ => vec![],
                 }
             }
+            "priority" => {
+                if !matches!(&v, Value::String(p) if ["P0", "P1", "P2", "P3"].contains(&p.as_str()))
+                {
+                    return Err(invalid_field("priority", "must be P0, P1, P2, or P3"));
+                }
+                issue.fields.insert("priority".into(), v);
+            }
             name => {
                 if is_present(Some(&v)) || matches!(v, Value::Bool(_)) {
                     issue.fields.insert(name.to_string(), v);
@@ -444,7 +451,11 @@ impl Ctx<'_> {
             owner: None,
             links: vec![],
             tags: vec![],
-            fields: Map::new(),
+            fields: {
+                let mut fields = Map::new();
+                fields.insert("priority".into(), Value::String("P2".into()));
+                fields
+            },
             created_by: self.actor_str(),
             created_at: self.ts(),
             updated_at: self.ts(),

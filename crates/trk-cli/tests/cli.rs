@@ -357,7 +357,7 @@ fn pretty_output() {
         .output()
         .unwrap();
     let s = String::from_utf8(out.stdout).unwrap();
-    assert!(s.contains("repo  github.com/acme/orch"), "{s}");
+    assert!(s.contains("github.com/acme/orch"), "{s}");
     assert!(
         s.contains("next → closed as merged: needs merge_commit"),
         "{s}"

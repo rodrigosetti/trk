@@ -251,7 +251,7 @@ impl Renderer {
         if items.is_empty() {
             return self.dim("no issues");
         }
-        let default = ["id", "type", "status", "claim", "title"];
+        let default = ["id", "priority", "type", "status", "claim", "title"];
         let cols: Vec<String> = match fields {
             Some(f) => f.to_vec(),
             None => default.iter().map(|s| s.to_string()).collect(),
@@ -448,6 +448,24 @@ impl Renderer {
                 ));
             }
         }
+        if let Some(unblocks) = d["unblocks_higher_priority"]
+            .as_array()
+            .filter(|items| !items.is_empty())
+        {
+            flags.push(format!(
+                "unblocks higher-priority work: {}",
+                unblocks
+                    .iter()
+                    .map(|item| format!(
+                        "{} ({})",
+                        item["id"].as_str().unwrap_or(""),
+                        item["priority"].as_str().unwrap_or("")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+
         if let Some(p) = d.get("progress") {
             flags.push(format!("progress {}/{}", p["closed"], p["total"]));
         }

@@ -29,7 +29,8 @@ expression: v
     "deciders": null,
     "record_url": null,
     "revisit_by": null,
-    "agent": null
+    "agent": null,
+    "priority": "P2"
   },
   "claim": {
     "actor": "human:alice@example.com",
@@ -82,7 +83,8 @@ expression: v
           "edge:supersedes"
         ]
       }
-    }
+    },
+    "unblocks_higher_priority": []
   },
   "created_by": "human:alice@example.com",
   "created_at": "<ts>",

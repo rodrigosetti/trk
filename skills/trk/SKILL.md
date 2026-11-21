@@ -27,10 +27,12 @@ If you have trk MCP tools (`get_task`, `hand_back`, `close_as_*`) or `TRK_ACTOR`
 ```bash
 trk whoami --json                         # actor, project of this repo, config, database
 trk ready --json                          # open, unclaimed, unblocked
+
 trk list 'project=. category!=closed' --json
 trk show <ID> --json --with notes         # fields, deps, claim, derived.next
 trk log <ID> --json                       # every change and note, attributed
 ```
+`trk ready` orders eligible issues by shared priority (P0 urgent/exceptional, P1 high, P2 normal, P3 low), oldest creation first, then ID. Priority is project-relative; it never changes blockers, claims, gates, or status, and never preempts active work. Set it with `trk create ... -f priority=P1` or `trk edit <ID> -f priority=P0`; new and upgraded issues default to P2. Priority changes appear in `trk log`.
 
 `unknown_repo` means this repository is not registered. Ask the user which project it belongs to (`trk project list --json`), then `trk repo add --project <id>`.
 
