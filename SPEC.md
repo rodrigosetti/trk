@@ -407,7 +407,7 @@ Every command builds one typed result, then renders it in the requested format. 
 | `--format pretty\|json\|jsonl` | `TRK_FORMAT` | `pretty` on a TTY, `json` otherwise | Output format; `jsonl` for `list` and `log` |
 | `--json` |  |  | Shorthand for `--format json` |
 | `--as <actor>` | `TRK_ACTOR` | human from user config | Acting actor |
-| `--project <id>` | `TRK_PROJECT` | resolved from the git repo | Project scope |
+| `--project <id>` | `TRK_PROJECT` | current repo's project for list/ready | Explicit project scope; `--all-projects` clears it for list/ready |
 | `--db <path>` | `TRK_DB` | XDG data dir | Database file |
 | `--config <path>` | `TRK_CONFIG` | XDG config dir | Config directory |
 | `--no-color` | `NO_COLOR` |  | Disable color |
@@ -417,8 +417,8 @@ Every command builds one typed result, then renders it in the requested format. 
 | Command | Purpose |
 | --- | --- |
 | **Issues** |  |
-| `trk list [QUERY] [--fields F,..] [--sort F] [--limit N]` | Query issues; `@view` runs a saved view |
-| `trk ready [QUERY]` | Shorthand for `trk list 'ready …'` |
+| `trk list [QUERY] [--all-projects] [--fields F,..] [--sort F] [--limit N]` | Query issues; defaults to the current project's scope; `@view` runs a saved view |
+| `trk ready [QUERY] [--all-projects]` | Ready issues; defaults to the current project's scope |
 | `trk show <ID>... [--with notes,events,deps,claims]` | Full issue with derived state |
 | `trk create [TITLE] [-d TEXT] [-p P] [--agent A] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; opens `$EDITOR` when there is no title on a TTY |
 | `trk edit <ID> [-t TITLE] [-d TEXT] [-p P] [--agent A] [--dry-run]` | Change the authored fields; `$EDITOR` with no options |
@@ -463,9 +463,13 @@ name   := 'id' | 'state' | 'project' | 'priority' | 'agent' | 'reason' | 'claime
         | 'text' | 'blocks' | 'blocked-by'
 ```
 
+List and ready queries default to the current registered repository's project, even when other query terms are present. An explicit project predicate replaces that implicit scope. `--project ID` takes precedence over `TRK_PROJECT`; either explicitly scopes results, and a query project predicate further narrows it. `--all-projects` ignores repo and option/environment scopes while preserving query predicates. Outside a registered repository, provide `--project ID`, `TRK_PROJECT`, a project predicate, or `--all-projects`; trk never silently returns global results.
+
 | Example | Meaning |
 | --- | --- |
-| `project=. state!=closed` | Open work in the current repo's project |
+| `trk list 'state!=closed'` | Open work in the current repo's project |
+| `trk list 'project=orch state!=closed'` | Open work in project `orch` |
+| `trk ready --all-projects` | Ready work across every project |
 | `state=waiting` | The waiting queue, with and without checks |
 | `due` | Waiting issues `trk check` would run now |
 | `claimed-by=me` / `claimed-by=agent:claude-code:*` | Current claims |

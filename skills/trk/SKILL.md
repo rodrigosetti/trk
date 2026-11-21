@@ -30,9 +30,9 @@ If you have trk MCP tools (`get_task`, `hand_back`, `wait`) or `TRK_ACTOR` start
 
 ```bash
 trk whoami --json                         # actor, project of this repo, config, database
-trk ready --json                          # open, with every blocker closed
-trk list 'project=. state!=closed' --json
-trk list 'state=waiting' --json           # what is waiting, on what, and when it is checked next
+trk list --json                             # open issues in this repo's project
+trk list 'state=waiting' --json             # waiting issues in this repo's project
+trk list --all-projects --json              # intentionally search every project
 trk show <ID> --json                      # description, notes, blockers, claim, waiting, derived
 trk log <ID> --json                       # every change and note, attributed
 ```

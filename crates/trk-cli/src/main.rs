@@ -48,7 +48,7 @@ pub struct Global {
     /// Acting actor: human:<email> or agent:<harness>:<id>
     #[arg(long = "as", global = true, env = "TRK_ACTOR", value_name = "ACTOR")]
     pub actor: Option<String>,
-    /// Project scope (default: resolved from the git repo)
+    /// Project scope; defaults to the current repo for list/ready
     #[arg(long, global = true, env = "TRK_PROJECT")]
     pub project: Option<String>,
     /// Database file
@@ -73,6 +73,9 @@ enum Cmd {
     /// Query issues; `@view` runs a saved view
     List {
         query: Vec<String>,
+        /// Ignore repo and --project/TRK_PROJECT scope
+        #[arg(long)]
+        all_projects: bool,
         /// Columns (pretty) or keys (JSON)
         #[arg(long, value_delimiter = ',')]
         fields: Option<Vec<String>>,
@@ -85,6 +88,9 @@ enum Cmd {
     /// Open issues whose blockers are all closed: `trk list 'ready …'`
     Ready {
         query: Vec<String>,
+        /// Ignore repo and --project/TRK_PROJECT scope
+        #[arg(long)]
+        all_projects: bool,
         #[arg(long, value_delimiter = ',')]
         fields: Option<Vec<String>>,
         #[arg(long, allow_hyphen_values = true)]
@@ -501,16 +507,34 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
         Cmd::Init { force } => init(&env, force),
         Cmd::List {
             query,
+            all_projects,
             fields,
             sort,
             limit,
-        } => list(&env, &query.join(" "), fields, sort, limit, false),
+        } => list(
+            &env,
+            &query.join(" "),
+            fields,
+            sort,
+            limit,
+            false,
+            all_projects,
+        ),
         Cmd::Ready {
             query,
+            all_projects,
             fields,
             sort,
             limit,
-        } => list(&env, &query.join(" "), fields, sort, limit, true),
+        } => list(
+            &env,
+            &query.join(" "),
+            fields,
+            sort,
+            limit,
+            true,
+            all_projects,
+        ),
         Cmd::Show { ids, with } => {
             let store = env.store()?;
             let w = With::parse(&with);
@@ -957,6 +981,7 @@ fn list(
     sort: Option<String>,
     limit: Option<usize>,
     ready: bool,
+    all_projects: bool,
 ) -> Result<Out> {
     let mut q = q.trim().to_string();
     let mut fields = fields;
@@ -983,14 +1008,24 @@ fn list(
     if ready {
         q = format!("ready {q}");
     }
-    let store = env.store()?;
-    let items = store.read(env.actor.as_deref(), |c| {
-        c.list(
-            q.trim(),
-            env.explicit_project.as_deref(),
-            sort.as_deref(),
-            limit,
+    let has_project_filter = trk_core::query::parse(&q)?.iter().any(|term| {
+        matches!(
+            term,
+            trk_core::query::Term::Pred { name, .. } if name == "project"
         )
+    });
+    let store = env.store()?;
+    let project = if all_projects {
+        None
+    } else if let Some(project) = env.explicit_project.as_deref() {
+        Some(project.to_string())
+    } else if has_project_filter {
+        None
+    } else {
+        Some(env.project(&store)?)
+    };
+    let items = store.read(env.actor.as_deref(), |c| {
+        c.list(q.trim(), project.as_deref(), sort.as_deref(), limit)
     })?;
     Ok(Out::Issues { items, fields })
 }
