@@ -38,7 +38,7 @@ There is one kind of issue and one state machine. An agent session ends in one o
 | `title` | required |
 | `description` | markdown: what is needed, why, how to tell it is done |
 | notes | an append-only log, stored as events |
-| `priority` | `P0` urgent, `P1` high, `P2` normal (default), `P3` low; orders `trk ready` only |
+| `priority` | `P0` urgent, `P1` high, `P2` normal (default), `P3` low; orders `trk list` and `trk ready` by default |
 | `agent` | the agent definition `trk run` uses; empty means the default agent |
 | `repo` | the repository the work happens in; filled from the directory the issue is created in |
 
@@ -70,7 +70,7 @@ Everything else on an issue is state the tool owns: `state`, `close_reason`, the
 | open | closed | a human closes without claiming (cancel) |
 | closed | open | a human reopens |
 
-An issue is **ready** when it is open and every issue that blocks it is closed. `trk ready` orders ready issues by priority, then creation time, then id. Priority ranks work that is already eligible; it does not bypass blockers.
+An issue is **ready** when it is open and every issue that blocks it is closed. `trk list` and `trk ready` order by priority, then creation time, then id unless `--sort` or a saved view's sort is specified. Priority ranks work that is already eligible; it does not bypass blockers.
 
 ### Blockers
 
