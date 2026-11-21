@@ -84,6 +84,14 @@ trk check --dry-run       # show what would run, and where
 trk list state=waiting    # what is waiting, on what, and when it is checked next
 ```
 
+List and ready tables show each issue's type after priority. Filter either command with
+`type=review` (or `type=research` / `type=code-change`); use `--sort type` to order by type:
+
+```sh
+trk list type=review --sort type
+trk ready type=research --sort type
+```
+
 The check runs with `sh -c` in the worktree the issue was claimed in, with `TRK_ISSUE`,
 `TRK_WORKTREE`, `TRK_REPO` (the main checkout) and `TRK_BRANCH` set. Its exit code decides:
 

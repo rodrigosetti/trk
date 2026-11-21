@@ -260,7 +260,7 @@ impl Renderer {
         if items.is_empty() {
             return self.dim("no issues");
         }
-        let default = ["id", "priority", "state", "detail", "title"];
+        let default = ["id", "priority", "type", "state", "detail", "title"];
         let cols: Vec<String> = match fields {
             Some(f) => f.to_vec(),
             None => default.iter().map(|s| s.to_string()).collect(),

@@ -70,7 +70,7 @@ Everything else on an issue is state the tool owns: `state`, `close_reason`, the
 | open | closed | a human closes without claiming (cancel) |
 | closed | open | a human reopens |
 
-An issue is **ready** when it is open and every issue that blocks it is closed. `trk list` and `trk ready` order by priority, then creation time, then id unless `--sort` or a saved view's sort is specified. Priority ranks work that is already eligible; it does not bypass blockers.
+An issue is **ready** when it is open and every issue that blocks it is closed. `trk list` and `trk ready` order by priority, then creation time, then id unless `--sort` or a saved view's sort is specified. Priority ranks work that is already eligible; it does not bypass blockers. The default table columns are `ID PRIORITY TYPE STATE DETAIL TITLE`. Filter by type with `type=review` (also `research` or `code-change`); explicitly order by type with `--sort type`.
 
 ### Blockers
 

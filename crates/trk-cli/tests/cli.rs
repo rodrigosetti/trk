@@ -182,6 +182,62 @@ sort = "-created""#,
 }
 
 #[test]
+fn list_and_ready_filter_and_sort_by_type() {
+    let e = Env::new();
+    let code = e.create(&["--type", "code-change", "Code change"]);
+    let research = e.create(&["--type", "research", "Research"]);
+    let review = e.create(&["--type", "review", "Review"]);
+    let ids = |rows: &Value| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        ids(&e.ok(&["list", "type=research"])),
+        vec![research.clone()]
+    );
+    assert_eq!(ids(&e.ok(&["ready", "type=review"])), vec![review.clone()]);
+    assert_eq!(
+        ids(&e.ok(&["list", "--sort", "type"])),
+        vec![code.clone(), research.clone(), review.clone()]
+    );
+    assert_eq!(
+        ids(&e.ok(&["ready", "--sort", "type"])),
+        vec![code, research, review]
+    );
+}
+
+#[test]
+fn default_list_and_ready_tables_show_issue_type() {
+    let e = Env::new();
+    for issue_type in ["code-change", "research", "review"] {
+        e.create(&["--type", issue_type, issue_type]);
+    }
+
+    for command in ["list", "ready"] {
+        let out = e
+            .cmd()
+            .args(["--format", "pretty", command])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let table = String::from_utf8(out.stdout).unwrap();
+        let header = table.lines().next().unwrap();
+        assert!(
+            header.find("PRIORITY").unwrap() < header.find("TYPE").unwrap()
+                && header.find("TYPE").unwrap() < header.find("STATE").unwrap(),
+            "{table}"
+        );
+        for issue_type in ["code-change", "research", "review"] {
+            assert!(table.contains(issue_type), "{table}");
+        }
+    }
+}
+
+#[test]
 fn list_and_ready_scope_to_project_by_default() {
     let e = Env::new();
     e.ok(&["project", "add", "other", "--name", "Other"]);
