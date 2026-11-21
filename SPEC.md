@@ -247,9 +247,9 @@ trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]
 1. Check the issue is ready, and resolve its agent and harness.
 2. Create or reuse the worktree: `git worktree add <worktrees>/<ID> -b <ID>`.
 3. Mint the actor `agent:<harness>:<uuid>`; the harness's own session id, once known, goes in `actor.meta`.
-4. Claim the issue with the actor, agent, worktree and terminal name.
+4. Claim the issue with the actor, agent, worktree and terminal name (Herdr binds its returned address after launch).
 5. Render the launch spec: briefing, MCP server list (trk plus the agent's others), environment (`TRK_ACTOR`, for attribution only), files, argv.
-6. Start it with the launcher's `start` template. `--print` emits the launch spec as JSON instead; `--dry-run` also skips the claim.
+6. Start in a new Herdr space when enabled and available, otherwise use the launcher's `start` template. `--print` emits the launch spec as JSON instead; `--dry-run` also skips the claim.
 
 Related commands: `trk attach <ID>` and `trk send <ID>` (only when their launcher templates are set), `trk runs` (active claims with their terminals), `trk reap` (releases claims whose MCP server has gone, recording the exit as a note).
 
@@ -267,9 +267,9 @@ send   = ["hc", "send", "{name}", "{text}"]
 
 `{shell_command}` changes into the worktree and sets the environment; `--cwd` also sets the terminal's launch folder. `--no-parent` keeps the session independent of the launching terminal.
 
-`herdr = true` enables hc-specific placement after start: resolve `$HC_TERMINAL_ID` with `hc get --json`, verify its `herdr.space` exists in `herdr-app ls`, then label the new terminal with that space only. Omitting `herdr.tab` requests a new tab without replacing a pane. trk observes `herdr-app ls` for up to two seconds; only a direct pane in a different tab in that space counts as visible. This does not require the tab to be selected.
+`herdr = true` starts the agent directly with `herdr-app do space.new`: the space's name is the issue title, its folder is the worktree (session scratch for issues without a repository), and its first terminal runs the harness shell command. The launching space and its tabs are unchanged. No parent terminal or space label is required. The returned terminal address is bound to the claim and used by `trk attach`, `trk send` and `trk runs`.
 
-Without `HC_TERMINAL_ID` or without a space label, launch stays headless. An unresolved terminal, unavailable UI, missing space, failed label command or unconfirmed placement produces a warning, not a failed launch: the running session and claim remain intact. JSON returns `placement.status` (`visible`, `headless`, `failed`) with pane/tab/space IDs or a reason; pretty output includes the placement result. A timed-out placement may appear later. No new space is created or focused as a fallback.
+trk observes `herdr-app ls` for up to two seconds; only a direct agent pane in the created space, with the expected title and folder, counts as visible. JSON returns `placement.status` (`visible` or `failed`) with pane/tab/space IDs or a reason; pretty output includes the result. Observation failures warn and retain the session and claim. If UI discovery fails before launch, the configured `start` template runs headlessly with a warning. If space creation itself fails or returns an uncertain response, the command errors and retains the claim; it never retries or falls back to a second session.
 
 The integration defaults to off when omitted. Replacing hc with tmux or a plain process is a config change: replace the templates and remove `herdr` (or set it to false). Existing installations must opt in explicitly; upgrades do not overwrite user configuration.
 

@@ -1,4 +1,4 @@
-//! `trk run` and friends: launcher templates and optional Herdr UI placement.
+//! `trk run` and friends: launcher templates and optional Herdr spaces.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ pub struct Launcher {
     pub send: Option<Vec<String>>,
     #[serde(default)]
     pub send_delay: Option<u64>,
-    /// Opt into Herdr UI placement after a successful hc start.
+    /// Launch directly in a new Herdr space when its UI is available.
     #[serde(default)]
     pub herdr: bool,
 }
@@ -268,7 +268,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     // 3. Actor.
     let uuid = uuid::Uuid::new_v4().to_string();
     let actor = format!("agent:{hname}:{uuid}");
-    let terminal = terminal_name(&id);
+    let mut terminal = terminal_name(&id);
     let session_dir = state_dir().join("sessions").join(&uuid);
     let cwd = worktree.clone().unwrap_or_else(|| session_dir.clone());
 
@@ -406,26 +406,44 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         ));
     }
     let l = launcher(env)?;
-    let Some(start) = &l.start else {
-        undo(&mut store, "launch failed: no [launcher] start template");
-        return Err(Error::new(
-            Code::SchemaInvalid,
-            "no [launcher] start template in config.toml",
-        )
-        .with_hint("use --fg to run in this terminal, or configure [launcher]"));
-    };
     let mut vars = BTreeMap::new();
     vars.insert("name", terminal.clone());
     vars.insert("cwd", cwd_s.clone());
     vars.insert("shell_command", spec.shell_command.clone());
-    let (ok, output) = run_template(start, &vars, false)?;
-    if !ok {
-        undo(&mut store, &format!("launch failed: {output}"));
-        return Err(
-            Error::new(Code::Internal, format!("launcher start failed: {output}")).with_issue(&id),
-        );
-    }
-    let placement = l.herdr.then(|| crate::herdr::place(&terminal));
+    let ui = l.herdr.then(crate::herdr::available);
+    let (output, placement) = if matches!(ui, Some(Ok(()))) {
+        let title = issue["title"].as_str().unwrap_or(&id);
+        let (address, placement) = crate::herdr::start(title, &cwd_s, &spec.shell_command)
+            .map_err(|reason| {
+                Error::new(Code::Internal, format!("Herdr launch unconfirmed: {reason}"))
+                    .with_issue(&id)
+                    .with_hint("claim retained to avoid a duplicate launch; inspect `herdr-app ls` and `hc ls` before unclaiming")
+            })?;
+        store.write(&actor, false, |c| c.bind_terminal(&id, &address))?;
+        terminal = address;
+        vars.insert("name", terminal.clone());
+        (String::new(), Some(placement))
+    } else {
+        let Some(start) = &l.start else {
+            undo(&mut store, "launch failed: no [launcher] start template");
+            return Err(Error::new(
+                Code::SchemaInvalid,
+                "no [launcher] start template in config.toml",
+            )
+            .with_hint("use --fg to run in this terminal, or configure [launcher]"));
+        };
+        let (ok, output) = run_template(start, &vars, false)?;
+        if !ok {
+            undo(&mut store, &format!("launch failed: {output}"));
+            return Err(
+                Error::new(Code::Internal, format!("launcher start failed: {output}")).with_issue(&id),
+            );
+        }
+        let placement = ui.map(|result| crate::herdr::Placement::Failed {
+            reason: result.unwrap_err(),
+        });
+        (output, placement)
+    };
     if let Some(warning) = placement.as_ref().and_then(|p| p.warning()) {
         eprintln!("warning: {warning}");
         warnings.push(warning);

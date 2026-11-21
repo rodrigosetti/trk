@@ -78,17 +78,20 @@ The agent for a run is `--agent`, else the issue's `agent` field, else the type'
 The harness is `--harness`, else the agent's first installed preference. The seed config prefers
 `omp` running `openai-codex/gpt-6-luna`.
 
-The default hc launcher keeps sessions independent (`--no-parent`). With `[launcher] herdr = true`,
-running from a Herdr UI terminal adds a new tab in that terminal's space, never replaces its pane.
-trk resolves the space at launch time and confirms placement through `herdr-app ls`; successful
-`hc run` alone is not reported as visibility. Outside hc or without a space label, it stays headless.
-Unavailable UI, stale spaces and placement failures warn without ending or unclaiming the session;
-a two-second observation timeout means placement is unconfirmed and may still appear later.
-Pretty output shows the UI result; JSON includes `placement` (`visible`, `headless` or `failed`).
+With `[launcher] herdr = true`, each run opens a **new Herdr space**, named with the issue's title
+and rooted in its worktree. Its first terminal runs the agent directly; the launching space and
+its tabs are left intact. This works from any terminal, not only one already in Herdr.
+trk confirms the space's title, folder and agent pane through `herdr-app ls`; JSON includes
+`placement` (`visible` or `failed`) and the actual terminal address used by `trk attach` and `trk send`.
 
-For existing installs, add `herdr = true` under `[launcher]` after upgrading the binary; keep
-`--no-parent` in `start`. Omit it or use `herdr = false` for a headless/custom launcher. Herdr placement
-requires `hc` and `herdr-app` on PATH; no space or tab IDs belong in the config.
+If the UI is unavailable before launch, trk uses the configured `start` template headlessly and
+warns. Once space creation is attempted, an uncertain response retains the claim and never starts
+a duplicate session. A two-second observation timeout warns without ending the running session.
+
+For existing installs, add `herdr = true` under `[launcher]` after upgrading the binary. Omit it or
+use `herdr = false` for a headless/custom launcher; the default hc template uses `--no-parent` to
+keep sessions independent. Herdr launching requires `hc` and `herdr-app` on PATH; no IDs belong
+in the config.
 
 The MCP server (`trk mcp --issue … --actor … --agent …`, started by the harness) serves exactly one
 issue: `get_task`, `add_note`, `add_link`, `report_followup`, `hand_back`, one tool per transition and

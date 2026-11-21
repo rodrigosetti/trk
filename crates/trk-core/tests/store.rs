@@ -132,6 +132,22 @@ fn create_requires_fields() {
 }
 
 #[test]
+fn only_the_claimant_can_bind_the_launched_terminal() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "code-change", &[]);
+    s.write(AGENT, false, |c| c.claim(&id, ClaimOpts::default()))
+        .unwrap();
+    s.write(AGENT, false, |c| c.bind_terminal(&id, "t42"))
+        .unwrap();
+    let err = s
+        .write(HUMAN, false, |c| c.bind_terminal(&id, "t99"))
+        .unwrap_err();
+    assert_eq!(err.code(), Code::NotClaimant);
+    let claim = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    assert_eq!(claim.terminal.as_deref(), Some("t42"));
+}
+
+#[test]
 fn claim_invariant_and_transitions() {
     let (_d, mut s) = setup();
     let id = create(&mut s, "code-change", &[]);

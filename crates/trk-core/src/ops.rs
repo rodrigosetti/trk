@@ -724,6 +724,32 @@ impl Ctx<'_> {
             .ok_or_else(|| Error::new(Code::Internal, "claim vanished"))
     }
 
+    /// Bind the launching claimant's session after the terminal address is known.
+    pub fn bind_terminal(&self, id: &str, terminal: &str) -> Result<()> {
+        let id = self.resolve_id(id)?;
+        let claim = self.active_claim(&id)?.ok_or_else(|| {
+            Error::new(Code::InvalidTransition, format!("{id} is not claimed")).with_issue(&id)
+        })?;
+        if claim.actor != self.actor_str() {
+            return Err(
+                Error::new(Code::NotClaimant, format!("{id} is claimed by {}", claim.actor))
+                    .with_issue(&id),
+            );
+        }
+        self.conn.execute(
+            "UPDATE claim SET terminal = ?2 WHERE id = ?1",
+            params![claim.id, terminal],
+        )?;
+        self.event(
+            Some(&id),
+            "set",
+            json!({"claim": claim.id, "changes": {
+                "claim.terminal": {"from": claim.terminal, "to": terminal}
+            }}),
+        )?;
+        Ok(())
+    }
+
     /// Release the active claim and return the issue to open.
     pub fn unclaim(&self, id: &str, force: bool, note: Option<&str>) -> Result<()> {
         let id = self.resolve_id(id)?;

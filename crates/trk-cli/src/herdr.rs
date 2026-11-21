@@ -1,4 +1,4 @@
-//! Optional UI placement for the hc launcher. Launch success is not visibility.
+//! Launch an agent directly in its own Herdr space.
 
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -9,9 +9,6 @@ use serde_json::Value;
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Placement {
-    Headless {
-        reason: String,
-    },
     Visible {
         space: String,
         tab: String,
@@ -25,8 +22,7 @@ pub enum Placement {
 impl Placement {
     pub fn description(&self) -> String {
         match self {
-            Self::Headless { reason } => format!("headless: {reason}"),
-            Self::Visible { space, tab, .. } => format!("Herdr tab {tab} in space {space}"),
+            Self::Visible { space, .. } => format!("Herdr space {space}"),
             Self::Failed { reason } => {
                 format!("Herdr placement failed: {reason}; session and claim retained")
             }
@@ -62,88 +58,67 @@ fn json_command(program: &str, args: &[&str]) -> Result<Value, String> {
         .map_err(|e| format!("invalid JSON from {program}: {e}"))
 }
 
-// Only a direct pane in a different tab counts. An agent list/sub-agent entry
-// or a pane in another space does not prove the requested placement happened.
+// A direct pane in the newly created space is the visibility proof.
 fn visible_pane<'a>(
     ui: &'a Value,
     space: &str,
-    parent_tab: Option<&str>,
+    cwd: &str,
+    title: &str,
     terminal: &str,
 ) -> Option<(&'a str, &'a str)> {
     let space = ui["spaces"].as_array()?.iter().find(|s| s["id"] == space)?;
+    if space["folder"] != cwd || space["name"] != title {
+        return None;
+    }
     for tab in space["tabs"].as_array()? {
-        let id = tab["id"].as_str()?;
-        if Some(id) == parent_tab {
-            continue;
-        }
         for pane in tab["terminals"].as_array()? {
             if pane["terminal"] == terminal {
-                return Some((id, pane["pane"].as_str()?));
+                return Some((tab["id"].as_str()?, pane["pane"].as_str()?));
             }
         }
     }
     None
 }
 
-fn place_in_ui(terminal: &str, parent: &str) -> Result<Placement, String> {
-    let parent = json_command("hc", &["get", parent, "--json"])?;
-    let Some(space) = parent["labels"]["herdr.space"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-    else {
-        return Ok(Placement::Headless {
-            reason: "launching terminal has no herdr.space label".into(),
-        });
-    };
-    let parent_tab = parent["labels"]["herdr.tab"].as_str();
-    // Do not attach a stale label to a session when its space/window is gone.
-    let ui = json_command("herdr-app", &["ls"])?;
-    if !ui["spaces"]
-        .as_array()
-        .is_some_and(|spaces| spaces.iter().any(|s| s["id"] == space))
-    {
-        return Err(format!(
-            "launching space {space} is not in the open Herdr window"
-        ));
-    }
-    // Never copy herdr.tab: omitting it asks Herdr for a new tab. Labeling
-    // after start keeps the configurable start argv independent of placement.
-    command("hc", &["label", terminal, &format!("herdr.space={space}")])?;
-    let address = json_command("hc", &["get", terminal, "--json"])?;
-    let address = address["address"]
-        .as_str()
-        .ok_or("hc get omitted the terminal address")?;
-    // The window consumes label events asynchronously. Bound observation, not
-    // launch retries: no failure here may start a second session or unclaim it.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    loop {
-        let ui = json_command("herdr-app", &["ls"])?;
-        if let Some((tab, pane)) = visible_pane(&ui, space, parent_tab, address) {
-            return Ok(Placement::Visible {
-                space: space.into(),
-                tab: tab.into(),
-                pane: pane.into(),
-            });
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "no new tab for {address} observed in space {space} within 2s; placement is unconfirmed"
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
+pub fn available() -> Result<(), String> {
+    json_command("herdr-app", &["ls"]).map(|_| ())
 }
 
-pub fn place(terminal: &str) -> Placement {
-    let Some(parent) = std::env::var("HC_TERMINAL_ID")
-        .ok()
-        .filter(|s| !s.is_empty())
-    else {
-        return Placement::Headless {
-            reason: "not launched from an hc terminal".into(),
-        };
+/// Never retry a space creation: an uncertain reply may already have started it.
+pub fn start(title: &str, cwd: &str, shell_command: &str) -> Result<(String, Placement), String> {
+    let argv = serde_json::to_string(&["sh", "-c", shell_command])
+        .map_err(|e| e.to_string())?;
+    let created = json_command(
+        "herdr-app",
+        &["do", "space.new", "--name", title, "--folder", cwd, "--argv", &argv],
+    )?;
+    let terminal = created["terminal"]
+        .as_str()
+        .ok_or("space.new omitted the terminal address; session and claim retained")?;
+    let space = created["space"]
+        .as_str()
+        .ok_or("space.new omitted the space ID; session and claim retained")?;
+    let observe = || -> Result<Placement, String> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let ui = json_command("herdr-app", &["ls"])?;
+            if let Some((tab, pane)) = visible_pane(&ui, space, cwd, title, terminal) {
+                return Ok(Placement::Visible {
+                    space: space.into(),
+                    tab: tab.into(),
+                    pane: pane.into(),
+                });
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "no pane for {terminal} observed in new space {space} with the issue title and worktree within 2s; placement is unconfirmed"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     };
-    place_in_ui(terminal, &parent).unwrap_or_else(|reason| Placement::Failed { reason })
+    let placement = observe().unwrap_or_else(|reason| Placement::Failed { reason });
+    Ok((terminal.into(), placement))
 }
 
 #[cfg(test)]
@@ -152,25 +127,24 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn herdr_visibility_requires_a_new_tab_in_the_launchers_space() {
-        let ui = json!({"spaces": [
-            {"id": "other", "tabs": [{"id": "wrong-space", "terminals": [
-                {"terminal": "agent", "pane": "p1"}
-            ]}]},
-            {"id": "target", "tabs": [
-                {"id": "original", "terminals": [{"terminal": "agent", "pane": "p2"}]},
-                {"id": "new", "terminals": [{"terminal": "parent", "pane": "p3",
+    fn herdr_visibility_requires_the_new_space_title_folder_and_direct_pane() {
+        let mut ui = json!({"spaces": [
+            {"id": "old", "name": "Issue title", "folder": "/wt", "tabs": [
+                {"id": "old-tab", "terminals": [{"terminal": "agent", "pane": "p1"}]}
+            ]},
+            {"id": "new", "name": "Issue title", "folder": "/wt", "tabs": [
+                {"id": "tab", "terminals": [{"terminal": "shell", "pane": "p2",
                     "sub_agents": [{"terminal": "agent"}]}]}
             ]}
         ]});
-        assert_eq!(visible_pane(&ui, "target", Some("original"), "agent"), None);
-        let mut placed = ui;
-        placed["spaces"][1]["tabs"][1]["terminals"] = json!([
-            {"terminal": "agent", "pane": "p4"}
-        ]);
+        assert_eq!(visible_pane(&ui, "new", "/wt", "Issue title", "agent"), None);
+        ui["spaces"][1]["tabs"][0]["terminals"] =
+            json!([{"terminal": "agent", "pane": "p3"}]);
         assert_eq!(
-            visible_pane(&placed, "target", Some("original"), "agent"),
-            Some(("new", "p4"))
+            visible_pane(&ui, "new", "/wt", "Issue title", "agent"),
+            Some(("tab", "p3"))
         );
+        assert_eq!(visible_pane(&ui, "new", "/other", "Issue title", "agent"), None);
+        assert_eq!(visible_pane(&ui, "new", "/wt", "Other title", "agent"), None);
     }
 }
