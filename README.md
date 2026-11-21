@@ -57,6 +57,12 @@ Every command takes `--json` (or `--format pretty|json|jsonl`). Scripts should a
 JSON output is the versioned API (`schema_version: 2`), and errors use the same envelope with a
 stable `code`, a `hint`, and exit codes 1–5.
 
+Pretty output colors priorities consistently (P0 red, P1 yellow, P2 cyan, P3 dim) and states
+(open green, claimed yellow, waiting cyan, closed dim green). Labels and state glyphs remain present
+without color. ANSI styling is enabled only for pretty output on a terminal; `NO_COLOR` or
+`--no-color` disables it, and piped output is unstyled. JSON and JSONL output never contain ANSI
+styling.
+
 ## Waiting and `trk check`
 
 ```sh

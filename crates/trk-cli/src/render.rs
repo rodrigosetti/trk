@@ -181,10 +181,38 @@ impl Renderer {
             return s;
         }
         match state {
+            "open" => s.green().to_string(),
             "claimed" => s.yellow().to_string(),
             "waiting" => s.cyan().to_string(),
             "closed" => s.green().dimmed().to_string(),
             _ => s,
+        }
+    }
+
+    fn priority_label(&self, priority: &str) -> String {
+        if !self.color {
+            return priority.to_string();
+        }
+        match priority {
+            "P0" => priority.red().bold().to_string(),
+            "P1" => priority.yellow().to_string(),
+            "P2" => priority.cyan().to_string(),
+            "P3" => priority.dimmed().to_string(),
+            _ => priority.to_string(),
+        }
+    }
+
+    fn priority_cell(&self, priority: &str) -> Cell {
+        let cell = Cell::new(priority);
+        if !self.color {
+            return cell;
+        }
+        match priority {
+            "P0" => cell.fg(Color::Red).add_attribute(Attribute::Bold),
+            "P1" => cell.fg(Color::Yellow),
+            "P2" => cell.fg(Color::Cyan),
+            "P3" => cell.fg(Color::DarkGrey),
+            _ => cell,
         }
     }
 
@@ -252,10 +280,12 @@ impl Renderer {
             let row: Vec<Cell> = cols
                 .iter()
                 .map(|c| match c.as_str() {
+                    "priority" => self.priority_cell(i["priority"].as_str().unwrap_or("")),
                     "state" | "status" => {
                         let st = i["state"].as_str().unwrap_or("open");
                         let cell = Cell::new(format!("{} {st}", state_glyph(st)));
                         match st {
+                            "open" => cell.fg(Color::Green),
                             "claimed" => cell.fg(Color::Yellow),
                             "waiting" => cell.fg(Color::Cyan),
                             "closed" => cell.fg(Color::DarkGreen),
@@ -286,7 +316,7 @@ impl Renderer {
         s.push_str(&format!(
             "{}  {}  {}{}\n",
             self.bold(id),
-            i["priority"].as_str().unwrap_or(""),
+            self.priority_label(i["priority"].as_str().unwrap_or("")),
             self.state_label(i["state"].as_str().unwrap_or("")),
             i["close_reason"]
                 .as_str()
@@ -420,7 +450,7 @@ impl Renderer {
                     .map(|item| format!(
                         "{} ({})",
                         item["id"].as_str().unwrap_or(""),
-                        item["priority"].as_str().unwrap_or("")
+                        self.priority_label(item["priority"].as_str().unwrap_or(""))
                     ))
                     .collect::<Vec<_>>()
                     .join(", ")

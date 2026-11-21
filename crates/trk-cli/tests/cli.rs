@@ -1140,3 +1140,57 @@ fn run_warns_when_the_repo_tracks_the_skill() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("tracked in this repo"));
 }
+
+#[test]
+fn pretty_priority_and_state_labels_are_readable_without_color() {
+    let e = Env::new();
+    e.create(&["-p", "P0", "open"]);
+    let claimed = e.create(&["-p", "P1", "claimed"]);
+    e.ok(&["claim", &claimed]);
+    let waiting = e.create(&["-p", "P2", "waiting"]);
+    e.ok(&["claim", &waiting]);
+    e.ok(&["wait", &waiting, "--reason", "later"]);
+    let closed = e.create(&["-p", "P3", "closed"]);
+    e.ok(&["close", &closed]);
+
+    let pretty_output = || {
+        e.cmd()
+            .args(["--format", "pretty", "list", "--all-projects"])
+            .output()
+            .unwrap()
+    };
+    let out = pretty_output();
+    assert!(out.status.success());
+    let pretty = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        pretty.contains("P0") && pretty.contains("○ open"),
+        "{pretty}"
+    );
+    assert!(
+        pretty.contains("P1") && pretty.contains("● claimed"),
+        "{pretty}"
+    );
+    assert!(
+        pretty.contains("P2") && pretty.contains("◷ waiting"),
+        "{pretty}"
+    );
+    assert!(
+        pretty.contains("P3") && pretty.contains("✓ closed"),
+        "{pretty}"
+    );
+    assert!(!pretty.contains('\x1b'), "{pretty:?}");
+
+    let no_color = e
+        .cmd()
+        .env("NO_COLOR", "1")
+        .args(["--format", "pretty", "list", "--all-projects"])
+        .output()
+        .unwrap();
+    assert!(no_color.status.success());
+    assert!(!no_color.stdout.contains(&0x1b));
+
+    let json = e.cmd().args(["--json", "ready"]).output().unwrap();
+    assert!(json.status.success());
+    assert!(!json.stdout.contains(&0x1b));
+    serde_json::from_slice::<Value>(&json.stdout).unwrap();
+}
