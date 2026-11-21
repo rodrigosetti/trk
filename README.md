@@ -87,6 +87,12 @@ The check runs with `sh -c` in the worktree the issue was claimed in, with `TRK_
 | 75 | not yet | still waiting; checked again after `--every` (default `[check] interval`, 5m) |
 | anything else, or a timeout | error | the issue returns to open with the command's output in a note |
 
+
+After a check passes or fails, trk best-effort sends an informational message to the
+original agent session if its MCP server and terminal are still present. A pass says
+the issue is closed; a failure includes its result and says the issue reopened. Exit 75
+does not notify. The agent is not resumed automatically, and the session remains for
+the user to inspect and close.
 Three properties follow from that:
 
 - **A waiting issue still blocks.** What depends on it becomes ready when the work has landed, not
