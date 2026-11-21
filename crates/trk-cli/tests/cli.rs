@@ -129,6 +129,85 @@ impl Env {
     }
 }
 
+#[test]
+fn list_and_ready_scope_to_project_by_default() {
+    let e = Env::new();
+    e.ok(&["project", "add", "other", "--name", "Other"]);
+    let projects = e.ok(&["project", "list"]);
+    assert!(
+        projects
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == "other")
+    );
+    e.create(&["Orchestra project issue"]);
+    e.ok(&["--project", "other", "create", "Other project issue"]);
+
+    for command in ["list", "ready"] {
+        let default = e.ok(&[command, "state=open"]);
+        assert_eq!(default.as_array().unwrap().len(), 1, "{command}");
+        assert_eq!(default[0]["project"], "orch", "{command}");
+
+        let explicit = e.ok(&[command, "project=other"]);
+        assert_eq!(explicit.as_array().unwrap().len(), 1, "{command}");
+        assert_eq!(explicit[0]["project"], "other", "{command}");
+
+        let global = e.ok(&[command, "--all-projects"]);
+        assert_eq!(global.as_array().unwrap().len(), 2, "{command}");
+
+        let selected = e.ok(&["--project", "other", command]);
+        assert_eq!(selected.as_array().unwrap().len(), 1, "{command}");
+        assert_eq!(selected[0]["project"], "other", "{command}");
+    }
+
+    for command in ["list", "ready"] {
+        let mut c = e.cmd();
+        let (code, value) = c
+            .current_dir(e.dir.path())
+            .arg("--json")
+            .arg(command)
+            .output()
+            .map(|out| {
+                let code = out.status.code().unwrap_or(-1);
+                let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+                (code, value)
+            })
+            .unwrap();
+        assert_eq!(value["error"]["code"], "unknown_repo", "{command}");
+        assert_ne!(code, 0, "{command}");
+
+        let mut c = e.cmd();
+        c.current_dir(e.dir.path());
+        let out = c
+            .args(["--json", command, "--project", "other"])
+            .output()
+            .unwrap();
+        let selected: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(selected["ok"], true, "{command}: {selected:#}");
+        assert_eq!(selected["data"].as_array().unwrap().len(), 1, "{command}");
+        let mut c = e.cmd();
+        c.current_dir(e.dir.path());
+        let out = c
+            .args(["--json", command, "project=other"])
+            .output()
+            .unwrap();
+        let filtered: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(filtered["ok"], true, "{command}: {filtered:#}");
+        assert_eq!(filtered["data"].as_array().unwrap().len(), 1, "{command}");
+
+        let mut c = e.cmd();
+        c.current_dir(e.dir.path());
+        let out = c
+            .args(["--json", command, "--all-projects"])
+            .output()
+            .unwrap();
+        let global: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(global["ok"], true, "{command}: {global:#}");
+        assert_eq!(global["data"].as_array().unwrap().len(), 2, "{command}");
+    }
+}
+
 fn redact(v: &mut Value, ids: &[(String, &str)]) {
     match v {
         Value::String(s) => {

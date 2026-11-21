@@ -14,6 +14,8 @@ ready  blocked  due  stale-lease     flags
 
 Values: words, `"quoted strings"`, `me` (the acting actor), `.` (for `project`: this repo's project), relative times such as `-7d`, `-12h` and `+30m`, dates (`2026-11-01`), and globs with `*` (`claimed-by=agent:*`).
 
+`list` and `ready` default to the current registered repository's project, including when other query terms are supplied. A project query replaces that implicit default. `--project ID` takes precedence over `TRK_PROJECT`; either explicitly scopes results, and a project query further narrows that explicit scope. `--all-projects` ignores the repo and option/environment scopes, but preserves query predicates. Outside a registered repository, use `--project ID`, `TRK_PROJECT`, a project query, or `--all-projects`.
+
 Names:
 
 | Name | Matches |
@@ -32,8 +34,9 @@ Names:
 Flags: `ready` (open, every blocker closed), `blocked` (not closed, with an open blocker), `due` (waiting, with a check whose time has come), `stale-lease` (claimed, lease expired).
 
 ```bash
-trk list 'project=. state!=closed' --json
-trk list 'state=waiting' --sort next-check --json
+trk list --json
+trk list 'project=orch state!=closed' --json
+trk list --all-projects 'state=waiting' --sort next-check --json
 trk list 'state in (open,claimed) priority in (P0,P1)' --json
 trk list 'claimed-by=me' --json
 trk list 'blocks=orch-m1 state!=closed' --json       # what remains before orch-m1 is ready
@@ -41,7 +44,7 @@ trk list 'closed>-7d reason=done' --json
 trk list 'text~"feature flag"' --json
 ```
 
-Options: `--fields id,state,title` picks the JSON keys, `--sort -updated` sorts (a leading `-` is descending), `--limit N`, and `--format jsonl` prints one object per line. `@name` runs a saved view from config.toml (`@mine`, `@agents`, `@open`, `@waiting`).
+Options: `--project ID` (or `TRK_PROJECT`) selects a project, `--all-projects` ignores repo and option/environment scope, `--fields id,state,title` picks the JSON keys, `--sort -updated` sorts (a leading `-` is descending), `--limit N`, and `--format jsonl` prints one object per line. `@name` runs a saved view from config.toml (`@mine`, `@agents`, `@open`, `@waiting`).
 
 Sort keys: `id`, `state`, `project`, `title`, `priority`, `agent`, `created`, `updated`, `closed`, `claimed-by`, `lease`, `next-check`. Without `--sort`, `trk ready` orders by priority then oldest first; `trk list` by most recently updated.
 
