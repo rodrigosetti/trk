@@ -5,7 +5,7 @@ description: Use when the user tracks work with trk, the local issue tracker and
 
 # trk
 
-trk keeps the work of every repository in one local database. An issue has a title, a description, notes, a priority, a required type (default `code-change`) and one of four states. Use the `trk` CLI.
+trk keeps a project's work in a local database inside the project, in `.trk/`. An issue has a title, a description, notes, a priority, a required type (default `code-change`) and one of four states. Use the `trk` CLI.
 
 ```
 open → claimed → closed
@@ -29,17 +29,16 @@ If you have trk MCP tools (`get_task`, `hand_back`, `wait`) or `TRK_ACTOR` start
 ## Orient
 
 ```bash
-trk whoami --json                         # actor, project of this repo, config, database
-trk list --json                             # open issues in this repo's project
-trk list 'state=waiting' --json             # waiting issues in this repo's project
-trk list --all-projects --json              # intentionally search every project
+trk whoami --json                         # actor, project directory, database, id prefix
+trk list --json                             # open issues in this project
+trk list 'state=waiting' --json             # waiting issues
 trk show <ID> --json                      # description, notes, blockers, claim, waiting, derived
 trk log <ID> --json                       # every change and note, attributed
 ```
 
 `trk ready` orders issues by priority (P0 urgent, P1 high, P2 normal, P3 low), then oldest first. A waiting issue is not closed, so what it blocks is not ready yet.
 
-`unknown_repo` means this repository is not registered. Ask the user which project it belongs to (`trk project list --json`), then `trk repo add --project <id>`.
+`not_installed` means trk has not been set up in this project. Ask the user before running `trk install` in the project's root: it creates `.trk/` (the database and config, ignored by git) and installs this skill. Each project has its own database; there is no view across projects.
 
 ## Create
 
@@ -119,7 +118,7 @@ trk dep rm <BLOCKER> <BLOCKED> --json
 ## Agent sessions
 
 ```bash
-trk run --json                            # start the first ready issue in the current project
+trk run --json                            # start the first ready issue
 trk run <ID> --dry-run --json             # preview: agent, harness, worktree, briefing
 trk run <ID> --json                       # claim and start the agent in its own terminal
 trk runs --json                           # active sessions: agent, terminal, lease, MCP liveness
@@ -130,19 +129,12 @@ trk reap --json                           # release claims whose session has end
 
 Only ready issues can be run. A session ends by closing, waiting or handing back; an issue whose check failed is ready again, and its notes tell the next session why. Do not run `trk attach`: it takes over the terminal interactively, so suggest it to the user instead.
 
-Without an ID, `trk run` uses the current project (`--project` / `TRK_PROJECT` overrides) and
-selects by priority, then oldest creation time, then ID, matching `trk ready`. Missing project
-scope or no ready issues is an error. `trk run --dry-run --json` previews the selection.
+Without an ID, `trk run` selects by priority, then oldest creation time, then ID, matching
+`trk ready`. No ready issues is an error. `trk run --dry-run --json` previews the selection.
 
 `trk run --agent NAME` overrides routing for that run only. Inspect routing sources with `trk show`
-or `trk run --dry-run`. Repo `.trk/types/*.toml` partially overrides global types by name;
-repo `.trk/agents/*.toml` replaces whole agents and roots prompts in `.trk/`. Configuration comes
-from the issue repo's registered canonical primary checkout, shared by all worktrees, not cwd.
-Repo-less issues use globals only. Launcher/harness preferences stay global: `[run] harness_prefer`
-overrides global agents' preferences; otherwise repo agents inherit same-name global preferences,
-or use installed global profiles when new. Repo `harness.prefer` is ignored. Running a repo agent
-needs explicit `--trust-repo` on each run/MCP invocation; a repo type routing to a global agent
-is safe without it. Do not grant trust silently.
+or `trk run --dry-run`. Types, agents and prompts live in the project's `.trk/` directory
+(`types/*.toml`, `agents/*.toml`, `prompts/`), shared by all its worktrees.
 
 ## More
 

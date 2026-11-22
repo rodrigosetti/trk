@@ -48,15 +48,9 @@ pub struct Global {
     /// Acting actor: human:<email> or agent:<harness>:<id>
     #[arg(long = "as", global = true, env = "TRK_ACTOR", value_name = "ACTOR")]
     pub actor: Option<String>,
-    /// Project scope; defaults to the current repo for list/ready
-    #[arg(long, global = true, env = "TRK_PROJECT")]
-    pub project: Option<String>,
-    /// Database file
-    #[arg(long, global = true, env = "TRK_DB")]
-    pub db: Option<PathBuf>,
-    /// Config directory
-    #[arg(long, global = true, env = "TRK_CONFIG")]
-    pub config: Option<PathBuf>,
+    /// The project's .trk directory (default: found from the working directory)
+    #[arg(long, global = true, env = "TRK_DIR", value_name = "DIR")]
+    pub dir: Option<PathBuf>,
     /// Disable color
     #[arg(long, global = true)]
     no_color: bool,
@@ -64,18 +58,24 @@ pub struct Global {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Write the default config and create the database
-    Init {
-        /// Overwrite existing config files
+    /// Set trk up in this project: .trk/ with the database and default config, and the agent skill
+    #[command(
+        after_help = "Run it in the project's root directory (in a git repository, the root of the\n\
+        primary checkout is used). Everything goes in .trk/, which starts out ignored by git.\n\
+        Safe to run again: it refreshes the agent skill and upgrades the database, and keeps\n\
+        existing config files unless --force is given."
+    )]
+    Install {
+        /// Overwrite existing config files with the defaults
         #[arg(long)]
         force: bool,
+        /// Prefix of new issue ids (default: from the directory name)
+        #[arg(long)]
+        prefix: Option<String>,
     },
     /// Query issues; `@view` runs a saved view
     List {
         query: Vec<String>,
-        /// Ignore repo and --project/TRK_PROJECT scope
-        #[arg(long)]
-        all_projects: bool,
         /// Columns (pretty) or keys (JSON)
         #[arg(long, value_delimiter = ',')]
         fields: Option<Vec<String>>,
@@ -88,9 +88,6 @@ enum Cmd {
     /// Open issues whose blockers are all closed: `trk list 'ready …'`
     Ready {
         query: Vec<String>,
-        /// Ignore repo and --project/TRK_PROJECT scope
-        #[arg(long)]
-        all_projects: bool,
         #[arg(long, value_delimiter = ',')]
         fields: Option<Vec<String>>,
         #[arg(long, allow_hyphen_values = true)]
@@ -252,7 +249,7 @@ enum Cmd {
     },
     /// Timeline: events and notes
     Log { id: String },
-    /// Start an agent session; defaults to the first ready issue in the current project
+    /// Start an agent session; defaults to the first ready issue
     Run {
         id: Option<String>,
         #[arg(long)]
@@ -268,9 +265,6 @@ enum Cmd {
         /// Print the launch spec without claiming or writing anything
         #[arg(long)]
         dry_run: bool,
-        /// Allow repository-local routing and agent configuration
-        #[arg(long)]
-        trust_repo: bool,
     },
     /// Active agent claims with agent, harness, terminal and lease
     Runs,
@@ -288,31 +282,13 @@ enum Cmd {
         actor: String,
         #[arg(long)]
         agent: String,
-        /// Allow repository-local routing and agent configuration
-        #[arg(long)]
-        trust_repo: bool,
     },
     /// Inspect agent definitions
     Agent {
         #[command(subcommand)]
         cmd: AgentCmd,
     },
-    /// Register projects
-    Project {
-        #[command(subcommand)]
-        cmd: ProjectCmd,
-    },
-    /// Register repositories
-    Repo {
-        #[command(subcommand)]
-        cmd: RepoCmd,
-    },
-    /// Install the agent skill that teaches agent sessions to use the trk CLI
-    Skill {
-        #[command(subcommand)]
-        cmd: SkillCmd,
-    },
-    /// Resolved actor, project, config and database
+    /// Resolved actor, project directory and database
     Whoami,
     /// Consistent copy via VACUUM INTO
     Backup { path: PathBuf },
@@ -340,73 +316,9 @@ enum AgentCmd {
         /// Render for this issue instead of a sample
         #[arg(long)]
         issue: Option<String>,
-        /// Allow repository-local routing and agent configuration
-        #[arg(long)]
-        trust_repo: bool,
     },
     /// Check agent definitions, their templates and harness profiles
     Check,
-}
-
-#[derive(Args, Clone)]
-struct SkillScope {
-    /// ~/.agents/skills/trk (and ~/.claude/skills/trk) instead of this repository
-    #[arg(long, conflicts_with = "dir")]
-    global: bool,
-    /// Another skills directory; the skill goes in DIR/trk
-    #[arg(long, value_name = "DIR")]
-    dir: Option<PathBuf>,
-}
-
-#[derive(Subcommand)]
-enum SkillCmd {
-    /// Install or refresh the skill (default: in this repository, kept out of git)
-    Install {
-        #[command(flatten)]
-        scope: SkillScope,
-    },
-    /// Remove an installed skill
-    Uninstall {
-        #[command(flatten)]
-        scope: SkillScope,
-    },
-    /// Where the skill is installed and whether it matches this binary
-    Status {
-        #[command(flatten)]
-        scope: SkillScope,
-    },
-}
-
-impl SkillScope {
-    fn scope(&self) -> skill::Scope {
-        if self.dir.is_some() {
-            skill::Scope::Dir
-        } else if self.global {
-            skill::Scope::Global
-        } else {
-            skill::Scope::Project
-        }
-    }
-}
-
-#[derive(Subcommand)]
-enum ProjectCmd {
-    Add {
-        id: String,
-        #[arg(long)]
-        name: Option<String>,
-    },
-    List,
-}
-
-#[derive(Subcommand)]
-enum RepoCmd {
-    /// Register a repo (default: the current git checkout)
-    Add {
-        /// Remote URL or local path
-        target: Option<String>,
-    },
-    List,
 }
 
 fn main() {
@@ -437,11 +349,10 @@ fn main() {
         issue,
         actor,
         agent,
-        trust_repo,
     } = &cli.cmd
     {
         // The MCP server owns stdout; errors go to stderr.
-        let code = match mcp(&g, issue, actor, agent, *trust_repo) {
+        let code = match mcp(&g, issue, actor, agent) {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("trk mcp: {e:#}");
@@ -462,23 +373,15 @@ fn main() {
     }
 }
 
-fn mcp(g: &Global, issue: &str, actor: &str, agent: &str, trust_repo: bool) -> anyhow::Result<()> {
+fn mcp(g: &Global, issue: &str, actor: &str, agent: &str) -> anyhow::Result<()> {
     let env = Env::new(g)?;
-    let now = std::env::var("TRK_NOW").ok().and_then(|s| s.parse().ok());
     trk_mcp::serve(trk_mcp::McpArgs {
         db: env.db.clone(),
         config: env.config.clone(),
-        opts: trk_core::StoreOpts {
-            now,
-            agent_lease: env.agent_lease()?,
-            current_repo: None,
-            check_interval: trk_core::config::parse_duration(&env.user.check.interval)?,
-            migration_config: Some(env.config.path.clone()),
-        },
+        opts: env.store_opts()?,
         issue: issue.to_string(),
         actor: actor.to_string(),
         agent: agent.to_string(),
-        trust_repo,
     })
 }
 
@@ -517,46 +420,31 @@ fn show_one(env: &Env, store: &trk_core::Store, id: &str) -> Result<Out> {
 }
 
 fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
+    if let Cmd::Install { force, prefix } = cmd {
+        return install(g, force, prefix);
+    }
     let env = Env::new(g)?;
     match cmd {
-        Cmd::Init { force } => init(&env, force),
+        Cmd::Install { .. } => unreachable!(),
         Cmd::List {
             query,
-            all_projects,
             fields,
             sort,
             limit,
-        } => list(
-            &env,
-            &query.join(" "),
-            fields,
-            sort,
-            limit,
-            false,
-            all_projects,
-        ),
+        } => list(&env, &query.join(" "), fields, sort, limit, false),
         Cmd::Ready {
             query,
-            all_projects,
             fields,
             sort,
             limit,
-        } => list(
-            &env,
-            &query.join(" "),
-            fields,
-            sort,
-            limit,
-            true,
-            all_projects,
-        ),
+        } => list(&env, &query.join(" "), fields, sort, limit, true),
         Cmd::Show { ids, with } => {
             let store = env.store()?;
             let w = With::parse(&with);
             let mut items = vec![];
             for id in &ids {
                 let mut issue = store.read(env.actor.as_deref(), |c| c.show(id, w))?;
-                let cfg = trk_agent::routing::RoutingConfig::for_issue(&env.config, &issue)?;
+                let cfg = trk_agent::routing::RoutingConfig::new(&env.config);
                 issue["routing"] =
                     json!(cfg.resolve(issue["type"].as_str().unwrap_or_default(), None)?);
                 items.push(issue);
@@ -633,29 +521,9 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
                 s.write(&actor, false, |c| {
                     let id = c.resolve_id(&id)?;
                     // Record where the work happens: the given worktree, or the
-                    // working directory when it is a checkout of the issue's repo.
-                    let worktree = match explicit {
-                        Some(w) => Some(w),
-                        None => {
-                            let issue = c.issue(&id)?;
-                            let here = env
-                                .git
-                                .as_ref()
-                                .map(|g| c.find_repo(g.remote.as_deref(), Some(&g.toplevel)))
-                                .transpose()?
-                                .flatten();
-                            match (&env.git, here) {
-                                (Some(g), Some(r))
-                                    if issue.repo_id == Some(r.id)
-                                        || (issue.repo_id.is_none()
-                                            && r.project == issue.project) =>
-                                {
-                                    Some(g.toplevel.clone())
-                                }
-                                _ => None,
-                            }
-                        }
-                    };
+                    // working directory when it is a checkout of this project.
+                    let worktree =
+                        explicit.or_else(|| env.here().map(|p| p.to_string_lossy().to_string()));
                     c.claim(
                         &id,
                         ClaimOpts {
@@ -833,7 +701,6 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
             fg,
             print,
             dry_run,
-            trust_repo,
         } => run::run(
             &env,
             run::RunArgs {
@@ -843,7 +710,6 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
                 fg,
                 print,
                 dry_run,
-                trust_repo,
             },
         ),
         Cmd::Runs => run::runs(&env),
@@ -852,73 +718,6 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
         Cmd::Reap => run::reap(&env),
         Cmd::Mcp { .. } => unreachable!(),
         Cmd::Agent { cmd } => agent_cmd(&env, cmd),
-        Cmd::Project { cmd } => match cmd {
-            ProjectCmd::Add { id, name } => {
-                let actor = env.actor()?.to_string();
-                with_open(&env, |s| {
-                    let p = s.write(&actor, false, |c| {
-                        c.project_add(&id, name.as_deref().unwrap_or(&id))
-                    })?;
-                    Ok(Out::Text(
-                        format!("project {} added", p.id),
-                        serde_json::to_value(p)?,
-                    ))
-                })
-            }
-            ProjectCmd::List => {
-                let store = env.store()?;
-                let ps = store.read(None, |c| c.projects())?;
-                let text = ps
-                    .iter()
-                    .map(|p| format!("{}  {}", p.id, p.name))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Ok(Out::Text(
-                    if text.is_empty() {
-                        "no projects".into()
-                    } else {
-                        text
-                    },
-                    serde_json::to_value(ps)?,
-                ))
-            }
-        },
-        Cmd::Repo { cmd } => match cmd {
-            RepoCmd::Add { target } => repo_add(&env, target),
-            RepoCmd::List => {
-                let store = env.store()?;
-                let rs = store.read(None, |c| c.repos())?;
-                let text = rs
-                    .iter()
-                    .map(|r| {
-                        format!(
-                            "{}  {}  {}",
-                            r.project,
-                            r.remote_url.as_deref().unwrap_or("-"),
-                            r.local_path.as_deref().unwrap_or("-")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                Ok(Out::Text(
-                    if text.is_empty() {
-                        "no repos".into()
-                    } else {
-                        text
-                    },
-                    serde_json::to_value(rs)?,
-                ))
-            }
-        },
-        Cmd::Skill { cmd } => match cmd {
-            SkillCmd::Install { scope } => {
-                skill::install(&env, scope.scope(), scope.dir.as_deref())
-            }
-            SkillCmd::Uninstall { scope } => {
-                skill::uninstall(&env, scope.scope(), scope.dir.as_deref())
-            }
-            SkillCmd::Status { scope } => skill::status(&env, scope.global, scope.dir.as_deref()),
-        },
         Cmd::Whoami => whoami(&env),
         Cmd::Backup { path } => {
             let store = env.store()?;
@@ -931,29 +730,76 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
     }
 }
 
-fn init(env: &Env, force: bool) -> Result<Out> {
-    let dir = &env.config.path;
-    std::fs::create_dir_all(dir)?;
-    let mut written = vec![];
-    let mut kept = vec![];
-    let email = env
+/// The default issue id prefix for a project directory: its name, reduced to
+/// lowercase letters and digits.
+fn default_prefix(root: &std::path::Path) -> String {
+    let name = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let slug: String = name
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        .collect();
+    let slug = slug.trim_start_matches(|c: char| c.is_ascii_digit());
+    if slug.is_empty() {
+        "trk".into()
+    } else {
+        slug.to_string()
+    }
+}
+
+/// `trk install`: `.trk/` with the default config and the database, plus the
+/// agent skill. Existing config files are kept unless `force`.
+fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
+    let loc = env::Location::find(g);
+    let dir = loc.dir.clone();
+    let root = loc.root.clone();
+    let config_path = dir.join("config.toml");
+    if let Some(p) = &prefix {
+        trk_core::store::check_prefix(p)?;
+        if config_path.exists() && !force {
+            return Err(bad_args(format!(
+                "{} already exists, so --prefix has no effect",
+                config_path.display()
+            ))
+            .with_hint("edit [issues] prefix in it, or pass --force to rewrite the config"));
+        }
+    }
+    std::fs::create_dir_all(&dir)?;
+    let email = g
         .actor
         .as_deref()
         .and_then(|a| a.strip_prefix("human:"))
-        .map(String::from);
-    let config_toml = seed::CONFIG_TOML.replace(
-        "{{EMAIL_LINE}}",
-        &match &email {
-            Some(e) => format!("email = \"{e}\""),
-            None => "# email = \"you@example.com\"".to_string(),
-        },
-    );
-    let mut files: Vec<(&str, String)> = vec![("config.toml", config_toml)];
+        .map(String::from)
+        .or_else(|| env::git(&root, &["config", "user.email"]).filter(|e| !e.is_empty()));
+    let prefix = prefix.unwrap_or_else(|| default_prefix(&root));
+    let config_toml = seed::CONFIG_TOML
+        .replace(
+            "{{EMAIL_LINE}}",
+            &match &email {
+                Some(e) => format!("email = \"{e}\""),
+                None => "# email = \"you@example.com\"".to_string(),
+            },
+        )
+        .replace("{{PREFIX}}", &prefix);
+    let mut files: Vec<(&str, String)> = vec![
+        (".gitignore", seed::GITIGNORE.to_string()),
+        ("config.toml", config_toml),
+    ];
     files.extend(seed::FILES.iter().map(|(p, c)| (*p, c.to_string())));
+    let mut written = vec![];
+    let mut kept = vec![];
+    // Kept files whose content is not the default: the user's edits, or
+    // defaults that changed since they were written.
+    let mut differ = vec![];
     for (rel, content) in files {
         let p = dir.join(rel);
         if p.exists() && !force {
             kept.push(rel.to_string());
+            if rel != "config.toml" && std::fs::read_to_string(&p).is_ok_and(|s| s != content) {
+                differ.push(rel.to_string());
+            }
             continue;
         }
         if let Some(parent) = p.parent() {
@@ -962,15 +808,14 @@ fn init(env: &Env, force: bool) -> Result<Out> {
         std::fs::write(&p, content)?;
         written.push(rel.to_string());
     }
-    let stale: Vec<String> = seed::STALE
-        .iter()
-        .filter(|f| dir.join(f).exists())
-        .map(|f| f.to_string())
-        .collect();
-    // Opening the store creates the database.
-    env.store()?;
+    let env = Env::at(loc, g)?;
+    let created = !env.db.is_file();
+    trk_core::Store::install(&env.db, env.store_opts()?)?;
+    let skill = skill::install(&root, env.checkout().is_some())?;
+
     let mut text = format!(
-        "config: {}\n  wrote {} files{}\ndatabase: {}",
+        "project   {}\nconfig    {}\n          wrote {} files{}\ndatabase  {}{}\nprefix    {}\nskill     {}",
+        root.display(),
         dir.display(),
         written.len(),
         if kept.is_empty() {
@@ -979,19 +824,34 @@ fn init(env: &Env, force: bool) -> Result<Out> {
             format!(", kept {} existing (use --force to overwrite)", kept.len())
         },
         env.db.display(),
+        if created { " (created)" } else { "" },
+        env.user.issues.prefix,
+        skill.lines.join("\n          "),
     );
-    if !stale.is_empty() {
+    if !differ.is_empty() {
         text.push_str(&format!(
-            "\n\nNo longer used, safe to delete from the config directory:\n  {}",
-            stale.join("\n  ")
+            "\n\nKept files that differ from this trk's defaults (your edits, or newer defaults):\n  {}",
+            differ.join("\n  ")
         ));
     }
+    let mut warnings = skill.warnings.clone();
+    if env.actor.is_none() {
+        warnings.push(format!(
+            "no email found: set [user] email in {}",
+            config_path.display()
+        ));
+    }
+    for w in &warnings {
+        text.push_str(&format!("\nwarning: {w}"));
+    }
     text.push_str(
-        "\n\nNext:\n  trk project add <id> --name \"…\"\n  trk repo add --project <id>      (inside a git checkout)\n  trk create \"…\" -d \"…\"\n  trk check --watch                (in a spare terminal: runs waiting checks)",
+        "\n\nNext:\n  trk create \"…\" -d \"…\"\n  trk run                          (start an agent on the first ready issue)\n  trk check --watch                (in a spare terminal: runs waiting checks)",
     );
     Ok(Out::Text(
         text,
-        json!({"config": dir, "db": env.db, "written": written, "kept": kept, "stale": stale}),
+        json!({"root": root, "dir": dir, "db": env.db, "db_created": created,
+               "prefix": env.user.issues.prefix, "written": written, "kept": kept,
+               "differ": differ, "skill": skill.data, "warnings": warnings}),
     ))
 }
 
@@ -1002,7 +862,6 @@ fn list(
     sort: Option<String>,
     limit: Option<usize>,
     ready: bool,
-    all_projects: bool,
 ) -> Result<Out> {
     let mut q = q.trim().to_string();
     let mut fields = fields;
@@ -1029,32 +888,16 @@ fn list(
     if ready {
         q = format!("ready {q}");
     }
-    let has_project_filter = trk_core::query::parse(&q)?.iter().any(|term| {
-        matches!(
-            term,
-            trk_core::query::Term::Pred { name, .. } if name == "project"
-        )
-    });
     let store = env.store()?;
-    let project = if all_projects {
-        None
-    } else if let Some(project) = env.explicit_project.as_deref() {
-        Some(project.to_string())
-    } else if has_project_filter {
-        None
-    } else {
-        Some(env.project(&store)?)
-    };
     let items = store.read(env.actor.as_deref(), |c| {
-        c.list(q.trim(), project.as_deref(), sort.as_deref(), limit)
+        c.list(q.trim(), sort.as_deref(), limit)
     })?;
     Ok(Out::Issues { items, fields })
 }
 
-fn create(env: &Env, mut new: NewIssue, dry_run: bool) -> Result<Out> {
+fn create(env: &Env, new: NewIssue, dry_run: bool) -> Result<Out> {
     let actor = env.actor()?.to_string();
     let mut store = env.store()?;
-    new.project = env.project(&store)?;
     let mut attempt = |new: NewIssue| -> Result<Value> {
         store.write(&actor, dry_run, |c| {
             let id = c.create(new)?;
@@ -1145,62 +988,18 @@ fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
     Ok(Out::Issue(v))
 }
 
-fn repo_add(env: &Env, target: Option<String>) -> Result<Out> {
-    let actor = env.actor()?.to_string();
-    let project = env.explicit_project.clone().ok_or_else(|| {
-        bad_args("which project does the repo belong to?")
-            .with_hint("trk repo add --project <id> [URL|PATH]")
-    })?;
-    let (remote, path) = match target {
-        None => {
-            let g = env.git.as_ref().ok_or_else(|| {
-                bad_args("not inside a git repository").with_hint("pass a remote URL or a path")
-            })?;
-            (g.remote.clone(), Some(g.toplevel.clone()))
-        }
-        Some(t) if std::path::Path::new(&t).exists() => {
-            let gi = env::git_info(std::path::Path::new(&t));
-            match gi {
-                Some(g) => (g.remote, Some(g.toplevel)),
-                None => (
-                    None,
-                    Some(std::fs::canonicalize(&t)?.to_string_lossy().to_string()),
-                ),
-            }
-        }
-        Some(t) => (Some(t), None),
-    };
-    with_open(env, |s| {
-        let r = s.write(&actor, false, |c| {
-            c.repo_add(&project, remote.as_deref(), path.as_deref())
-        })?;
-        Ok(Out::Text(
-            format!(
-                "repo {} registered to project {}",
-                r.remote_url
-                    .clone()
-                    .or(r.local_path.clone())
-                    .unwrap_or_default(),
-                r.project
-            ),
-            serde_json::to_value(r)?,
-        ))
-    })
-}
-
 fn whoami(env: &Env) -> Result<Out> {
     let store = env.store()?;
-    let project = env.project(&store).ok();
-    let repo = env.current_repo(&store)?;
     let (counts, lock) = store.read(None, |c| Ok((c.counts()?, c.check_lock()?)))?;
     let data = json!({
         "version": env!("TRK_VERSION"),
         "actor": env.actor,
-        "project": project,
-        "repo": repo,
-        "config": env.config.path,
-        "config_commit": env.config.git_commit(),
+        "root": env.root,
+        "dir": env.dir,
         "db": env.db,
+        "prefix": env.user.issues.prefix,
+        "worktrees": env.worktrees_dir(),
+        "skill": skill::state(&env.root.join(skill::SKILL_DIR)),
         "default_type": "code-change",
         "issues": counts,
         "check_running": lock.map(|(pid, host, started)| json!({"pid": pid, "host": host, "started_at": started})),
@@ -1233,15 +1032,10 @@ fn diag_text(d: &[trk_core::config::Diagnostic]) -> String {
 }
 
 fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
-    let local_config = || {
-        trk_agent::routing::RoutingConfig::for_repository(
-            &env.config,
-            env.git.as_ref().map(|g| std::path::Path::new(&g.toplevel)),
-        )
-    };
+    let local_config = || trk_agent::routing::RoutingConfig::new(&env.config);
     match cmd {
         AgentCmd::List => {
-            let cfg = local_config()?;
+            let cfg = local_config();
             let agents = cfg.agents()?;
             let types = cfg.types()?;
             let mut items = vec![];
@@ -1268,12 +1062,12 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                                   "harness": a.harness.prefer, "builtin_tools": a.harness.builtin_tools}));
             }
             if text.is_empty() {
-                text = "no agents: run `trk init`".into();
+                text = "no agents: run `trk install`".into();
             }
             Ok(Out::Text(text, Value::Array(items)))
         }
         AgentCmd::Check => {
-            let d = local_config()?.check(&env.user);
+            let d = local_config().check(&env.user);
             let errors = d.iter().filter(|x| x.level == Level::Error).count();
             let data = json!({"ok": errors == 0, "diagnostics": d});
             if errors > 0 {
@@ -1304,11 +1098,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             };
             Ok(Out::Text(text, data))
         }
-        AgentCmd::Preview {
-            agent,
-            issue,
-            trust_repo,
-        } => {
+        AgentCmd::Preview { agent, issue } => {
             let issue_json = match &issue {
                 Some(id) => {
                     let store = env.store()?;
@@ -1325,12 +1115,11 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 }
                 None => trk_agent::check::sample_issue(),
             };
-            let cfg = trk_agent::routing::RoutingConfig::for_issue(&env.config, &issue_json)?;
+            let cfg = trk_agent::routing::RoutingConfig::new(&env.config);
             let routing = cfg.resolve(
                 issue_json["type"].as_str().unwrap_or_default(),
                 Some(&agent),
             )?;
-            cfg.require_trust(&routing, trust_repo)?;
             let resolved = cfg.load(&routing)?;
             let a = resolved.agent;
             let tools = trk_agent::agent_tools(&a);

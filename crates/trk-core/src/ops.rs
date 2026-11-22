@@ -25,15 +25,12 @@ pub const CHECK_OUTPUT_TAIL: usize = 4096;
 
 #[derive(Debug, Clone, Default)]
 pub struct NewIssue {
-    pub project: String,
     /// A fixed id (imports); otherwise one is allocated.
     pub id: Option<String>,
     pub title: String,
     pub description: String,
     pub priority: Option<String>,
     pub issue_type: Option<String>,
-    /// `None`: the repo of the working directory, when it belongs to the project.
-    pub repo_id: Option<i64>,
     /// Issues that block the new one.
     pub blocked_by: Vec<String>,
     /// Issues the new one blocks.
@@ -260,14 +257,15 @@ impl Ctx<'_> {
     // Create / edit
     // ------------------------------------------------------------------
 
-    fn new_id(&self, project: &str) -> Result<String> {
+    fn new_id(&self) -> Result<String> {
+        let prefix = &self.opts.prefix;
         let mut rng = rand::rng();
         for len in 3..=8 {
             for _ in 0..8 {
                 let suffix: String = (0..len)
                     .map(|_| ID_ALPHABET[rng.random_range(0..ID_ALPHABET.len())] as char)
                     .collect();
-                let id = format!("{project}-{suffix}");
+                let id = format!("{prefix}-{suffix}");
                 if !self.issue_exists(&id)? {
                     return Ok(id);
                 }
@@ -285,11 +283,6 @@ impl Ctx<'_> {
     }
 
     pub fn create(&self, new: NewIssue) -> Result<String> {
-        if !self.project_exists(&new.project)? {
-            return Err(
-                not_found("project", &new.project).with_hint("create it with `trk project add`")
-            );
-        }
         let title = new.title.trim().to_string();
         if title.is_empty() {
             return Err(Error::new(Code::InvalidField, "an issue needs a title")
@@ -327,7 +320,7 @@ impl Ctx<'_> {
         let id = match &new.id {
             Some(id) => {
                 let ok = id
-                    .strip_prefix(&format!("{}-", new.project))
+                    .strip_prefix(&format!("{}-", self.opts.prefix))
                     .is_some_and(|s| {
                         !s.is_empty()
                             && s.chars()
@@ -336,7 +329,7 @@ impl Ctx<'_> {
                 if !ok {
                     return Err(bad_args(format!(
                         "id '{id}' must be '{}-' followed by lowercase letters and digits",
-                        new.project
+                        self.opts.prefix
                     )));
                 }
                 if self.issue_exists(id)? {
@@ -344,37 +337,14 @@ impl Ctx<'_> {
                 }
                 id.clone()
             }
-            None => self.new_id(&new.project)?,
+            None => self.new_id()?,
         };
-        let repo_id = match new.repo_id {
-            Some(r) => Some(r),
-            None => match &self.opts.current_repo {
-                Some(r) => self
-                    .repo_by_ref(r)?
-                    .filter(|r| r.project == new.project)
-                    .map(|r| r.id),
-                None => None,
-            },
-        };
-        if let Some(r) = repo_id {
-            let repo = self
-                .repo_by_id(r)?
-                .ok_or_else(|| not_found("repo", &r.to_string()))?;
-            if repo.project != new.project {
-                return Err(bad_args(format!(
-                    "repo {r} belongs to project '{}', not '{}'",
-                    repo.project, new.project
-                )));
-            }
-        }
         self.conn.execute(
-            "INSERT INTO issue (id, project_id, repo_id, state, title, description, priority, type,
+            "INSERT INTO issue (id, state, title, description, priority, type,
                                 created_by, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'open', ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+             VALUES (?1, 'open', ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
             params![
                 id,
-                new.project,
-                repo_id,
                 title,
                 new.description,
                 priority,
@@ -387,7 +357,7 @@ impl Ctx<'_> {
             Some(&id),
             "create",
             json!({
-                "project": new.project, "repo_id": repo_id, "title": title,
+                "title": title,
                 "description": new.description, "priority": priority, "type": issue_type,
                 "followup_of": followup_of,
             }),

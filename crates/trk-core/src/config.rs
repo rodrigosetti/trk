@@ -1,7 +1,8 @@
-//! The config directory and the user settings in `config.toml`.
+//! The project's `.trk/` directory and the settings in its `config.toml`.
+//! `trk install` writes every setting explicitly; nothing is defaulted here.
 //!
 //! ```text
-//! config.toml      user settings, launcher templates, harness profiles, views
+//! config.toml      settings, launcher templates, harness profiles, views
 //! agents/*.toml    one file per agent (parsed by trk-agent)
 //! prompts/*.j2     templates (rendered by trk-agent)
 //! ```
@@ -55,11 +56,9 @@ impl Diagnostic {
 pub struct UserConfig {
     #[serde(default)]
     pub user: UserSection,
-    #[serde(default)]
+    pub issues: IssuesSection,
     pub claims: ClaimsSection,
-    #[serde(default)]
     pub check: CheckSection,
-    #[serde(default)]
     pub run: RunSection,
     /// Launcher templates; parsed by trk-cli.
     #[serde(default)]
@@ -77,9 +76,22 @@ pub struct UserSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IssuesSection {
+    /// Prefix of new issue ids: `<prefix>-<base32>`.
+    pub prefix: String,
+}
+
+impl Default for IssuesSection {
+    fn default() -> Self {
+        IssuesSection {
+            prefix: "trk".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ClaimsSection {
-    /// Default lease for agent claims, e.g. "30m".
-    #[serde(default = "default_lease")]
+    /// Lease for agent claims, e.g. "30m".
     pub agent_lease: String,
 }
 
@@ -99,10 +111,8 @@ fn default_lease() -> String {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CheckSection {
     /// How often a waiting issue is checked when it does not say, e.g. "5m".
-    #[serde(default = "default_check_interval")]
     pub interval: String,
     /// How long one check may run before it counts as an error, e.g. "10m".
-    #[serde(default = "default_check_timeout")]
     pub timeout: String,
 }
 
@@ -123,13 +133,19 @@ fn default_check_timeout() -> String {
     "10m".into()
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RunSection {
-    /// Where `trk run` creates worktrees; default `<data dir>/worktrees`.
-    pub worktrees: Option<String>,
-    /// Installed-harness preferences remain global.
-    #[serde(default)]
-    pub harness_prefer: Vec<String>,
+    /// Where `trk run` creates worktrees: absolute, `~/…`, or relative to the
+    /// project root.
+    pub worktrees: String,
+}
+
+impl Default for RunSection {
+    fn default() -> Self {
+        RunSection {
+            worktrees: ".trk/worktrees".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -153,7 +169,7 @@ fn read(path: &Path) -> Result<String> {
             Code::NotFound,
             format!("cannot read {}: {e}", path.display()),
         )
-        .with_hint("run `trk init` to write the default config")
+        .with_hint("run `trk install` to write the default config")
     })
 }
 
@@ -173,8 +189,12 @@ impl ConfigDir {
 
     pub fn user_config(&self) -> Result<UserConfig> {
         let p = self.path.join("config.toml");
-        if !p.exists() {
-            return Ok(UserConfig::default());
+        if !p.is_file() {
+            return Err(Error::new(
+                Code::NotInstalled,
+                format!("no trk config at {}", p.display()),
+            )
+            .with_hint("run `trk install` in the project's root directory"));
         }
         parse_toml(&p, &read(&p)?)
     }
@@ -192,32 +212,6 @@ impl ConfigDir {
         }
         out.sort();
         out
-    }
-
-    /// The git commit of the config directory, with `+dirty` when it has
-    /// uncommitted changes. `None` when it is not a git repository.
-    pub fn git_commit(&self) -> Option<String> {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.path)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let mut commit = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        let dirty = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&self.path)
-            .args(["status", "--porcelain"])
-            .output()
-            .ok()
-            .is_some_and(|o| !o.stdout.is_empty());
-        if dirty {
-            commit.push_str("+dirty");
-        }
-        Some(commit)
     }
 }
 

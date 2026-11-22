@@ -4,17 +4,16 @@
 //! leases, validate, check claims, write rows, append events, commit. Reads
 //! use deferred transactions.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use rusqlite_migration::{HookError, M, MigrationDefinitionError, Migrations};
+use rusqlite_migration::{M, MigrationDefinitionError, Migrations};
 use serde_json::{Value, json};
 
 use crate::error::{Code, Error, Result, bad_args, not_found};
 use crate::model::*;
 
-pub const ISSUE_COLS: &str = "i.id, i.project_id, i.repo_id, i.state, i.title, i.description, \
+pub const ISSUE_COLS: &str = "i.id, i.state, i.title, i.description, \
      i.priority, i.type, i.close_reason, i.waiting_reason, i.waiting_check, i.check_interval, \
      i.next_check_at, i.last_check_at, i.last_check_exit, i.wait_cwd, i.created_by, i.created_at, \
      i.updated_at, i.closed_at";
@@ -25,14 +24,10 @@ pub struct StoreOpts {
     pub now: Option<jiff::Timestamp>,
     /// Lease given to agent claims and renewed on each write.
     pub agent_lease: jiff::SignedDuration,
-    /// The repo of the working directory (normalized remote or path): the
-    /// default repo of new issues and the meaning of `project=.`.
-    pub current_repo: Option<String>,
     /// Time between checks of a waiting issue that does not set its own.
     pub check_interval: jiff::SignedDuration,
-    /// Global config directory used only to preserve routing when migrating
-    /// databases with authored agent assignments.
-    pub migration_config: Option<PathBuf>,
+    /// Prefix of new issue ids: `<prefix>-<base32>`.
+    pub prefix: String,
 }
 
 impl Default for StoreOpts {
@@ -40,9 +35,8 @@ impl Default for StoreOpts {
         StoreOpts {
             now: None,
             agent_lease: jiff::SignedDuration::from_mins(30),
-            current_repo: None,
             check_interval: jiff::SignedDuration::from_mins(5),
-            migration_config: None,
+            prefix: "trk".into(),
         }
     }
 }
@@ -62,52 +56,36 @@ pub struct Ctx<'a> {
 }
 
 impl Store {
+    /// Open the project's database. It must exist: `trk install` creates it.
     pub fn open(path: &Path, opts: StoreOpts) -> Result<Store> {
+        if !path.is_file() {
+            return Err(Error::new(
+                Code::NotInstalled,
+                format!("no trk database at {}", path.display()),
+            )
+            .with_hint("run `trk install` in the project's root directory"));
+        }
+        Self::connect(path, opts)
+    }
+
+    /// `trk install`: create the database if it is missing, then open it.
+    pub fn install(path: &Path, opts: StoreOpts) -> Result<Store> {
         if let Some(dir) = path.parent()
             && !dir.as_os_str().is_empty()
         {
             std::fs::create_dir_all(dir)?;
         }
+        Self::connect(path, opts)
+    }
+
+    fn connect(path: &Path, opts: StoreOpts) -> Result<Store> {
+        check_prefix(&opts.prefix)?;
         let mut conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_millis(5000))?;
-        // A database written by the six-type schema cannot be opened: there is
-        // no migration, only an export and reimport.
-        let old: bool = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'issue_type'",
-                [],
-                |_| Ok(true),
-            )
-            .optional()?
-            .unwrap_or(false);
-        if old {
-            return Err(Error::new(
-                Code::OldDatabase,
-                format!(
-                    "{} was written by an older trk with issue types and cannot be opened",
-                    path.display()
-                ),
-            )
-            .with_hint(
-                "move it aside (it stays readable with the old binary), then reimport its \
-                 open issues with scripts/import-v1.sh",
-            ));
-        }
-        let config_dir = opts.migration_config.clone();
-        let migrations = [
-            M::up(include_str!("schema.sql")),
-            M::up_with_hook(
-                include_str!("schema-v2.sql"),
-                move |tx: &rusqlite::Transaction| {
-                    migrate_issue_types(tx, config_dir.as_deref())
-                        .map_err(|e| HookError::Hook(e.to_string()))
-                },
-            ),
-        ];
-        migrate(&mut conn, path, &migrations)?;
+        migrate(&mut conn, path, &migrations())?;
         Ok(Store { conn, opts })
     }
 
@@ -198,7 +176,7 @@ fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<(
             .with_detail("supported_version", migrations.len())
             .with_hint(
                 "upgrade trk, then restart the harness's trk MCP server using the upgraded \
-                 executable and the same database/config, issue and actor; reconnect and call \
+                 executable and the same project directory, issue and actor; reconnect and call \
                  get_task before resuming. Replacing the executable does not upgrade a running \
                  server. If the claim is gone or the issue is blocked, preserve the handoff for \
                  the human; do not bypass claim/dependency rules. Do not downgrade or reset \
@@ -209,116 +187,26 @@ fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<(
     }
 }
 
-/// Files are published before removing any old routing data. A failed database
-/// transaction may leave matching files behind; reopening safely reuses them.
-fn migrate_issue_types(conn: &Connection, config_dir: Option<&Path>) -> Result<()> {
-    let has_issues: bool =
-        conn.query_row("SELECT EXISTS(SELECT 1 FROM issue)", [], |r| r.get(0))?;
-    if has_issues {
-        let config_dir = config_dir.ok_or_else(|| {
-            Error::new(
-                Code::ConfigInvalid,
-                "migrating issue agents requires the global config directory (StoreOpts.migration_config)",
-            )
-        })?;
-        let default_agent = migration_default_agent(config_dir)?;
-        let mut stmt = conn.prepare("SELECT DISTINCT coalesce(agent, ?1) FROM issue")?;
-        let agents = stmt
-            .query_map([&default_agent], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        drop(stmt);
-        let types_dir = config_dir.join("types");
-        std::fs::create_dir_all(&types_dir)?;
-        for agent in agents {
-            publish_migrated_type(&types_dir, &agent)?;
-        }
-        conn.execute(
-            "UPDATE issue SET type = 'migrated-agent-' || lower(hex(coalesce(agent, ?1)))",
-            [&default_agent],
-        )?;
-    }
-    conn.execute_batch("ALTER TABLE issue DROP COLUMN agent;")?;
-    Ok(())
+fn migrations() -> Vec<M<'static>> {
+    vec![M::up(include_str!("schema.sql"))]
 }
 
-fn migration_default_agent(config_dir: &Path) -> Result<String> {
-    let path = config_dir.join("config.toml");
-    let source = match std::fs::read_to_string(&path) {
-        Ok(source) => source,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok("implementer".into()),
-        Err(e) => return Err(e.into()),
-    };
-    let config: toml::Value = toml::from_str(&source)
-        .map_err(|e| Error::new(Code::ConfigInvalid, format!("{}: {e}", path.display())))?;
-    match config.get("run").and_then(|run| run.get("default_agent")) {
-        None => Ok("implementer".into()),
-        Some(toml::Value::String(agent)) => Ok(agent.clone()),
-        Some(_) => Err(Error::new(
-            Code::ConfigInvalid,
-            format!("{}: run.default_agent must be a string", path.display()),
-        )),
+/// Issue id prefixes: a lowercase letter, then lowercase letters and digits.
+pub fn check_prefix(prefix: &str) -> Result<()> {
+    if prefix.starts_with(|c: char| c.is_ascii_lowercase())
+        && prefix
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    {
+        return Ok(());
     }
-}
-
-fn publish_migrated_type(types_dir: &Path, agent: &str) -> Result<()> {
-    use std::fmt::Write as _;
-
-    let mut name = String::with_capacity("migrated-agent-".len() + agent.len() * 2);
-    name.push_str("migrated-agent-");
-    for byte in agent.bytes() {
-        write!(&mut name, "{byte:02x}").expect("writing a string cannot fail");
-    }
-    let definition = toml::Value::Table(toml::map::Map::from_iter([
-        ("name".into(), toml::Value::String(name.clone())),
-        (
-            "description".into(),
-            toml::Value::String(format!(
-                "Migrated issue agent assignment; routes to agent {agent:?}."
-            )),
+    Err(Error::new(
+        Code::ConfigInvalid,
+        format!(
+            "invalid issue id prefix '{prefix}': use lowercase letters and digits, starting with a letter"
         ),
-        ("agent".into(), toml::Value::String(agent.into())),
-    ]));
-    let path = types_dir.join(format!("{name}.toml"));
-    let matches_existing = || -> Result<()> {
-        let existing = std::fs::read_to_string(&path)?;
-        if toml::from_str::<toml::Value>(&existing).ok().as_ref() != Some(&definition) {
-            return Err(Error::new(
-                Code::ConfigInvalid,
-                format!(
-                    "{} conflicts with the migrated type for agent {agent:?}; preserve or move it before retrying migration",
-                    path.display()
-                ),
-            ));
-        }
-        Ok(())
-    };
-    if path.try_exists()? {
-        return matches_existing();
-    }
-    let content = toml::to_string(&definition)
-        .map_err(|e| Error::new(Code::Internal, format!("serializing migrated type: {e}")))?;
-    let temporary = types_dir.join(format!(".{name}-{:016x}.tmp", rand::random::<u64>()));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)?;
-    let result = (|| -> Result<()> {
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-        // A hard link publishes complete contents atomically without replacing
-        // an existing definition, including one published by another process.
-        match std::fs::hard_link(&temporary, &path) {
-            Ok(()) => {
-                std::fs::File::open(types_dir)?.sync_all()?;
-                Ok(())
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => matches_existing(),
-            Err(e) => Err(e.into()),
-        }
-    })();
-    drop(file);
-    std::fs::remove_file(temporary)?;
-    result
+    )
+    .with_hint("set [issues] prefix in .trk/config.toml"))
 }
 
 // ----------------------------------------------------------------------
@@ -516,66 +404,6 @@ impl<'a> Ctx<'a> {
             .collect::<std::result::Result<_, _>>()?;
         Ok(v)
     }
-
-    pub fn project_exists(&self, id: &str) -> Result<bool> {
-        Ok(self
-            .conn
-            .query_row("SELECT 1 FROM project WHERE id = ?1", [id], |_| Ok(true))
-            .optional()?
-            .unwrap_or(false))
-    }
-
-    /// Find the repo row for a normalized remote URL or an absolute path.
-    pub fn find_repo(&self, remote: Option<&str>, path: Option<&str>) -> Result<Option<Repo>> {
-        if let Some(r) = remote {
-            let n = normalize_remote(r);
-            if let Some(repo) = self
-                .conn
-                .query_row(
-                    "SELECT id, project_id, remote_url, local_path FROM repo WHERE remote_url = ?1",
-                    [&n],
-                    row_to_repo,
-                )
-                .optional()?
-            {
-                return Ok(Some(repo));
-            }
-        }
-        if let Some(p) = path {
-            return Ok(self
-                .conn
-                .query_row(
-                    "SELECT id, project_id, remote_url, local_path FROM repo WHERE local_path = ?1",
-                    [p],
-                    row_to_repo,
-                )
-                .optional()?);
-        }
-        Ok(None)
-    }
-
-    pub fn repo_by_id(&self, id: i64) -> Result<Option<Repo>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT id, project_id, remote_url, local_path FROM repo WHERE id = ?1",
-                [id],
-                row_to_repo,
-            )
-            .optional()?)
-    }
-
-    /// The repo row a normalized remote URL or an absolute path refers to.
-    pub fn repo_by_ref(&self, r: &str) -> Result<Option<Repo>> {
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT id, project_id, remote_url, local_path FROM repo WHERE remote_url = ?1 OR local_path = ?1",
-                [r],
-                row_to_repo,
-            )
-            .optional()?)
-    }
 }
 
 pub const CLAIM_COLS: &str = "c.id, c.issue_id, c.actor, a.on_behalf_of, c.claimed_at, c.lease_until, c.worktree, \
@@ -595,15 +423,6 @@ pub fn row_to_claim(r: &rusqlite::Row) -> rusqlite::Result<Claim> {
         terminal: r.get(9)?,
         released_at: r.get(10)?,
         release_reason: r.get(11)?,
-    })
-}
-
-fn row_to_repo(r: &rusqlite::Row) -> rusqlite::Result<Repo> {
-    Ok(Repo {
-        id: r.get(0)?,
-        project: r.get(1)?,
-        remote_url: r.get(2)?,
-        local_path: r.get(3)?,
     })
 }
 
@@ -633,35 +452,29 @@ fn state_col(r: &rusqlite::Row, idx: usize) -> rusqlite::Result<State> {
 pub fn row_to_issue(r: &rusqlite::Row) -> rusqlite::Result<Issue> {
     Ok(Issue {
         id: r.get(0)?,
-        project: r.get(1)?,
-        repo_id: r.get(2)?,
-        state: state_col(r, 3)?,
-        title: r.get(4)?,
-        description: r.get(5)?,
-        priority: r.get(6)?,
-        issue_type: r.get(7)?,
-        close_reason: r.get(8)?,
-        waiting_reason: r.get(9)?,
-        waiting_check: r.get(10)?,
-        check_interval: r.get(11)?,
-        next_check_at: r.get(12)?,
-        last_check_at: r.get(13)?,
-        last_check_exit: r.get(14)?,
-        wait_cwd: r.get(15)?,
-        created_by: r.get(16)?,
-        created_at: r.get(17)?,
-        updated_at: r.get(18)?,
-        closed_at: r.get(19)?,
+        state: state_col(r, 1)?,
+        title: r.get(2)?,
+        description: r.get(3)?,
+        priority: r.get(4)?,
+        issue_type: r.get(5)?,
+        close_reason: r.get(6)?,
+        waiting_reason: r.get(7)?,
+        waiting_check: r.get(8)?,
+        check_interval: r.get(9)?,
+        next_check_at: r.get(10)?,
+        last_check_at: r.get(11)?,
+        last_check_exit: r.get(12)?,
+        wait_cwd: r.get(13)?,
+        created_by: r.get(14)?,
+        created_at: r.get(15)?,
+        updated_at: r.get(16)?,
+        closed_at: r.get(17)?,
     })
 }
 
 impl crate::query::QueryCtx for Ctx<'_> {
     fn me(&self) -> Option<String> {
         self.actor.as_ref().map(|a| a.to_string())
-    }
-    fn current_project(&self) -> Option<String> {
-        let r = self.opts.current_repo.as_ref()?;
-        self.repo_by_ref(r).ok().flatten().map(|r| r.project)
     }
     fn now(&self) -> jiff::Timestamp {
         self.now
@@ -672,117 +485,10 @@ impl crate::query::QueryCtx for Ctx<'_> {
 }
 
 // ----------------------------------------------------------------------
-// Projects, repos, actors
+// Actors
 // ----------------------------------------------------------------------
 
 impl Ctx<'_> {
-    pub fn project_add(&self, id: &str, name: &str) -> Result<Project> {
-        if id.is_empty()
-            || !id.starts_with(|c: char| c.is_ascii_lowercase())
-            || !id
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        {
-            return Err(bad_args(format!(
-                "invalid project id '{id}': use lowercase letters and digits, starting with a letter"
-            )));
-        }
-        if self.project_exists(id)? {
-            return Err(Error::new(
-                Code::BadArgs,
-                format!("project '{id}' already exists"),
-            ));
-        }
-        let p = Project {
-            id: id.into(),
-            name: name.into(),
-            created_at: self.ts(),
-        };
-        self.conn.execute(
-            "INSERT INTO project (id, name, created_at) VALUES (?1, ?2, ?3)",
-            params![p.id, p.name, p.created_at],
-        )?;
-        Ok(p)
-    }
-
-    pub fn projects(&self) -> Result<Vec<Project>> {
-        let mut st = self
-            .conn
-            .prepare("SELECT id, name, created_at FROM project ORDER BY id")?;
-        let v = st
-            .query_map([], |r| {
-                Ok(Project {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    created_at: r.get(2)?,
-                })
-            })?
-            .collect::<std::result::Result<_, _>>()?;
-        Ok(v)
-    }
-
-    pub fn repo_add(
-        &self,
-        project: &str,
-        remote: Option<&str>,
-        path: Option<&str>,
-    ) -> Result<Repo> {
-        if !self.project_exists(project)? {
-            return Err(not_found("project", project).with_hint("create it with `trk project add`"));
-        }
-        if remote.is_none() && path.is_none() {
-            return Err(bad_args("a repo needs a remote URL or a local path"));
-        }
-        let remote = remote.map(normalize_remote);
-        if let Some(existing) = self.find_repo(remote.as_deref(), path)? {
-            if existing.project != project {
-                return Err(Error::new(
-                    Code::BadArgs,
-                    format!("repo already belongs to project '{}'", existing.project),
-                ));
-            }
-            // Fill in whichever side was missing.
-            if existing.local_path.is_none() && path.is_some() {
-                self.conn.execute(
-                    "UPDATE repo SET local_path = ?2 WHERE id = ?1",
-                    params![existing.id, path],
-                )?;
-            }
-            if existing.remote_url.is_none() && remote.is_some() {
-                self.conn.execute(
-                    "UPDATE repo SET remote_url = ?2 WHERE id = ?1",
-                    params![existing.id, remote],
-                )?;
-            }
-            return Ok(self.conn.query_row(
-                "SELECT id, project_id, remote_url, local_path FROM repo WHERE id = ?1",
-                [existing.id],
-                row_to_repo,
-            )?);
-        }
-        self.conn.execute(
-            "INSERT INTO repo (project_id, remote_url, local_path) VALUES (?1, ?2, ?3)",
-            params![project, remote, path],
-        )?;
-        let id = self.conn.last_insert_rowid();
-        Ok(Repo {
-            id,
-            project: project.into(),
-            remote_url: remote,
-            local_path: path.map(String::from),
-        })
-    }
-
-    pub fn repos(&self) -> Result<Vec<Repo>> {
-        let mut st = self.conn.prepare(
-            "SELECT id, project_id, remote_url, local_path FROM repo ORDER BY project_id, id",
-        )?;
-        let v = st
-            .query_map([], row_to_repo)?
-            .collect::<std::result::Result<_, _>>()?;
-        Ok(v)
-    }
-
     pub fn actor_meta(&self, id: &str) -> Result<Value> {
         let m: Option<String> = self
             .conn
@@ -809,20 +515,30 @@ mod tests {
     use crate::view::With;
 
     #[test]
-    fn older_migrations_refuse_newer_database_without_losing_handoff() {
+    fn open_requires_an_installed_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".trk/trk.db");
+        let error = Store::open(&path, StoreOpts::default()).err().unwrap();
+        assert_eq!(error.code(), Code::NotInstalled);
+        assert!(!path.exists());
+        Store::install(&path, StoreOpts::default()).unwrap();
+        Store::open(&path, StoreOpts::default()).unwrap();
+    }
+
+    #[test]
+    fn older_executable_refuses_newer_database_without_losing_handoff() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trk.db");
         let actor = "agent:omp:upgrade";
         let opts = StoreOpts {
             now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
+            prefix: "orch".into(),
             ..Default::default()
         };
-        let mut store = Store::open(&path, opts.clone()).unwrap();
+        let mut store = Store::install(&path, opts.clone()).unwrap();
         let id = store
             .write("human:alice@example.com", false, |c| {
-                c.project_add("orch", "Orchestra")?;
                 c.create(NewIssue {
-                    project: "orch".into(),
                     title: "Preserve this issue".into(),
                     ..Default::default()
                 })
@@ -832,40 +548,27 @@ mod tests {
             .write(actor, false, |c| c.claim(&id, ClaimOpts::default()))
             .unwrap();
         let before = store.read(None, |c| c.show(&id, With::default())).unwrap();
-        let schema = |conn: &Connection| {
-            conn.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY type, name")
-                .unwrap()
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, Option<String>>(2)?,
-                    ))
-                })
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap()
-        };
-        let before_schema = schema(store.conn());
         drop(store);
 
-        // A still-running executable retains only the first migration after
-        // another executable has advanced this same database to version 2.
-        let mut stale = Connection::open(&path).unwrap();
-        let error = migrate(&mut stale, &path, &[M::up(include_str!("schema.sql"))]).unwrap_err();
+        // Another, newer executable has advanced this database past what this
+        // one knows.
+        let supported = migrations().len() as u32;
+        let raw = Connection::open(&path).unwrap();
+        raw.pragma_update(None, "user_version", supported + 1)
+            .unwrap();
+        let error = Store::open(&path, opts.clone()).err().unwrap();
         assert_eq!(error.code(), Code::NewerDatabase);
-        assert_eq!(error.to_json()["database_version"], 2);
-        assert_eq!(error.to_json()["supported_version"], 1);
-        assert_eq!(schema(&stale), before_schema);
+        assert_eq!(error.to_json()["database_version"], supported + 1);
+        assert_eq!(error.to_json()["supported_version"], supported);
+        // Nothing was downgraded or reset.
         assert_eq!(
-            stale
-                .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+            raw.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            2
+            supported + 1
         );
-        drop(stale);
+        raw.pragma_update(None, "user_version", supported).unwrap();
+        drop(raw);
 
-        // Reopen with the compatible migration set, not a downgraded DB.
         let mut recovered = Store::open(&path, opts).unwrap();
         assert_eq!(
             recovered
@@ -881,13 +584,6 @@ mod tests {
         assert_eq!(
             recovered.read(None, |c| c.issue(&id)).unwrap().state,
             State::Open
-        );
-        assert!(
-            recovered
-                .read(None, |c| c.notes(&id))
-                .unwrap()
-                .iter()
-                .any(|n| n["body"] == "Recovered handoff")
         );
     }
 }

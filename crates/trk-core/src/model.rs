@@ -132,8 +132,6 @@ pub const CHECK_RETRY_EXIT: i32 = 75;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Issue {
     pub id: String,
-    pub project: String,
-    pub repo_id: Option<i64>,
     pub state: State,
     pub title: String,
     pub description: String,
@@ -197,65 +195,6 @@ pub struct Edge {
     pub priority: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Project {
-    pub id: String,
-    pub name: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Repo {
-    pub id: i64,
-    pub project: String,
-    pub remote_url: Option<String>,
-    pub local_path: Option<String>,
-}
-
-/// Normalize a git remote URL to `host/owner/name`:
-/// `git@github.com:acme/orch.git`, `https://github.com/acme/orch` and
-/// `ssh://git@github.com/acme/orch.git` all become `github.com/acme/orch`.
-pub fn normalize_remote(url: &str) -> String {
-    let mut s = url.trim().to_string();
-    let lower = s.to_ascii_lowercase();
-    for scheme in [
-        "https://",
-        "http://",
-        "ssh://",
-        "git://",
-        "git+ssh://",
-        "file://",
-    ] {
-        if lower.starts_with(scheme) {
-            s = s[scheme.len()..].to_string();
-            break;
-        }
-    }
-    // user@host:path (scp-like) or user@host/path
-    if let Some(at) = s.find('@')
-        && !s[..at].contains('/')
-    {
-        s = s[at + 1..].to_string();
-    }
-    // host:path → host/path (but not host:port/)
-    if let Some(colon) = s.find(':') {
-        let after = &s[colon + 1..];
-        let port_like = after
-            .split('/')
-            .next()
-            .is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
-        if port_like {
-            let slash = after.find('/').map(|i| colon + 1 + i).unwrap_or(s.len());
-            s = format!("{}{}", &s[..colon], &s[slash..]);
-        } else {
-            s = format!("{}/{}", &s[..colon], after);
-        }
-    }
-    let s = s.trim_end_matches('/');
-    let s = s.strip_suffix(".git").unwrap_or(s);
-    s.to_ascii_lowercase()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,19 +222,5 @@ mod tests {
             ActorId::parse("human:r@x.com").unwrap().to_string(),
             "human:r@x.com"
         );
-    }
-
-    #[test]
-    fn remotes() {
-        for u in [
-            "git@github.com:acme/orch.git",
-            "https://github.com/acme/orch",
-            "https://github.com/acme/orch.git/",
-            "ssh://git@github.com/acme/orch.git",
-            "ssh://git@github.com:22/acme/orch.git",
-            "HTTPS://GitHub.com/Acme/Orch",
-        ] {
-            assert_eq!(normalize_remote(u), "github.com/acme/orch", "{u}");
-        }
     }
 }

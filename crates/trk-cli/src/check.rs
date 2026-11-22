@@ -15,11 +15,10 @@ use trk_core::config::parse_duration;
 use trk_core::error::{Code, Error, Result};
 use trk_core::model::{CHECK_RETRY_EXIT, Issue, State};
 use trk_core::ops::{CheckResult, CheckRun};
-use trk_core::view::With;
 
-use crate::env::{Env, git, hostname, state_dir};
+use crate::env::{Env, git, hostname};
 use crate::render::{Out, until};
-use crate::run::{checkout_for, pid_alive};
+use crate::run::pid_alive;
 
 pub struct CheckArgs {
     pub id: Option<String>,
@@ -79,11 +78,8 @@ struct Place {
     branch: String,
 }
 
-fn place(env: &Env, store: &trk_core::Store, issue: &Issue) -> std::result::Result<Place, String> {
-    let shown = store
-        .read(None, |c| c.show(&issue.id, With::default()))
-        .map_err(|e| e.message())?;
-    let repo = checkout_for(env, store, &shown).ok().flatten();
+fn place(env: &Env, issue: &Issue) -> std::result::Result<Place, String> {
+    let repo = env.checkout();
     let cwd = match &issue.wait_cwd {
         Some(w) if Path::new(w).is_dir() => PathBuf::from(w),
         Some(w) => {
@@ -93,7 +89,7 @@ fn place(env: &Env, store: &trk_core::Store, issue: &Issue) -> std::result::Resu
         }
         None => match &repo {
             Some(r) => r.clone(),
-            None => state_dir(),
+            None => env.root.clone(),
         },
     };
     let branch = git(&cwd, &["branch", "--show-current"])
@@ -118,7 +114,7 @@ fn run_check(
     p: &Place,
     timeout: Duration,
 ) -> std::io::Result<CheckRun> {
-    let dir = state_dir().join("checks");
+    let dir = env.checks_dir();
     std::fs::create_dir_all(&dir)?;
     let log = dir.join(format!("{}-{}.log", issue.id, std::process::id()));
     let out = std::fs::File::create(&log)?;
@@ -133,14 +129,7 @@ fn run_check(
         .env("TRK_ISSUE", &issue.id)
         .env("TRK_WORKTREE", &p.cwd)
         .env("TRK_BRANCH", &p.branch)
-        .env(
-            "TRK_DB",
-            std::fs::canonicalize(&env.db).unwrap_or(env.db.clone()),
-        )
-        .env(
-            "TRK_CONFIG",
-            std::fs::canonicalize(&env.config.path).unwrap_or(env.config.path.clone()),
-        )
+        .env("TRK_DIR", env.dir_env())
         // The check is not an agent: it must not inherit a session's identity.
         .env_remove("TRK_ACTOR")
         .process_group(0);
@@ -221,7 +210,7 @@ fn pass(env: &Env, a: &CheckArgs) -> Result<std::result::Result<Vec<Value>, Valu
     if a.dry_run {
         let mut out = vec![];
         for i in &queue {
-            let p = place(env, &store, i);
+            let p = place(env, i);
             out.push(json!({
                 "issue": i.id, "title": i.title, "result": "would_run",
                 "check": i.waiting_check, "reason": i.waiting_reason,
@@ -242,7 +231,7 @@ fn pass(env: &Env, a: &CheckArgs) -> Result<std::result::Result<Vec<Value>, Valu
     for i in &queue {
         let check = i.waiting_check.clone().unwrap_or_default();
         let started = Instant::now();
-        let run = match place(env, &store, i) {
+        let run = match place(env, i) {
             Ok(p) => run_check(env, i, &check, &p, timeout).unwrap_or_else(|e| CheckRun {
                 exit: None,
                 timed_out: false,

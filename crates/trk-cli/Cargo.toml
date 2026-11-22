@@ -21,7 +21,6 @@ anstream.workspace = true
 owo-colors.workspace = true
 comfy-table.workspace = true
 termimad.workspace = true
-directories.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]

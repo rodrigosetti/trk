@@ -31,7 +31,6 @@ pub struct McpArgs {
     pub issue: String,
     pub actor: String,
     pub agent: String,
-    pub trust_repo: bool,
 }
 
 struct Inner {
@@ -67,12 +66,11 @@ impl TrkServer {
             let worktree = issue["claim"]["worktree"].as_str().map(String::from);
             Ok((issue, worktree))
         })?;
-        let config = trk_agent::routing::RoutingConfig::for_issue(&args.config, &issue_json)?;
+        let config = trk_agent::routing::RoutingConfig::new(&args.config);
         let routing = config.resolve(
             issue_json["type"].as_str().unwrap_or_default(),
             Some(&args.agent),
         )?;
-        config.require_trust(&routing, args.trust_repo)?;
         let resolved = config.load(&routing)?;
         let agent = resolved.agent;
         let tools = trk_agent::agent_tools(&agent);

@@ -14,7 +14,7 @@ use crate::tools::{agent_tools, unmatched_includes};
 /// A sample issue object for rendering templates during checks.
 pub fn sample_issue() -> Value {
     json!({
-        "id": "proj-abc", "project": "proj", "repo": null, "title": "Sample",
+        "id": "proj-abc", "title": "Sample",
         "description": "Sample description", "state": "claimed", "priority": "P2",
         "type": "code-change", "close_reason": null, "waiting": null, "claim": null,
         "deps": {"blocked_by": [], "blocks": []},
@@ -24,23 +24,9 @@ pub fn sample_issue() -> Value {
 }
 
 pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
-    check_global(cfg, user, None)
-}
-
-/// Check only effective global definitions; local templates are never rendered
-/// by diagnostics without an explicit trust decision.
-pub(crate) fn check_global(
-    cfg: &ConfigDir,
-    user: &UserConfig,
-    repository: Option<&ConfigDir>,
-) -> Vec<Diagnostic> {
     let mut d = vec![];
     let mut agents: BTreeMap<String, AgentDef> = BTreeMap::new();
     for p in cfg.files_in("agents", "toml") {
-        if repository.is_some_and(|r| r.path.join("agents").join(p.file_name().unwrap()).is_file())
-        {
-            continue;
-        }
         let file = format!("agents/{}", p.file_name().unwrap().to_string_lossy());
         match load_agent_file(&p) {
             Ok(a) => {
@@ -56,10 +42,7 @@ pub(crate) fn check_global(
             Err(e) => d.push(Diagnostic::error(Some(&file), e.message())),
         }
     }
-    let routing = crate::routing::RoutingConfig {
-        global: cfg.clone(),
-        repo: repository.cloned(),
-    };
+    let routing = crate::routing::RoutingConfig::new(cfg);
     if let Err(e) = routing.types() {
         d.push(Diagnostic::error(Some("types"), e.message()));
     }

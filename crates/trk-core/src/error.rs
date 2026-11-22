@@ -40,13 +40,12 @@ pub enum Code {
     BadQuery,
     NotFound,
     AmbiguousId,
-    UnknownRepo,
+    NotInstalled,
     InvalidField,
     InvalidState,
     Blocked,
     Cycle,
     ConfigInvalid,
-    OldDatabase,
     NewerDatabase,
     ClaimedByOther,
     NotClaimant,
@@ -63,13 +62,12 @@ impl Code {
             Code::BadQuery => "bad_query",
             Code::NotFound => "not_found",
             Code::AmbiguousId => "ambiguous_id",
-            Code::UnknownRepo => "unknown_repo",
+            Code::NotInstalled => "not_installed",
             Code::InvalidField => "invalid_field",
             Code::InvalidState => "invalid_state",
             Code::Blocked => "blocked",
             Code::Cycle => "cycle",
             Code::ConfigInvalid => "config_invalid",
-            Code::OldDatabase => "old_database",
             Code::NewerDatabase => "newer_database",
             Code::ClaimedByOther => "claimed_by_other",
             Code::NotClaimant => "not_claimant",
@@ -80,9 +78,9 @@ impl Code {
 
     pub fn exit_code(self) -> i32 {
         match self {
-            Code::Internal | Code::DbCorrupt | Code::OldDatabase | Code::NewerDatabase => 1,
+            Code::Internal | Code::DbCorrupt | Code::NewerDatabase => 1,
             Code::BadArgs | Code::BadQuery => 2,
-            Code::NotFound | Code::AmbiguousId | Code::UnknownRepo => 3,
+            Code::NotFound | Code::AmbiguousId | Code::NotInstalled => 3,
             Code::InvalidField | Code::InvalidState | Code::Cycle | Code::ConfigInvalid => 4,
             Code::ClaimedByOther
             | Code::NotClaimant

@@ -41,9 +41,7 @@ impl Env {
             );
         }
         let e = Env { dir };
-        e.ok(&["init"]);
-        e.ok(&["project", "add", "orch", "--name", "Orchestra"]);
-        e.ok(&["repo", "add", "--project", "orch"]);
+        e.ok(&["install", "--prefix", "orch"]);
         e
     }
 
@@ -51,16 +49,20 @@ impl Env {
         self.dir.path().join("repo")
     }
 
+    /// The project's `.trk` directory.
+    fn trk_dir(&self) -> PathBuf {
+        self.repo().join(".trk")
+    }
+
     fn cmd(&self) -> Command {
         let mut c = Command::cargo_bin("trk").unwrap();
         c.current_dir(self.repo())
-            .env("TRK_DB", self.dir.path().join("trk.db"))
-            .env("TRK_CONFIG", self.dir.path().join("config"))
+            // No ~/.claude here: the skill's Claude Code link is opt-in per test.
+            .env("HOME", self.dir.path().join("home"))
             .env("TRK_ACTOR", "human:alice@example.com")
-            .env("XDG_STATE_HOME", self.dir.path().join("state"))
             .env("TRK_NOW", "2026-11-20T10:00:00Z")
             .env_remove("TRK_FORMAT")
-            .env_remove("TRK_PROJECT");
+            .env_remove("TRK_DIR");
         c
     }
 
@@ -93,7 +95,7 @@ impl Env {
     }
 
     fn set_config(&self, from: &str, to: &str) {
-        let p = self.dir.path().join("config/config.toml");
+        let p = self.trk_dir().join("config.toml");
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains(from), "config.toml has no '{from}'");
         std::fs::write(&p, text.replace(from, to)).unwrap();
@@ -116,7 +118,7 @@ impl Env {
         let (code, v) = self.run(args);
         assert_eq!(code, 0, "{args:?} failed: {v:#}");
         assert_eq!(v["ok"], true);
-        assert_eq!(v["schema_version"], 3);
+        assert_eq!(v["schema_version"], 4);
         v["data"].clone()
     }
 
@@ -237,85 +239,6 @@ fn default_list_and_ready_tables_show_issue_type() {
     }
 }
 
-#[test]
-fn list_and_ready_scope_to_project_by_default() {
-    let e = Env::new();
-    e.ok(&["project", "add", "other", "--name", "Other"]);
-    let projects = e.ok(&["project", "list"]);
-    assert!(
-        projects
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|p| p["id"] == "other")
-    );
-    e.create(&["Orchestra project issue"]);
-    e.ok(&["--project", "other", "create", "Other project issue"]);
-
-    for command in ["list", "ready"] {
-        let default = e.ok(&[command, "state=open"]);
-        assert_eq!(default.as_array().unwrap().len(), 1, "{command}");
-        assert_eq!(default[0]["project"], "orch", "{command}");
-
-        let explicit = e.ok(&[command, "project=other"]);
-        assert_eq!(explicit.as_array().unwrap().len(), 1, "{command}");
-        assert_eq!(explicit[0]["project"], "other", "{command}");
-
-        let global = e.ok(&[command, "--all-projects"]);
-        assert_eq!(global.as_array().unwrap().len(), 2, "{command}");
-
-        let selected = e.ok(&["--project", "other", command]);
-        assert_eq!(selected.as_array().unwrap().len(), 1, "{command}");
-        assert_eq!(selected[0]["project"], "other", "{command}");
-    }
-
-    for command in ["list", "ready"] {
-        let mut c = e.cmd();
-        let (code, value) = c
-            .current_dir(e.dir.path())
-            .arg("--json")
-            .arg(command)
-            .output()
-            .map(|out| {
-                let code = out.status.code().unwrap_or(-1);
-                let value: Value = serde_json::from_slice(&out.stdout).unwrap();
-                (code, value)
-            })
-            .unwrap();
-        assert_eq!(value["error"]["code"], "unknown_repo", "{command}");
-        assert_ne!(code, 0, "{command}");
-
-        let mut c = e.cmd();
-        c.current_dir(e.dir.path());
-        let out = c
-            .args(["--json", command, "--project", "other"])
-            .output()
-            .unwrap();
-        let selected: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(selected["ok"], true, "{command}: {selected:#}");
-        assert_eq!(selected["data"].as_array().unwrap().len(), 1, "{command}");
-        let mut c = e.cmd();
-        c.current_dir(e.dir.path());
-        let out = c
-            .args(["--json", command, "project=other"])
-            .output()
-            .unwrap();
-        let filtered: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(filtered["ok"], true, "{command}: {filtered:#}");
-        assert_eq!(filtered["data"].as_array().unwrap().len(), 1, "{command}");
-
-        let mut c = e.cmd();
-        c.current_dir(e.dir.path());
-        let out = c
-            .args(["--json", command, "--all-projects"])
-            .output()
-            .unwrap();
-        let global: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(global["ok"], true, "{command}: {global:#}");
-        assert_eq!(global["data"].as_array().unwrap().len(), 2, "{command}");
-    }
-}
-
 fn redact(v: &mut Value, ids: &[(String, &str)]) {
     match v {
         Value::String(s) => {
@@ -355,7 +278,6 @@ fn issue_lifecycle_and_json_format() {
     assert_eq!(v["priority"], "P1");
     assert_eq!(v["type"], "code-change");
     assert!(v.get("agent").is_none());
-    assert_eq!(v["repo"]["remote_url"], "github.com/acme/orch");
     assert_eq!(v["deps"]["blocks"][0]["id"], json!(b));
     assert_eq!(v["derived"]["ready"], true);
     assert_eq!(e.ok(&["show", &b])["type"], "review");
@@ -460,6 +382,10 @@ fn issue_lifecycle_and_json_format() {
     let who = e.ok(&["whoami"]);
     assert_eq!(who["issues"]["closed"], 2);
     assert_eq!(who["default_type"], "code-change");
+    assert_eq!(who["prefix"], "orch");
+    assert_eq!(who["skill"], "current");
+    assert!(who["db"].as_str().unwrap().ends_with("/repo/.trk/trk.db"));
+    assert!(who.get("project").is_none() && who.get("repo").is_none());
     assert!(who.get("default_agent").is_none());
 }
 
@@ -626,10 +552,8 @@ fn only_one_check_runs_at_a_time() {
     let mut first = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"))
         .current_dir(e.repo())
         .args(["--json", "check"])
-        .env("TRK_DB", e.dir.path().join("trk.db"))
-        .env("TRK_CONFIG", e.dir.path().join("config"))
+        .env("HOME", e.dir.path().join("home"))
         .env("TRK_ACTOR", "human:alice@example.com")
-        .env("XDG_STATE_HOME", e.dir.path().join("state"))
         .env("TRK_NOW", "2026-11-20T10:00:00Z")
         .stdout(Stdio::piped())
         .spawn()
@@ -645,10 +569,8 @@ fn only_one_check_runs_at_a_time() {
     let mut dying = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"))
         .current_dir(e.repo())
         .args(["--json", "check", "--all"])
-        .env("TRK_DB", e.dir.path().join("trk.db"))
-        .env("TRK_CONFIG", e.dir.path().join("config"))
+        .env("HOME", e.dir.path().join("home"))
         .env("TRK_ACTOR", "human:alice@example.com")
-        .env("XDG_STATE_HOME", e.dir.path().join("state"))
         .env("TRK_NOW", "2026-11-20T10:00:00Z")
         .stdout(Stdio::null())
         .spawn()
@@ -721,35 +643,212 @@ fn errors_and_exit_codes() {
 }
 
 #[test]
-fn an_old_database_is_refused_with_a_hint() {
+fn commands_require_an_installed_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let bare = dir.path().join("bare");
+    std::fs::create_dir_all(&bare).unwrap();
+    let trk = |args: &[&str]| {
+        let out = Command::cargo_bin("trk")
+            .unwrap()
+            .current_dir(&bare)
+            .env("HOME", dir.path().join("home"))
+            .env("TRK_ACTOR", "human:alice@example.com")
+            .env_remove("TRK_DIR")
+            .env_remove("TRK_FORMAT")
+            .arg("--json")
+            .args(args)
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        (out.status.code().unwrap(), v)
+    };
+    for args in [
+        &["list"][..],
+        &["create", "x"],
+        &["whoami"],
+        &["agent", "list"],
+        &["check"],
+    ] {
+        let (code, v) = trk(args);
+        assert_eq!(code, 3, "{args:?}: {v:#}");
+        assert_eq!(v["error"]["code"], "not_installed", "{args:?}");
+        assert!(
+            v["error"]["hint"].as_str().unwrap().contains("trk install"),
+            "{v:#}"
+        );
+    }
+    // Nothing was created by the refused commands.
+    assert!(!bare.join(".trk").exists());
+
+    // Outside git, install uses the working directory; the prefix comes
+    // from its name.
+    let (code, v) = trk(&["install"]);
+    assert_eq!(code, 0, "{v:#}");
+    assert_eq!(v["data"]["prefix"], "bare");
+    assert_eq!(v["data"]["db_created"], true);
+    assert!(bare.join(".trk/trk.db").is_file());
+    let (_, v) = trk(&["create", "First"]);
+    assert!(v["data"]["id"].as_str().unwrap().starts_with("bare-"));
+    // The removed commands and scopes are gone.
+    for args in [
+        &["init"][..],
+        &["project", "list"],
+        &["repo", "list"],
+        &["skill", "install"],
+        &["list", "--all-projects"],
+        &["--project", "x", "list"],
+    ] {
+        let out = Command::cargo_bin("trk")
+            .unwrap()
+            .current_dir(&bare)
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+    }
+    let (code, v) = trk(&["list", "project=bare"]);
+    assert_eq!((code, v["error"]["code"].as_str()), (2, Some("bad_query")));
+}
+
+#[test]
+fn install_writes_the_project_directory_and_the_skill() {
     let e = Env::new();
-    let old = e.dir.path().join("old.db");
-    assert!(
-        StdCommand::new("sqlite3")
-            .arg(&old)
-            .arg("CREATE TABLE issue_type (name TEXT PRIMARY KEY);")
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false),
-        "sqlite3 is needed for this test"
+    let repo = e.repo();
+    let dir = e.trk_dir();
+    // Everything is in .trk/, written explicitly, and ignored by git.
+    for f in [
+        ".gitignore",
+        "trk.db",
+        "config.toml",
+        "types/code-change.toml",
+        "agents/implementer.toml",
+        "prompts/briefing.md.j2",
+    ] {
+        assert!(dir.join(f).is_file(), "{f}");
+    }
+    let config = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+    for setting in [
+        "prefix = \"orch\"",
+        "email = \"alice@example.com\"",
+        "agent_lease = \"30m\"",
+        "interval = \"5m\"",
+        "timeout  = \"10m\"",
+        "worktrees = \".trk/worktrees\"",
+    ] {
+        assert!(config.contains(setting), "config.toml lacks {setting}");
+    }
+    // The skill comes from the binary and is kept out of git.
+    let skill = repo.join(".agents/skills/trk");
+    let installed = std::fs::read_to_string(skill.join("SKILL.md")).unwrap();
+    assert!(installed.starts_with("---\nname: trk\n"), "{installed}");
+    assert!(skill.join("references/reference.md").is_file());
+    assert!(!repo.join(".claude").exists(), "no Claude Code here");
+    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    assert!(exclude.contains("/.agents/skills/trk/"), "{exclude}");
+    let status = StdCommand::new("git")
+        .current_dir(&repo)
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "");
+
+    // Again: config is kept, edits are reported, the skill is refreshed.
+    let id = e.create(&["Survives a second install"]);
+    std::fs::write(skill.join("SKILL.md"), "stale").unwrap();
+    std::fs::write(dir.join("prompts/briefing.md.j2"), "mine").unwrap();
+    assert_eq!(e.ok(&["whoami"])["skill"], "outdated");
+    let v = e.ok(&["install"]);
+    assert_eq!(v["db_created"], false);
+    assert_eq!(v["written"], json!([]));
+    assert_eq!(v["differ"], json!(["prompts/briefing.md.j2"]));
+    assert_eq!(v["skill"]["state"], "current");
+    assert_eq!(e.ok(&["show", &id])["id"], json!(id));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("prompts/briefing.md.j2")).unwrap(),
+        "mine"
     );
+    // A prefix is only taken when the config is written.
+    e.err(&["install", "--prefix", "other"], 2, "bad_args");
+    e.err(
+        &["install", "--prefix", "Bad-1", "--force"],
+        4,
+        "config_invalid",
+    );
+    let v = e.ok(&["install", "--force", "--prefix", "other"]);
+    assert!(
+        v["written"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("prompts/briefing.md.j2"))
+    );
+    assert!(e.create(&["New prefix"]).starts_with("other-"));
+    assert_eq!(e.ok(&["show", &id])["id"], json!(id), "old ids remain");
+
+    // With Claude Code present, its skills directory links to the skill.
+    std::fs::create_dir_all(e.dir.path().join("home/.claude")).unwrap();
+    let v = e.ok(&["install"]);
+    assert_eq!(v["skill"]["claude_linked"], true);
+    assert_eq!(
+        std::fs::read_link(repo.join(".claude/skills/trk")).unwrap(),
+        PathBuf::from("../../.agents/skills/trk")
+    );
+}
+
+#[test]
+fn the_project_is_found_from_subdirectories_worktrees_and_trk_dir() {
+    let e = Env::new();
+    let id = e.create(&["Visible everywhere"]);
+    let sub = e.repo().join("a/b");
+    std::fs::create_dir_all(&sub).unwrap();
+    // A worktree outside the project does not contain the ignored .trk/.
+    let outside = e.dir.path().join("outside");
+    assert!(
+        StdCommand::new("git")
+            .current_dir(e.repo())
+            .args(["worktree", "add", "-q", "-b", "side"])
+            .arg(&outside)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(!outside.join(".trk").exists());
+    for cwd in [&sub, &outside] {
+        let out = e
+            .cmd()
+            .current_dir(cwd)
+            .args(["--json", "list"])
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["data"][0]["id"], json!(id), "{}: {v:#}", cwd.display());
+    }
+    // Installing from a worktree or a subdirectory targets the same project.
     let out = e
         .cmd()
-        .env("TRK_DB", &old)
-        .args(["--json", "list"])
+        .current_dir(&outside)
+        .args(["--json", "install"])
         .output()
         .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["error"]["code"], "old_database");
-    assert!(
-        v["error"]["hint"]
-            .as_str()
-            .unwrap()
-            .contains("import-v1.sh")
-    );
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(v["data"]["db_created"], false, "{v:#}");
+    assert!(!outside.join(".trk").exists());
+    // TRK_DIR reaches it from an unrelated directory.
+    let out = e
+        .cmd()
+        .current_dir(e.dir.path())
+        .env("TRK_DIR", e.trk_dir())
+        .args(["--json", "show", &id])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = e
+        .cmd()
+        .current_dir(e.dir.path())
+        .args(["--json", "show", &id])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
 }
-
 #[test]
 fn pretty_output() {
     let e = Env::new();
@@ -830,44 +929,8 @@ fn pretty_output() {
 }
 
 #[test]
-fn init_reports_stale_files_and_agents_check() {
+fn run_without_id_selects_ready_work_by_priority_and_age() {
     let e = Env::new();
-    let cfg = e.dir.path().join("config");
-    assert!(cfg.join("agents/implementer.toml").exists());
-    assert!(cfg.join("types/code-change.toml").exists());
-    assert!(cfg.join("types/research.toml").exists());
-    assert!(cfg.join("types/review.toml").exists());
-    std::fs::write(cfg.join("fields.toml"), "").unwrap();
-    let v = e.ok(&["init"]);
-    assert_eq!(v["written"].as_array().unwrap().len(), 0);
-    assert_eq!(v["stale"], json!(["fields.toml"]));
-    assert_eq!(e.ok(&["agent", "check"])["ok"], true);
-    std::fs::write(
-        cfg.join("agents/broken.toml"),
-        "name = \"broken\"\ninstructions = \"prompts/none.j2\"\n[trk_tools]\ninclude = [\"submit_for_review\"]\n",
-    )
-    .unwrap();
-    let err = e.err(&["agent", "check"], 4, "config_invalid");
-    let problems = err["problems"].to_string();
-    assert!(problems.contains("prompts/none.j2"), "{problems}");
-    assert!(
-        problems.contains("no tool 'submit_for_review'"),
-        "{problems}"
-    );
-}
-
-#[test]
-fn run_without_id_selects_ready_work_by_project_priority_and_age() {
-    let e = Env::new();
-    e.ok(&["project", "add", "other"]);
-    e.ok(&[
-        "--project",
-        "other",
-        "create",
-        "Other urgent issue",
-        "-p",
-        "P0",
-    ]);
     e.create(&["Older normal issue", "-p", "P2"]);
     let blocker = e.create(&["Blocker", "-p", "P3"]);
     e.create(&["Blocked urgent issue", "-p", "P0", "--blocked-by", &blocker]);
@@ -900,54 +963,6 @@ fn run_without_id_selects_ready_work_by_project_priority_and_age() {
         e.ok(&["run", "--harness", "omp", "--dry-run"])["issue"],
         newer["id"]
     );
-}
-
-#[test]
-fn run_without_id_requires_project_scope_and_ready_work() {
-    let e = Env::new();
-    e.ok(&["project", "add", "other"]);
-    let other = e.ok(&[
-        "--project",
-        "other",
-        "create",
-        "Other urgent issue",
-        "-p",
-        "P0",
-    ]);
-    let error = e.err(&["run", "--dry-run"], 3, "not_found");
-    assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .contains("no ready issues in project 'orch'")
-    );
-
-    let out = e
-        .cmd()
-        .current_dir(e.dir.path())
-        .args(["--json", "run", "--dry-run"])
-        .output()
-        .unwrap();
-    let error: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(out.status.code(), Some(3));
-    assert_eq!(error["error"]["code"], "unknown_repo");
-    let out = e
-        .cmd()
-        .current_dir(e.dir.path())
-        .args([
-            "--json",
-            "--project",
-            "other",
-            "run",
-            "--harness",
-            "omp",
-            "--dry-run",
-        ])
-        .output()
-        .unwrap();
-    let preview: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(out.status.success(), "{preview:#}");
-    assert_eq!(preview["data"]["issue"], other["id"]);
 }
 
 #[test]
@@ -1051,131 +1066,23 @@ fn agent_preview_and_run_dry_run() {
 }
 
 #[test]
-fn repository_routing_and_agent_prompts_require_trust() {
-    let e = Env::new();
-    let local = e.repo().join(".trk");
-    std::fs::create_dir_all(local.join("types")).unwrap();
-    std::fs::write(
-        local.join("types/code-change.toml"),
-        "agent = \"researcher\"\n",
-    )
-    .unwrap();
-    let id = e.create(&["Use repo routing"]);
-    let shown = e.ok(&["show", &id]);
-    assert_eq!(shown["type"], "code-change");
-    assert_eq!(shown["routing"]["agent"], "researcher");
-    assert_eq!(shown["routing"]["requires_trust"], false);
-    let out = e
-        .cmd()
-        .args(["--format", "pretty", "show", &id])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let text = String::from_utf8_lossy(&out.stdout);
-    for expected in [
-        "type code-change",
-        "Routing",
-        "agent   researcher",
-        "types/code-change.toml",
-        "agents/researcher.toml",
-        "prompts ",
-        "trust   not required",
-    ] {
-        assert!(text.contains(expected), "missing {expected:?}: {text}");
-    }
-    // A routing-only override selects trusted global policy and cannot
-    // redirect its prompt loader into repository templates.
-    let spec = e.ok(&["run", &id, "--harness", "omp", "--dry-run"]);
-    assert_eq!(spec["agent"], "researcher");
-    assert_eq!(e.ok(&["show", &id])["claim"], Value::Null);
-    assert_eq!(
-        spec["routing"]["description"],
-        shown["routing"]["description"]
-    );
-    assert_eq!(
-        spec["routing"]["prompt_directory"],
-        json!(e.dir.path().join("config"))
-    );
-
-    // Agent overrides replace the whole global definition, and their prompt
-    // includes resolve from the supplying repository configuration directory.
-    std::fs::create_dir_all(local.join("agents")).unwrap();
-    std::fs::create_dir_all(local.join("prompts")).unwrap();
-    std::fs::write(
-        local.join("agents/researcher.toml"),
-        "name = \"researcher\"\ninstructions = \"prompts/local.j2\"\n",
-    )
-    .unwrap();
-    std::fs::write(
-        local.join("prompts/local.j2"),
-        "{% include 'prompts/fragment.j2' %}",
-    )
-    .unwrap();
-    std::fs::write(
-        local.join("prompts/fragment.j2"),
-        "Repository-local instructions",
-    )
-    .unwrap();
-    let listed = e.ok(&["agent", "list"]);
-    let researcher = listed
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|a| a["name"] == "researcher")
-        .unwrap();
-    assert_eq!(researcher["description"], Value::Null);
-    assert_eq!(researcher["harness"], json!(["omp", "claude-code"]));
-    let (code, denied) = e.run(&["agent", "preview", "researcher", "--issue", &id]);
-    assert_ne!(code, 0, "{denied:#}");
-    assert!(denied["error"].to_string().contains("trust"), "{denied:#}");
-    let inspection = e.ok(&["run", &id, "--harness", "omp", "--dry-run"]);
-    assert_eq!(inspection["requires_trust"], true);
-    assert!(inspection.get("instructions").is_none());
-    e.err(
-        &["run", &id, "--harness", "omp", "--print"],
-        5,
-        "not_permitted",
-    );
-    assert_eq!(e.ok(&["show", &id])["claim"], Value::Null);
-    let preview = e.ok(&[
-        "agent",
-        "preview",
-        "researcher",
-        "--issue",
-        &id,
-        "--trust-repo",
-    ]);
-    assert_eq!(preview["instructions"], "Repository-local instructions");
-    let trusted = e.ok(&["run", &id, "--harness", "omp", "--dry-run", "--trust-repo"]);
-    assert_eq!(trusted["instructions"], "Repository-local instructions");
-    assert!(
-        trusted["mcp_servers"]["mcpServers"]["trk"]["args"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("--trust-repo"))
-    );
-}
-
-#[test]
 fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
     let e = Env::new();
     let id = e.create(&["Preserve active session"]);
     let spec = e.ok(&["run", &id, "--harness", "omp", "--print"]);
-    let path = e.dir.path().join("trk.db");
+    let path = e.trk_dir().join("trk.db");
     let opts = trk_core::StoreOpts {
         now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
+        prefix: "orch".into(),
         ..Default::default()
     };
     let server = trk_mcp::TrkServer::new(trk_mcp::McpArgs {
         db: path.clone(),
-        config: trk_core::config::ConfigDir {
-            path: e.dir.path().join("config"),
-        },
+        config: trk_core::config::ConfigDir { path: e.trk_dir() },
         opts: opts.clone(),
         issue: id.clone(),
         actor: spec["actor"].as_str().unwrap().into(),
         agent: "implementer".into(),
-        trust_repo: false,
     })
     .unwrap();
     let (ok, before) = server.call_sync("get_task", json!({}));
@@ -1285,8 +1192,9 @@ fn mcp_server_over_stdio() {
             "--agent",
             "implementer",
         ])
-        .env("TRK_DB", e.dir.path().join("trk.db"))
-        .env("TRK_CONFIG", e.dir.path().join("config"))
+        // As the harness starts it: from anywhere, with TRK_DIR.
+        .env("TRK_DIR", e.trk_dir())
+        .env("HOME", e.dir.path().join("home"))
         .env("TRK_NOW", "2026-11-20T10:00:00Z")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1436,355 +1344,6 @@ fn mcp_server_over_stdio() {
     assert_eq!(f["created_by"], json!(actor));
     assert_eq!(f["type"], "research");
     assert_eq!(f["events"][0]["payload"]["followup_of"], json!(id));
-    assert_eq!(f["repo"]["remote_url"], "github.com/acme/orch");
-}
-
-#[test]
-fn skill_install_project_and_global() {
-    let e = Env::new();
-    let home = e.dir.path().join("home");
-    std::fs::create_dir_all(home.join(".claude")).unwrap();
-    let skill = |args: &[&str]| -> Value {
-        let out = e
-            .cmd()
-            .env("HOME", &home)
-            .arg("--json")
-            .arg("skill")
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&out.stdout)
-        );
-        serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"].clone()
-    };
-    let repo = e.repo();
-
-    // Project-local by default: skill files, a Claude Code link, kept out of git.
-    let v = skill(&["install"]);
-    assert_eq!(v["scope"], "project");
-    assert_eq!(v["state"], "current");
-    let installed = std::fs::read_to_string(repo.join(".agents/skills/trk/SKILL.md")).unwrap();
-    assert!(installed.starts_with("---\nname: trk\n"));
-    assert!(
-        repo.join(".agents/skills/trk/references/reference.md")
-            .exists()
-    );
-    let link = repo.join(".claude/skills/trk");
-    assert_eq!(
-        std::fs::read_link(&link).unwrap(),
-        PathBuf::from("../../.agents/skills/trk")
-    );
-    assert!(link.join("SKILL.md").exists(), "the relative link resolves");
-    let status = StdCommand::new("git")
-        .current_dir(&repo)
-        .args(["status", "--porcelain"])
-        .output()
-        .unwrap();
-    assert!(
-        status.stdout.is_empty(),
-        "skill is excluded from git: {}",
-        String::from_utf8_lossy(&status.stdout)
-    );
-
-    // Worktrees made by `trk run` do not contain it.
-    let id = e.create(&["x"]);
-    let spec = e.ok(&["run", &id, "--harness", "omp", "--print"]);
-    let wt = PathBuf::from(spec["worktree"].as_str().unwrap());
-    assert!(wt.exists() && !wt.join(".agents").exists() && !wt.join(".claude").exists());
-
-    // Status notices edits; install refreshes.
-    std::fs::write(repo.join(".agents/skills/trk/SKILL.md"), "stale").unwrap();
-    let st = skill(&["status"]);
-    assert_eq!(st[0]["scope"], "project");
-    assert_eq!(st[0]["state"], "outdated");
-    assert_eq!(st[1]["scope"], "global");
-    assert_eq!(st[1]["state"], "missing");
-    assert_eq!(skill(&["install"])["state"], "current");
-
-    // Uninstall removes the files, the link and the excludes.
-    skill(&["uninstall"]);
-    assert!(!repo.join(".agents/skills/trk").exists() && !link.is_symlink());
-    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
-    assert!(!exclude.contains(".agents/skills/trk"), "{exclude}");
-
-    // --global goes to ~/.agents/skills/trk with an absolute Claude Code link.
-    let v = skill(&["install", "--global"]);
-    assert_eq!(v["scope"], "global");
-    assert!(home.join(".agents/skills/trk/SKILL.md").exists());
-    assert_eq!(
-        std::fs::read_link(home.join(".claude/skills/trk")).unwrap(),
-        home.join(".agents/skills/trk")
-    );
-    assert!(v["warnings"][0].as_str().unwrap().contains("trk run"));
-
-    // --dir targets any skills directory, without links.
-    let other = e.dir.path().join("other-skills");
-    skill(&["install", "--dir", other.to_str().unwrap()]);
-    assert!(other.join("trk/SKILL.md").exists());
-}
-
-#[test]
-fn run_warns_when_the_repo_tracks_the_skill() {
-    let e = Env::new();
-    let repo = e.repo();
-    let out = e
-        .cmd()
-        .env("HOME", e.dir.path())
-        .args(["--json", "skill", "install"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    for args in [
-        vec!["add", "-f", ".agents/skills/trk"],
-        vec![
-            "-c",
-            "user.email=t@e.st",
-            "-c",
-            "user.name=t",
-            "commit",
-            "-q",
-            "-m",
-            "track skill",
-        ],
-    ] {
-        assert!(
-            StdCommand::new("git")
-                .current_dir(&repo)
-                .args(&args)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
-    let out = e
-        .cmd()
-        .env("HOME", e.dir.path())
-        .args(["--json", "skill", "install"])
-        .output()
-        .unwrap();
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(
-        v["data"]["warnings"][0]
-            .as_str()
-            .unwrap()
-            .contains("tracked in git"),
-        "{v:#}"
-    );
-    let id = e.create(&["x"]);
-    let out = e
-        .cmd()
-        .args(["--json", "run", &id, "--harness", "omp", "--print"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("tracked in this repo"));
-}
-
-#[test]
-fn issue_repository_selects_runtime_policy_even_outside_it_and_in_worktrees() {
-    let e = Env::new();
-    let first = e.create(&["Global route"]);
-    assert_eq!(
-        e.ok(&["run", &first, "--dry-run", "--harness", "omp"])["agent"],
-        "implementer"
-    );
-
-    let second_repo = e.dir.path().join("second");
-    std::fs::create_dir_all(&second_repo).unwrap();
-    for args in [
-        vec!["init", "-q", "-b", "main"],
-        vec![
-            "-c",
-            "user.email=t@e.st",
-            "-c",
-            "user.name=t",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "init",
-        ],
-    ] {
-        assert!(
-            StdCommand::new("git")
-                .current_dir(&second_repo)
-                .args(args)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
-    e.ok(&[
-        "repo",
-        "add",
-        second_repo.to_str().unwrap(),
-        "--project",
-        "orch",
-    ]);
-    let output = e
-        .cmd()
-        .current_dir(&second_repo)
-        .args(["--json", "create", "Second route"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let second: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let second = second["data"]["id"].as_str().unwrap();
-    for (repo, agent) in [(e.repo(), "pr"), (second_repo.clone(), "merge")] {
-        let cfg = repo.join(".trk");
-        std::fs::create_dir_all(cfg.join("types")).unwrap();
-        std::fs::create_dir_all(cfg.join("agents")).unwrap();
-        std::fs::write(
-            cfg.join("types/code-change.toml"),
-            format!("agent = '{agent}'\n"),
-        )
-        .unwrap();
-        std::fs::write(
-            cfg.join("agents").join(format!("{agent}.toml")),
-            format!("name = '{agent}'\n"),
-        )
-        .unwrap();
-    }
-    for (id, expected) in [(first.as_str(), "pr"), (second, "merge")] {
-        // The caller is deliberately in neither registered repository.
-        let output = e
-            .cmd()
-            .current_dir(e.dir.path())
-            .args([
-                "--json",
-                "run",
-                id,
-                "--dry-run",
-                "--harness",
-                "omp",
-                "--trust-repo",
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-        let spec: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(spec["data"]["agent"], expected);
-        assert_eq!(spec["data"]["type"], "code-change");
-    }
-
-    // A pending issue sees policy edits; the persisted type never changes.
-    std::fs::write(
-        e.repo().join(".trk/types/code-change.toml"),
-        "agent = 'reviewer'\n",
-    )
-    .unwrap();
-    assert_eq!(
-        e.ok(&["run", &first, "--dry-run", "--harness", "omp"])["agent"],
-        "reviewer"
-    );
-    assert_eq!(
-        e.ok(&[
-            "run",
-            &first,
-            "--dry-run",
-            "--harness",
-            "omp",
-            "--agent",
-            "implementer"
-        ])["agent"],
-        "implementer"
-    );
-    assert_eq!(e.ok(&["show", &first])["type"], "code-change");
-
-    let linked = e.dir.path().join("linked");
-    assert!(
-        StdCommand::new("git")
-            .current_dir(e.repo())
-            .args([
-                "worktree",
-                "add",
-                "-q",
-                linked.to_str().unwrap(),
-                "-b",
-                "linked"
-            ])
-            .status()
-            .unwrap()
-            .success()
-    );
-    // Conflicting worktree-local policy must not affect the primary policy.
-    std::fs::create_dir_all(linked.join(".trk/types")).unwrap();
-    std::fs::write(
-        linked.join(".trk/types/code-change.toml"),
-        "agent = 'missing'\n",
-    )
-    .unwrap();
-    e.ok(&["repo", "add", linked.to_str().unwrap(), "--project", "orch"]);
-    let output = e
-        .cmd()
-        .current_dir(&linked)
-        .args(["--json", "run", &first, "--dry-run", "--harness", "omp"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let spec: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(spec["data"]["agent"], "reviewer");
-}
-
-#[test]
-fn new_repo_type_and_missing_routes_are_explicit() {
-    let e = Env::new();
-    let cfg = e.repo().join(".trk");
-    std::fs::create_dir_all(cfg.join("types")).unwrap();
-    std::fs::create_dir_all(cfg.join("agents")).unwrap();
-    std::fs::write(
-        cfg.join("types/release.toml"),
-        "description = 'Publish the release'\nagent = 'publisher'\n",
-    )
-    .unwrap();
-    std::fs::write(cfg.join("agents/publisher.toml"), "name = 'publisher'\n[trk_tools]\ninclude = ['get_task', 'wait']\n[[mcp]]\nname = 'deploy'\ncommand = 'deploy-command'\n").unwrap();
-    let id = e.create(&["Release", "--type", "release"]);
-    let spec = e.ok(&["run", &id, "--dry-run", "--harness", "omp", "--trust-repo"]);
-    assert_eq!(spec["agent"], "publisher");
-    assert_eq!(
-        spec["mcp_servers"]["mcpServers"]["deploy"]["command"],
-        "deploy-command"
-    );
-    assert_eq!(spec["routing"]["description"], "Publish the release");
-    e.ok(&["edit", &id, "--type", "unknown"]);
-    e.err(
-        &["run", &id, "--dry-run", "--agent", "implementer"],
-        3,
-        "not_found",
-    );
-    e.ok(&["edit", &id, "--type", "release"]);
-    e.err(
-        &["run", &id, "--dry-run", "--agent", "unknown"],
-        3,
-        "not_found",
-    );
-    std::fs::write(
-        cfg.join("types/release.toml"),
-        "description = 'Publish the release'\nagent = 'missing'\n",
-    )
-    .unwrap();
-    let error = e.err(&["run", &id, "--dry-run"], 3, "not_found");
-    assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .contains("missing agent 'missing'")
-    );
 }
 
 #[test]
@@ -1801,7 +1360,7 @@ fn pretty_priority_and_state_labels_are_readable_without_color() {
 
     let pretty_output = || {
         e.cmd()
-            .args(["--format", "pretty", "list", "--all-projects"])
+            .args(["--format", "pretty", "list"])
             .output()
             .unwrap()
     };
@@ -1829,7 +1388,7 @@ fn pretty_priority_and_state_labels_are_readable_without_color() {
     let no_color = e
         .cmd()
         .env("NO_COLOR", "1")
-        .args(["--format", "pretty", "list", "--all-projects"])
+        .args(["--format", "pretty", "list"])
         .output()
         .unwrap();
     assert!(no_color.status.success());

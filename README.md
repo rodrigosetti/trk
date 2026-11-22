@@ -1,7 +1,7 @@
 # trk
 
-A local issue tracker and agent launcher in one Rust binary. All repositories share one SQLite
-database; humans use the CLI, agents work through a per-issue MCP server, and `trk run [ID]` starts
+A local issue tracker and agent launcher in one Rust binary. Each project has its own SQLite
+database in `.trk/`; humans use the CLI, agents work through a per-issue MCP server, and `trk run [ID]` starts
 an agent session on one issue in a persistent terminal (`hc`). See [SPEC.md](SPEC.md) for the design.
 
 An issue has a title, a description, notes, a priority, a required type (default `code-change`), and one of four states:
@@ -22,14 +22,24 @@ command, and `trk check` runs those commands until each one passes, fails, or sa
 ./install.sh
 ```
 
-This builds a release binary and installs it to `~/.cargo/bin/trk`. The first time, it also runs
-`trk init`: the default config goes to `~/.config/trk/` and the database to
-`~/Library/Application Support/trk/trk.db` on macOS (`$XDG_DATA_HOME/trk/trk.db` elsewhere).
+This builds a release binary and installs it to `~/.cargo/bin/trk`. Nothing else is written:
+trk keeps no global database or config. Set it up per project:
 
-To upgrade after changing or pulling this checkout, run `./install.sh` again. It replaces the
-binary, never overwrites your config, lists the default-config files in `seed/` that differ from
-yours, and runs `trk agent check`. `trk --version` prints the commit the binary was built from.
-Running agent sessions keep the binary they started with.
+```sh
+cd ~/src/orch && trk install
+```
+
+`trk install` creates `.trk/` in the project root (in a git repository, the root of the primary
+checkout): the database, the default config with every setting written out, and a `.gitignore`
+that keeps all of it out of git. It also installs the agent skill (see below). Every other
+command fails with `not_installed` until a project has been installed. Commands find the project
+from any subdirectory and from any of its git worktrees.
+
+To upgrade after changing or pulling this checkout, run `./install.sh` again, then `trk install`
+in each project: it applies schema migrations, refreshes the agent skill, keeps your config
+files, and lists the ones that differ from the new defaults. `trk install --force` rewrites the
+config with the defaults. `trk --version` prints the commit the binary was built from. Running
+agent sessions keep the binary they started with.
 
 ### Active sessions during upgrades
 
@@ -46,11 +56,11 @@ upgrade. Otherwise:
 
 1. Preserve uncommitted work and handoff text. Have the human compare the installed
    `trk --version` and `trk whoami --json` with the harness's MCP launch command and its
-   `TRK_DB`/`TRK_CONFIG` (for omp, the worktree's `.omp/mcp.json`). Confirm the executable and
-   database/config paths match; a working CLI alone does not establish that.
+   `TRK_DIR` (for omp, the worktree's `.omp/mcp.json`). Confirm the executable and
+   project directory match; a working CLI alone does not establish that.
 2. Install a trk that supports the database, then restart the harness's trk MCP connection
-   using that executable. Keep the original issue, actor, agent, database/config and trust
-   settings. Restart/reconnect through the harness if supported; otherwise preserve the
+   using that executable. Keep the original issue, actor, agent and project
+   directory. Restart/reconnect through the harness if supported; otherwise preserve the
    session context and restart the harness with its existing MCP configuration.
    trk does not hot-reload migrations or automatically replace/re-exec a running MCP server.
 3. Call `get_task` after reconnecting. Reads work without an active claim, but writes and
@@ -65,18 +75,12 @@ upgrade. Otherwise:
 
 Restarting an MCP server does not claim an issue or bypass dependency/ownership checks.
 
-A database written by the earlier six-type trk is refused (`old_database`): there is no migration.
-Export its open issues with the old binary and recreate them with
-[`scripts/import-v1.sh`](scripts/import-v1.sh), which documents both steps.
-
 For development: `cargo build` and `cargo test --workspace`.
 
 ## Quick start
 
 ```sh
-trk init                                   # writes ~/.config/trk/ and creates the database
-trk project add orch --name "Orchestra"
-cd ~/src/orch && trk repo add --project orch
+cd ~/src/orch && trk install               # .trk/ with the database and config; ids are orch-…
 
 trk create "Add claim leases" -d "Crashed agents must release their claims." -p P1
 trk create "Enable leases in prod" --blocked-by orch-4kq
@@ -88,13 +92,13 @@ trk log orch-4kq
 ```
 
 Every command takes `--json` (or `--format pretty|json|jsonl`). Scripts should always pass `--json`;
-JSON output is the versioned API (`schema_version: 3`), and errors use the same envelope with a
+JSON output is the versioned API (`schema_version: 4`), and errors use the same envelope with a
 stable `code`, a `hint`, and exit codes 1–5.
 
 Pretty output colors priorities consistently (P0 red, P1 yellow, P2 cyan, P3 dim) and states
 (open green, claimed yellow, waiting cyan, closed dim green). Full issue details (`trk show` and
 other commands displaying an issue) use bold cyan IDs and section headings, green ready indicators,
-and yellow blocked, trust-required, and check-due indicators. Metadata, timestamps, and field labels
+and yellow blocked and check-due indicators. Metadata, timestamps, and field labels
 are dimmed; description and note bodies retain their existing rendering. Labels and state glyphs
 remain present without color. ANSI styling is enabled only for pretty output on a terminal;
 `NO_COLOR` or `--no-color` disables it, and piped output is unstyled. JSON and JSONL output never
@@ -160,7 +164,7 @@ full, and `trk check --dry-run` shows the queue before anything runs.
 ## Agent sessions
 
 ```sh
-trk run                          # start the highest-priority ready issue in the current project
+trk run                          # start the highest-priority ready issue
 trk run orch-4kq                 # claim as agent:<harness>:<uuid>, create the worktree, start in hc
 trk runs                         # active agent claims: agent, harness, terminal, lease, MCP liveness
 trk attach orch-4kq              # take over the terminal
@@ -171,17 +175,16 @@ trk run orch-4kq --dry-run       # print the launch spec; claims nothing
 trk agent preview implementer --issue orch-4kq        # instructions, briefing, tool schemas
 ```
 
-Omitting the ID selects the first ready issue in the current project, ordered by priority
-(P0–P3), then oldest creation time, then ID, matching `trk ready`. Use `--project <project>`
-to override the project. If the project cannot be resolved or has no ready issues, the command
+Omitting the ID selects the first ready issue, ordered by priority (P0–P3), then oldest
+creation time, then ID, matching `trk ready`. If there are no ready issues, the command
 returns an error without launching a session. `trk run --dry-run` previews the selection.
 
 The agent for a run is `--agent` (a one-off override), else the issue type's `agent` mapping.
 The seed types are `code-change` → `implementer`, `research` → `researcher`, and `review` → `reviewer`.
 Use `trk create ... --type review`, `trk edit <ID> --type research`, and `trk list 'type=review'`.
-The harness is `--harness`, else the first installed global preference (see Configuration). The seed
+The harness is `--harness`, else the first installed harness the agent prefers (see Configuration). The seed
 config prefers `omp` running `openai-codex/gpt-6-luna`. The worktree is
-`<data dir>/worktrees/<ID>` on a branch named after the issue, so a later session on the same
+`.trk/worktrees/<ID>` on a branch named after the issue, so a later session on the same
 issue finds the earlier work.
 
 The MCP server (`trk mcp --issue … --actor … --agent …`, started by the harness) serves exactly one
@@ -205,69 +208,48 @@ no IDs belong in the config.
 
 ## Agent skill
 
-`trk skill install` installs a skill (from [`skills/trk/`](skills/trk/SKILL.md), embedded in the
-binary) that teaches your interactive agent sessions to use the trk CLI.
-
-```sh
-trk skill install            # this repository: .agents/skills/trk (omp, Codex) + .claude/skills/trk (Claude Code)
-trk skill install --global   # ~/.agents/skills/trk + ~/.claude/skills/trk
-trk skill install --dir DIR  # DIR/trk, for any other skills directory
-trk skill status             # where it is installed and whether it matches this binary
-trk skill uninstall [--global]
-```
+`trk install` also installs a skill (from [`skills/trk/`](skills/trk/SKILL.md), embedded in the
+binary) that teaches your interactive agent sessions to use the trk CLI: `.agents/skills/trk`
+(omp, Codex), linked from `.claude/skills/trk` when Claude Code is in use. `trk whoami` reports
+whether the installed copy matches the binary; run `trk install` again to refresh it.
 
 Sessions started by `trk run` should reach trk only through their MCP server (see SPEC.md). That is
-why the default is project-local and kept out of git with `.git/info/exclude`: the worktrees
-`trk run` creates do not contain it, so those sessions do not see it. `trk run` warns when a repo
-tracks the skill anyway. A `--global` skill is visible everywhere; the omp profile hides it from
-`trk run` sessions with a per-session `--config` overlay (`skills.ignoredSkills: [trk]`), and the
-skill itself tells an agent that has trk MCP tools to stop. Re-run `trk skill install` after
-upgrading trk to refresh a copy.
+why the skill is kept out of git with `.git/info/exclude`: the worktrees `trk run` creates do not
+contain it, so those sessions do not see it. `trk install` and `trk run` warn when a repository
+tracks the skill anyway; the omp profile also hides it with a per-session `--config` overlay
+(`skills.ignoredSkills: [trk]`), and the skill itself tells an agent that has trk MCP tools to stop.
 
 ## Configuration
 
-`trk init` writes the seed configuration (keep it in its own git repository):
+Everything trk keeps for a project is in `.trk/` at its root, written by `trk install`:
 
 ```
-~/.config/trk/            ($TRK_CONFIG / --config)
-  config.toml             user, leases, check interval and timeout,
+.trk/                     (found from the working directory; $TRK_DIR / --dir override it)
+  .gitignore              "*": nothing here is tracked until you edit it
+  trk.db                  the database
+  config.toml             user, issue id prefix, leases, check interval and timeout, worktrees,
                           launcher templates, harness profiles, saved views
   agents/*.toml           instructions, briefing, other MCP servers, harness preferences
   types/*.toml            name, description, agent routing
   prompts/*.j2            MiniJinja templates
+  worktrees/<ID>/         git worktrees made by `trk run` ([run] worktrees)
+  sessions/<uuid>/        per-session files
+  checks/                 logs of running checks
 ```
+
+`config.toml` is explicit: `trk install` writes every setting, and a missing one is an error
+rather than a silent default. `[issues] prefix` names new issues (`<prefix>-<base32>`); it
+defaults to the directory name, or `trk install --prefix NAME`. Changing it later only affects
+new issues.
 
 There is no schema to apply: states, the close reasons (`done`, `abandoned`), priorities and the
 one dependency kind (`blocks`) are fixed. Agents and prompts are read when a session starts;
-`trk agent check` validates them.
+`trk agent check` validates them. `trk show` and `trk run --dry-run` print which type and agent
+files a run would use.
 
-Repository routing lives in the registered issue repository's canonical primary checkout:
-`.trk/types/*.toml` overrides global types by `name`, field by field (omitted descriptions inherit).
-`.trk/agents/*.toml` replaces a global agent definition in full; its prompt paths are rooted in
-the supplying `.trk/` directory, not the global config. Global agents use global prompt paths.
-All worktrees share this configuration, even when a command runs outside the repository.
-Issues without a repository use global configuration only.
-
-Launcher settings, harness profiles and harness preferences stay global. Optional `[run] harness_prefer`
-overrides global agents' preferences. Without it, a repo agent inherits its same-name global
-agent's preference; a new repo agent uses installed global profiles. Repo `harness.prefer` is ignored.
-Selecting a repository agent requires explicit `--trust-repo`
-on each `trk run` or `trk mcp` invocation, because prompts and MCP commands can execute code.
-A repo type that only routes to a global agent does not require trust. `trk show` and
-`trk run --dry-run` expose routing provenance so you can inspect the selected sources first.
-
-The previous current-model database migrates issue `agent` assignments to generated
-`migrated-agent-<hex>` types, where `<hex>` encodes the agent's UTF-8 bytes. Explicit assignments
-are preserved; NULL assignments capture the old `[run].default_agent`, or `implementer`.
-There are no old-field aliases. The earlier six-type database is still refused.
-Run `trk init` after upgrading to add missing seed types without overwriting existing configuration.
-Without trust, a dry-run selecting a repository agent prints routing only; pass `--trust-repo`
-to render its full launch specification. `trk agent preview --issue ID` uses that issue's repository
-and requires the same explicit trust before rendering repository prompts.
-
-The database defaults to `$XDG_DATA_HOME/trk/trk.db` (macOS: `~/Library/Application Support/trk/trk.db`);
-override with `TRK_DB` / `--db`. Worktrees go to `<data dir>/worktrees/<ID>`, session scratch to
-`$XDG_STATE_HOME/trk/sessions/<uuid>/`.
+There is no global configuration and no cross-project view: `trk list`, `trk runs` and
+`trk check --watch` act on the project of the working directory, so each project needs its own
+`trk check --watch`.
 
 ## Layout
 
@@ -278,7 +260,7 @@ override with `TRK_DB` / `--db`. Worktrees go to `<data dir>/worktrees/<ID>`, se
 | `trk-mcp` | The per-issue MCP server (rmcp, single-threaded Tokio) |
 | `trk-cli` | The `trk` binary, rendering, `trk check`, `trk run` and the launcher templates |
 
-`seed/` holds the default configuration, embedded into the binary for `trk init`.
+`seed/` holds the default configuration, embedded into the binary for `trk install`.
 
 ## Notes on the implementation
 

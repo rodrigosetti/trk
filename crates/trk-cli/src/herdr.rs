@@ -102,11 +102,19 @@ pub fn has_terminal(terminal: &str) -> Result<bool, String> {
 
 /// Never retry a space creation: an uncertain reply may already have started it.
 pub fn start(title: &str, cwd: &str, shell_command: &str) -> Result<(String, Placement), String> {
-    let argv = serde_json::to_string(&["sh", "-c", shell_command])
-        .map_err(|e| e.to_string())?;
+    let argv = serde_json::to_string(&["sh", "-c", shell_command]).map_err(|e| e.to_string())?;
     let created = json_command(
         "herdr-app",
-        &["do", "space.new", "--name", title, "--folder", cwd, "--argv", &argv],
+        &[
+            "do",
+            "space.new",
+            "--name",
+            title,
+            "--folder",
+            cwd,
+            "--argv",
+            &argv,
+        ],
     )?;
     let terminal = created["terminal"]
         .as_str()
@@ -153,15 +161,23 @@ mod tests {
                     "sub_agents": [{"terminal": "agent"}]}]}
             ]}
         ]});
-        assert_eq!(visible_pane(&ui, "new", "/wt", "Issue title", "agent"), None);
-        ui["spaces"][1]["tabs"][0]["terminals"] =
-            json!([{"terminal": "agent", "pane": "p3"}]);
+        assert_eq!(
+            visible_pane(&ui, "new", "/wt", "Issue title", "agent"),
+            None
+        );
+        ui["spaces"][1]["tabs"][0]["terminals"] = json!([{"terminal": "agent", "pane": "p3"}]);
         assert_eq!(
             visible_pane(&ui, "new", "/wt", "Issue title", "agent"),
             Some(("tab", "p3"))
         );
-        assert_eq!(visible_pane(&ui, "new", "/other", "Issue title", "agent"), None);
-        assert_eq!(visible_pane(&ui, "new", "/wt", "Other title", "agent"), None);
+        assert_eq!(
+            visible_pane(&ui, "new", "/other", "Issue title", "agent"),
+            None
+        );
+        assert_eq!(
+            visible_pane(&ui, "new", "/wt", "Other title", "agent"),
+            None
+        );
     }
     #[test]
     fn terminal_lookup_requires_the_exact_live_address() {

@@ -1,12 +1,18 @@
-# trk user settings, launcher templates, harness profiles and named views.
+# trk settings for this project: launcher templates, harness profiles and
+# named views. `trk install` writes every setting here; nothing is implied.
 
 [user]
-# Your human actor is human:<email>. Defaults to `git config user.email`.
+# Your human actor is human:<email>. Without it, pass --as or set TRK_ACTOR.
 {{EMAIL_LINE}}
+
+[issues]
+# New issue ids are <prefix>-<base32>, e.g. {{PREFIX}}-4kq. Branches and
+# worktrees made by `trk run` are named after the id.
+prefix = "{{PREFIX}}"
 
 [claims]
 # Lease for agent claims. The MCP server renews it while the session runs,
-# so it only has to outlast a crash. Human claims have no lease by default.
+# so it only has to outlast a crash. Human claims have no lease.
 agent_lease = "30m"
 
 [check]
@@ -16,12 +22,9 @@ interval = "5m"
 timeout  = "10m"
 
 [run]
-# Where `trk run` creates git worktrees (default: <data dir>/worktrees).
-# worktrees = "~/trk-worktrees"
-# Optional global harness order, overriding global agents' preferences.
-# Repo harness.prefer is ignored; without this, same-name global agent
-# preferences apply, or installed global profiles for new repo agents.
-# harness_prefer = ["omp", "claude-code"]
+# Where `trk run` creates git worktrees: absolute, ~/…, or relative to the
+# project root.
+worktrees = ".trk/worktrees"
 
 # Launcher templates. Placeholders: {name} (terminal name), {cwd},
 # {shell_command} (cd + env + harness argv), {text}.
@@ -49,7 +52,7 @@ send_delay = 5
 command = "omp"
 args    = ["--model", "openai-codex/gpt-6-luna", "--config", "{session_dir}/omp.yml", "{briefing}"]
 # .omp/mcp.json goes in the worktree (added to .git/info/exclude). The overlay
-# hides the global `trk` skill: sessions reach trk through MCP only.
+# hides the `trk` skill: sessions reach trk through MCP only.
 files   = { ".omp/mcp.json" = "{mcp_json}", "{session_dir}/omp.yml" = "skills:\n  ignoredSkills: [trk]\n" }
 # omp hides MCP tools not named in --tools, so the trk tools are listed. omp
 # keeps `write` available even then: read-only is not fully enforced.

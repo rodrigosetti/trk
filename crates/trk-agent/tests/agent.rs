@@ -10,7 +10,12 @@ fn seed() -> ConfigDir {
 
 fn user_config() -> UserConfig {
     let text = std::fs::read_to_string(seed().path.join("config.toml")).unwrap();
-    toml::from_str(&text.replace("{{EMAIL_LINE}}", "email = \"a@b.c\"")).unwrap()
+    toml::from_str(
+        &text
+            .replace("{{EMAIL_LINE}}", "email = \"a@b.c\"")
+            .replace("{{PREFIX}}", "proj"),
+    )
+    .unwrap()
 }
 
 fn names(tools: &[trk_agent::ToolDef]) -> Vec<&str> {
@@ -111,7 +116,7 @@ fn launch_spec_for_omp() {
     let profiles = harness::profiles(&user).unwrap();
     let a = load_agent(&seed(), "reviewer").unwrap();
     let mut env = BTreeMap::new();
-    env.insert("TRK_DB".to_string(), "/db/trk.db".to_string());
+    env.insert("TRK_DIR".to_string(), "/proj/.trk".to_string());
     let spec = harness::build(LaunchInput {
         issue: "orch-abc",
         agent: &a,
@@ -128,7 +133,6 @@ fn launch_spec_for_omp() {
         briefing: "Do it's thing".into(),
         instructions: "rules".into(),
         tools: vec!["get_task".into(), "add_note".into()],
-        trust_repo: false,
     })
     .unwrap();
     // read-only builtin tools are inserted before the briefing argument.
@@ -153,13 +157,13 @@ fn launch_spec_for_omp() {
             "reviewer"
         ])
     );
-    assert_eq!(v["mcpServers"]["trk"]["env"]["TRK_DB"], "/db/trk.db");
+    assert_eq!(v["mcpServers"]["trk"]["env"]["TRK_DIR"], "/proj/.trk");
     assert!(
         spec.shell_command
             .starts_with("cd /wt/orch-abc && exec env TRK_ACTOR=agent:omp:u1 omp")
     );
     assert!(spec.shell_command.ends_with("'Do it'\\''s thing'"));
-    // trk run sessions do not see the global trk skill.
+    // trk run sessions do not see the trk skill.
     assert!(spec.files["/state/u1/omp.yml"].contains("ignoredSkills: [trk]"));
     assert!(
         spec.argv
@@ -207,11 +211,10 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
         worktree: Some(cwd.to_str().unwrap()),
         session_dir: session.to_str().unwrap(),
         trk_bin: "/bin/trk",
-        trk_env: BTreeMap::from([("TRK_DB".to_string(), "/tmp/trk.db".to_string())]),
+        trk_env: BTreeMap::from([("TRK_DIR".to_string(), "/tmp/proj/.trk".to_string())]),
         briefing: briefing.to_string(),
         instructions: "rules".into(),
         tools: vec!["get_task".into(), "add_note".into()],
-        trust_repo: false,
     })
     .unwrap();
     for (path, contents) in &spec.files {
@@ -255,5 +258,5 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
             "implementer"
         ])
     );
-    assert_eq!(mcp["mcpServers"]["trk"]["env"]["TRK_DB"], "/tmp/trk.db");
+    assert_eq!(mcp["mcpServers"]["trk"]["env"]["TRK_DIR"], "/tmp/proj/.trk");
 }

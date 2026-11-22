@@ -8,11 +8,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use trk_agent::harness::{self, LaunchInput, subst};
 use trk_core::error::{Code, Error, Result};
-use trk_core::model::normalize_remote;
 use trk_core::ops::ClaimOpts;
 use trk_core::view::With;
 
-use crate::env::{Env, git, hostname, state_dir};
+use crate::env::{Env, git, hostname};
 use crate::render::Out;
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -90,7 +89,6 @@ pub struct RunArgs {
     pub fg: bool,
     pub print: bool,
     pub dry_run: bool,
-    pub trust_repo: bool,
 }
 
 /// Terminal names: 1-32 of a-z 0-9 - _.
@@ -107,42 +105,6 @@ fn terminal_name(id: &str) -> String {
         })
         .collect();
     s.chars().take(32).collect()
-}
-
-/// The git checkout an issue's worktree is made from, if any: the issue's
-/// repo when it has one, else the working directory when it is a repo of the
-/// issue's project.
-pub fn checkout_for(env: &Env, store: &trk_core::Store, issue: &Value) -> Result<Option<PathBuf>> {
-    let project = issue["project"].as_str().unwrap_or_default().to_string();
-    if let Some(rid) = issue["repo"]["id"].as_i64() {
-        let repo = store.read(None, |c| c.repo_by_id(rid))?;
-        if let Some(repo) = &repo {
-            if let Some(lp) = &repo.local_path
-                && Path::new(lp).join(".git").exists()
-            {
-                return Ok(Some(PathBuf::from(lp)));
-            }
-            if let Some(g) = &env.git {
-                let same_remote = g.remote.as_deref().map(normalize_remote) == repo.remote_url;
-                let same_path = repo.local_path.as_deref() == Some(g.toplevel.as_str());
-                if same_remote || same_path {
-                    return Ok(Some(PathBuf::from(&g.toplevel)));
-                }
-            }
-        }
-        let name = repo
-            .and_then(|r| r.remote_url.or(r.local_path))
-            .unwrap_or_else(|| format!("repo {rid}"));
-        return Err(Error::new(Code::UnknownRepo, format!("no local checkout of {name} found"))
-            .with_hint("run the command inside a checkout of the repo, or register its path with `trk repo add <path>`"));
-    }
-    if let Some(g) = &env.git
-        && let Some(repo) = env.current_repo(store)?
-        && repo.project == project
-    {
-        return Ok(Some(PathBuf::from(&g.toplevel)));
-    }
-    Ok(None)
 }
 
 fn ensure_worktree(checkout: &Path, path: &Path, branch: &str) -> Result<()> {
@@ -208,19 +170,14 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             )
         })?
     } else {
-        let project = env.project(&store)?;
         store
-            .read(Some(&human), |c| {
-                c.list("ready", Some(&project), None, Some(1))
-            })?
+            .read(Some(&human), |c| c.list("ready", None, Some(1)))?
             .into_iter()
             .next()
             .ok_or_else(|| {
-                Error::new(
-                    Code::NotFound,
-                    format!("no ready issues in project '{project}'"),
+                Error::new(Code::NotFound, "no ready issues").with_hint(
+                    "use `trk ready` to inspect ready work, or pass an explicit issue ID",
                 )
-                .with_hint("use `trk ready` to inspect ready work, or pass an explicit issue ID")
             })?
     };
     let id = issue["id"].as_str().unwrap_or_default().to_string();
@@ -250,19 +207,11 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         }
         return Err(e);
     }
-    let routing_config = trk_agent::routing::RoutingConfig::for_issue(&env.config, &issue)?;
+    let routing_config = trk_agent::routing::RoutingConfig::new(&env.config);
     let routing = routing_config.resolve(
         issue["type"].as_str().unwrap_or_default(),
         a.agent.as_deref(),
     )?;
-    // Inspect untrusted policy without rendering its prompts or claiming.
-    if a.dry_run && routing.requires_trust && !a.trust_repo {
-        return Ok(Out::Data(json!({
-            "issue": id, "type": routing.issue_type, "agent": routing.agent,
-            "routing": routing, "requires_trust": true,
-        })));
-    }
-    routing_config.require_trust(&routing, a.trust_repo)?;
     let resolved = routing_config.load(&routing)?;
     let agent = resolved.agent;
     let agent_name = agent.name.clone();
@@ -271,7 +220,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let profile = profiles[&hname].clone();
 
     // 2. Worktree.
-    let checkout = checkout_for(env, &store, &issue)?;
+    let checkout = env.checkout();
     // The branch is always the issue id: a later session finds the same one.
     let branch = id.clone();
     let worktree: Option<PathBuf> = checkout.as_ref().map(|_| env.worktrees_dir().join(&id));
@@ -280,7 +229,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let uuid = uuid::Uuid::new_v4().to_string();
     let actor = format!("agent:{hname}:{uuid}");
     let mut terminal = terminal_name(&id);
-    let session_dir = state_dir().join("sessions").join(&uuid);
+    let session_dir = env.sessions_dir().join(&uuid);
     let cwd = worktree.clone().unwrap_or_else(|| session_dir.clone());
 
     let mut warnings: Vec<String> = vec![];
@@ -345,20 +294,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     };
     let briefing = trk_agent::prompt::briefing(&resolved.config, &input, fold)?;
     let mut trk_env = BTreeMap::new();
-    trk_env.insert(
-        "TRK_DB".to_string(),
-        std::fs::canonicalize(&env.db)
-            .unwrap_or(env.db.clone())
-            .to_string_lossy()
-            .to_string(),
-    );
-    trk_env.insert(
-        "TRK_CONFIG".to_string(),
-        std::fs::canonicalize(&env.config.path)
-            .unwrap_or(env.config.path.clone())
-            .to_string_lossy()
-            .to_string(),
-    );
+    trk_env.insert("TRK_DIR".to_string(), env.dir_env());
     let cwd_s = cwd.to_string_lossy().to_string();
     let spec = harness::build(LaunchInput {
         issue: &id,
@@ -376,7 +312,6 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         briefing,
         instructions,
         tools: tools.iter().map(|t| t.name.clone()).collect(),
-        trust_repo: a.trust_repo,
     })?;
     let mut spec_json = serde_json::to_value(&spec)?;
     spec_json["type"] = json!(routing.issue_type);

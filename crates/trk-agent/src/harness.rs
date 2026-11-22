@@ -145,14 +145,12 @@ pub struct LaunchInput<'a> {
     pub session_dir: &'a str,
     /// Absolute path of the trk binary the MCP server is started with.
     pub trk_bin: &'a str,
-    /// TRK_DB / TRK_CONFIG for the MCP server, so it reaches the same database.
+    /// TRK_DIR for the MCP server, so it reaches the project's database and config.
     pub trk_env: BTreeMap<String, String>,
     pub briefing: String,
     pub instructions: String,
     /// Names of the agent's trk tools, for `{trk_tools:PREFIX}`.
     pub tools: Vec<String>,
-    /// Explicit permission passed through to the per-issue MCP server.
-    pub trust_repo: bool,
 }
 
 pub fn sh_quote(s: &str) -> String {
@@ -240,10 +238,7 @@ pub fn trk_mcp_args(issue: &str, actor: &str, agent: &str) -> Vec<String> {
 }
 
 pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
-    let mut trk_args = trk_mcp_args(input.issue, input.actor, &input.agent.name);
-    if input.trust_repo {
-        trk_args.push("--trust-repo".into());
-    }
+    let trk_args = trk_mcp_args(input.issue, input.actor, &input.agent.name);
     let others: Vec<&McpServer> = input.agent.mcp.iter().collect();
 
     // Claude Code / omp style: {"mcpServers": {...}}

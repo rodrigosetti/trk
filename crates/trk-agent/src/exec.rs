@@ -71,13 +71,10 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let new_id = store.write(&sess.actor, false, |c| {
-                let parent = c.issue(&id)?;
                 let new_id = c.create(NewIssue {
-                    project: parent.project,
                     title: title.clone(),
                     description,
                     priority,
-                    repo_id: parent.repo_id,
                     issue_type: opt_arg(&a, "type").map(String::from),
                     blocks: if blocks_this {
                         vec![id.clone()]

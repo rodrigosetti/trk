@@ -1,15 +1,10 @@
 ---
 source: crates/trk-cli/tests/cli.rs
+assertion_line: 335
 expression: snap
 ---
 {
   "id": "<A>",
-  "project": "orch",
-  "repo": {
-    "id": 1,
-    "remote_url": "github.com/acme/orch",
-    "local_path": "<path>"
-  },
   "title": "Add leases to claims",
   "description": "Claims need leases.",
   "state": "waiting",
@@ -65,8 +60,6 @@ expression: snap
       "at": "<ts>",
       "op": "create",
       "payload": {
-        "project": "orch",
-        "repo_id": 1,
         "title": "Add claim leases",
         "description": "Claims need leases.",
         "priority": "P1",

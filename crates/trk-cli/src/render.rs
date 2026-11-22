@@ -354,15 +354,8 @@ impl Renderer {
             "{}\n",
             self.bold(i["title"].as_str().unwrap_or(""))
         ));
-        let repo = &i["repo"];
         let meta = format!(
-            "project {}{} · created {} by {}{}",
-            i["project"].as_str().unwrap_or(""),
-            repo["remote_url"]
-                .as_str()
-                .or(repo["local_path"].as_str())
-                .map(|r| format!(" · repo {r}"))
-                .unwrap_or_default(),
+            "created {} by {}{}",
             i["created_at"].as_str().map(age).unwrap_or_default(),
             i["created_by"].as_str().unwrap_or(""),
             i["type"]
@@ -376,10 +369,8 @@ impl Renderer {
             if let Some(agent) = routing["agent"].as_str() {
                 s.push_str(&format!("  {}   {agent}\n", self.dim("agent")));
             }
-            if let Some(sources) = routing["type_sources"].as_array() {
-                for source in sources.iter().filter_map(Value::as_str) {
-                    s.push_str(&format!("  {}    {source}\n", self.dim("type")));
-                }
+            if let Some(source) = routing["type_source"].as_str() {
+                s.push_str(&format!("  {}    {source}\n", self.dim("type")));
             }
             if let Some(source) = routing["agent_source"].as_str() {
                 s.push_str(&format!("  {}  {source}\n", self.dim("source")));
@@ -387,12 +378,6 @@ impl Renderer {
             if let Some(directory) = routing["prompt_directory"].as_str() {
                 s.push_str(&format!("  {} {directory}\n", self.dim("prompts")));
             }
-            let trust = if routing["requires_trust"].as_bool() == Some(true) {
-                self.warning("required (--trust-repo)")
-            } else {
-                "not required".to_string()
-            };
-            s.push_str(&format!("  {}   {trust}\n", self.dim("trust")));
         }
         let description = i["description"].as_str().unwrap_or("");
         if !description.trim().is_empty() {
@@ -825,14 +810,6 @@ pub fn field_value(i: &Value, name: &str) -> Value {
         "blocked-by" => i["derived"]["blocked_by"].clone(),
         "check" => i["waiting"]["check"].clone(),
         "next-check" => i["waiting"]["next_check_at"].clone(),
-        "repo" => {
-            let r = &i["repo"];
-            if r["remote_url"].is_null() {
-                r["local_path"].clone()
-            } else {
-                r["remote_url"].clone()
-            }
-        }
         n => i.get(n).cloned().unwrap_or(Value::Null),
     }
 }

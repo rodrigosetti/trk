@@ -1,25 +1,11 @@
--- trk schema. One issue type, four states: open, claimed, waiting, closed.
+-- trk schema: one database per project, in <project>/.trk/trk.db.
+-- One kind of issue, four states: open, claimed, waiting, closed.
 -- Connection pragmas (set on every open, not here): journal_mode=WAL,
 -- synchronous=NORMAL, foreign_keys=ON, busy_timeout=5000.
 
 -- ============================================================
--- Projects, repos, actors
+-- Actors
 -- ============================================================
-
-CREATE TABLE project (
-  id          TEXT PRIMARY KEY            -- slug, also the issue-id prefix: 'orch'
-              CHECK (id GLOB '[a-z]*' AND id NOT GLOB '*[^a-z0-9]*'),
-  name        TEXT NOT NULL,
-  created_at  TEXT NOT NULL
-);
-
-CREATE TABLE repo (
-  id          INTEGER PRIMARY KEY,
-  project_id  TEXT NOT NULL REFERENCES project(id),
-  remote_url  TEXT UNIQUE,                -- normalized: 'github.com/acme/orch'
-  local_path  TEXT UNIQUE,                -- the checkout on this machine
-  CHECK (remote_url IS NOT NULL OR local_path IS NOT NULL)
-);
 
 CREATE TABLE harness (
   name        TEXT PRIMARY KEY            -- 'claude-code', 'codex', ...
@@ -49,15 +35,14 @@ CREATE TABLE actor (
 -- waiting : the session ended; `waiting_check` decides what happens next
 -- closed  : done or abandoned
 CREATE TABLE issue (
-  id               TEXT PRIMARY KEY,      -- '<project>-<base32>': 'orch-4kq'
-  project_id       TEXT NOT NULL REFERENCES project(id),
-  repo_id          INTEGER REFERENCES repo(id),
+  id               TEXT PRIMARY KEY,      -- '<prefix>-<base32>': 'orch-4kq'
   state            TEXT NOT NULL DEFAULT 'open'
                    CHECK (state IN ('open', 'claimed', 'waiting', 'closed')),
   title            TEXT NOT NULL CHECK (length(title) > 0),
   description      TEXT NOT NULL DEFAULT '',
   priority         TEXT NOT NULL DEFAULT 'P2' CHECK (priority IN ('P0', 'P1', 'P2', 'P3')),
-  agent            TEXT,                  -- agent definition for `trk run`; NULL = default
+  type             TEXT NOT NULL DEFAULT 'code-change'   -- routes the issue to an agent
+                   CHECK (length(trim(type)) > 0),
   close_reason     TEXT CHECK (close_reason IN ('done', 'abandoned')),
   -- waiting
   waiting_reason   TEXT,
@@ -76,7 +61,7 @@ CREATE TABLE issue (
   CHECK ((state = 'closed') = (closed_at IS NOT NULL)),
   CHECK (state = 'waiting' OR (waiting_check IS NULL AND waiting_reason IS NULL AND next_check_at IS NULL))
 );
-CREATE INDEX issue_project_state ON issue(project_id, state);
+CREATE INDEX issue_state         ON issue(state);
 CREATE INDEX issue_updated       ON issue(updated_at);
 CREATE INDEX issue_due           ON issue(next_check_at) WHERE state = 'waiting';
 

@@ -8,7 +8,7 @@
 //! op     := '=' | '!=' | '<' | '<=' | '>' | '>=' | '~'
 //! flag   := 'ready' | 'blocked' | 'due' | 'stale-lease'
 //! value  := word | quoted | 'me' | '.' | reltime
-//! name   := id | state | project | priority | type | reason | claimed-by | created-by
+//! name   := id | state | priority | type | reason | claimed-by | created-by
 //!         | title | created | updated | closed | next-check | text | blocks | blocked-by
 //! ```
 
@@ -224,7 +224,6 @@ pub fn parse(q: &str) -> Result<Vec<Term>> {
 
 pub trait QueryCtx {
     fn me(&self) -> Option<String>;
-    fn current_project(&self) -> Option<String>;
     fn now(&self) -> jiff::Timestamp;
     fn resolve_id(&self, s: &str) -> Result<String>;
 }
@@ -244,13 +243,12 @@ enum Target {
     BlockedBy,
 }
 
-const NAMES: &str = "id state project priority type reason claimed-by created-by title created updated closed next-check text blocks blocked-by";
+const NAMES: &str = "id state priority type reason claimed-by created-by title created updated closed next-check text blocks blocked-by";
 
 fn target(name: &str) -> Result<Target> {
     Ok(match name {
         "id" => Target::Column("i.id"),
         "state" | "status" => Target::Column("i.state"),
-        "project" => Target::Column("i.project_id"),
         "priority" => Target::Column("i.priority"),
         "type" => Target::Column("i.type"),
         "reason" => Target::Column("i.close_reason"),
@@ -275,25 +273,16 @@ fn is_glob(s: &str) -> bool {
     s.contains('*') || s.contains('?') || s.contains('[')
 }
 
-/// Resolve `me`, `.` and relative times.
-fn resolve_value(name: &str, v: &Val, ctx: &dyn QueryCtx, time: bool) -> Result<SqlValue> {
+/// Resolve `me` and relative times.
+fn resolve_value(v: &Val, ctx: &dyn QueryCtx, time: bool) -> Result<SqlValue> {
     let raw = v.text();
-    if let Val::Word(w) = v {
-        if w == "me" {
-            return ctx.me().map(SqlValue::Text).ok_or_else(|| {
-                Error::new(Code::BadQuery, "'me' used but no acting actor is known")
-                    .with_hint("set user.email in config.toml, TRK_ACTOR, or --as")
-            });
-        }
-        if w == "." && name == "project" {
-            return ctx.current_project().map(SqlValue::Text).ok_or_else(|| {
-                Error::new(
-                    Code::UnknownRepo,
-                    "'.' used but the current directory is not a registered repo",
-                )
-                .with_hint("run `trk repo add` in the repository, or pass --project")
-            });
-        }
+    if let Val::Word(w) = v
+        && w == "me"
+    {
+        return ctx.me().map(SqlValue::Text).ok_or_else(|| {
+            Error::new(Code::BadQuery, "'me' used but no acting actor is known")
+                .with_hint("set user.email in config.toml, TRK_ACTOR, or --as")
+        });
     }
     if time {
         return Ok(SqlValue::Text(resolve_time(raw, ctx.now())?));
@@ -385,7 +374,7 @@ pub fn compile(terms: &[Term], ctx: &dyn QueryCtx) -> Result<Compiled> {
                 let one = |v: &Val, params: &mut Vec<SqlValue>| -> Result<String> {
                     Ok(match &tgt {
                         Target::Column(c) => {
-                            let sv = resolve_value(name, v, ctx, false)?;
+                            let sv = resolve_value(v, ctx, false)?;
                             let sv = match sv {
                                 SqlValue::Integer(n) => SqlValue::Text(n.to_string()),
                                 x => x,
@@ -410,7 +399,7 @@ pub fn compile(terms: &[Term], ctx: &dyn QueryCtx) -> Result<Compiled> {
                             };
                             cmp(c, *op, sv, params)
                         }
-                        Target::Time(c) => cmp(c, *op, resolve_value(name, v, ctx, time)?, params),
+                        Target::Time(c) => cmp(c, *op, resolve_value(v, ctx, time)?, params),
                         Target::Text => {
                             let q = match v {
                                 Val::Quoted(s) => format!("\"{}\"", s.replace('"', "\"\"")),
@@ -480,7 +469,6 @@ pub fn order_by(sort: Option<&str>) -> Result<String> {
         let col = match name {
             "id" => "i.id",
             "state" | "status" => "i.state",
-            "project" => "i.project_id",
             "title" => "i.title",
             "priority" => "i.priority",
             "type" => "i.type",
@@ -495,7 +483,7 @@ pub fn order_by(sort: Option<&str>) -> Result<String> {
                     Code::BadArgs,
                     format!("cannot sort by '{f}'"),
                 )
-                .with_hint("sort by: id state project title priority type created updated closed claimed-by lease next-check"));
+                .with_hint("sort by: id state title priority type created updated closed claimed-by lease next-check"));
             }
         };
         out.push(format!("{col} {}", if desc { "DESC" } else { "ASC" }));
@@ -510,7 +498,7 @@ mod tests {
 
     #[test]
     fn parses_examples() {
-        let t = parse("project=orch priority=P1 state!=closed").unwrap();
+        let t = parse("type=research priority=P1 state!=closed").unwrap();
         assert_eq!(t.len(), 3);
         let t = parse("state in (open,waiting) closed>-7d reason=done").unwrap();
         assert!(matches!(&t[0], Term::Pred { is_in: true, values, .. } if values.len() == 2));
@@ -521,7 +509,7 @@ mod tests {
         assert!(
             matches!(&t[0], Term::Pred { name, values, .. } if name == "claimed-by" && values[0].text() == "agent:claude-code:*")
         );
-        let t = parse("ready project=.").unwrap();
+        let t = parse("ready priority=P1").unwrap();
         assert!(matches!(
             t[0],
             Term::Flag {

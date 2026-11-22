@@ -1,4 +1,4 @@
-//! The default configuration written by `trk init` (seed data, not code).
+//! The default configuration written by `trk install` (seed data, not code).
 
 pub const FILES: &[(&str, &str)] = &[
     (
@@ -47,15 +47,8 @@ pub const FILES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Files of the six-type configuration that `trk init` no longer writes and
-/// nothing reads. Reported, never deleted.
-pub const STALE: &[&str] = &[
-    "fields.toml",
-    "dep-kinds.toml",
-    "agents/decider.toml",
-    "agents/operator.toml",
-    "prompts/decider.instructions.md.j2",
-    "prompts/operator.instructions.md.j2",
-];
-
 pub const CONFIG_TOML: &str = include_str!("../../../seed/config.toml");
+
+/// `.trk/.gitignore`: everything in `.trk/` starts out ignored. Edit it to
+/// share configuration through git.
+pub const GITIGNORE: &str = "# Written by `trk install`: nothing in .trk/ is tracked.\n*\n";

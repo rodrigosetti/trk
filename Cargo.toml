@@ -30,7 +30,6 @@ anstream = "1.0"
 owo-colors = "4.4"
 comfy-table = "8"
 termimad = "0.35"
-directories = "6"
 anyhow = "1"
 assert_cmd = "2.2"
 insta = { version = "1.49", features = ["json"] }

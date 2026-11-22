@@ -106,14 +106,6 @@ impl Ctx<'_> {
         let claim = self.active_claim(&issue.id)?;
         let mut o = Map::new();
         o.insert("id".into(), json!(issue.id));
-        o.insert("project".into(), json!(issue.project));
-        let repo = match issue.repo_id {
-            Some(r) => self.repo_by_id(r)?.map(
-                |r| json!({"id": r.id, "remote_url": r.remote_url, "local_path": r.local_path}),
-            ),
-            None => None,
-        };
-        o.insert("repo".into(), json!(repo));
         o.insert("title".into(), json!(issue.title));
         o.insert("description".into(), json!(issue.description));
         o.insert("state".into(), json!(issue.state));
@@ -201,24 +193,14 @@ impl Ctx<'_> {
     }
 
     /// `trk list`: issues matching the query.
-    pub fn list(
-        &self,
-        q: &str,
-        project: Option<&str>,
-        sort: Option<&str>,
-        limit: Option<usize>,
-    ) -> Result<Vec<Value>> {
+    pub fn list(&self, q: &str, sort: Option<&str>, limit: Option<usize>) -> Result<Vec<Value>> {
         let terms = query::parse(q)?;
         let compiled = query::compile(&terms, self)?;
         let mut sql = format!(
             "SELECT {ISSUE_COLS} FROM issue_view i WHERE {}",
             compiled.where_sql
         );
-        let mut params = compiled.params;
-        if let Some(p) = project {
-            sql.push_str(" AND i.project_id = ?");
-            params.push(rusqlite::types::Value::Text(p.to_string()));
-        }
+        let params = compiled.params;
         sql.push_str(&format!(" ORDER BY {}", query::order_by(sort)?));
         if let Some(n) = limit {
             sql.push_str(&format!(" LIMIT {n}"));
