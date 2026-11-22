@@ -148,6 +148,13 @@ original agent session if its MCP server and terminal are still present. A pass 
 the issue is closed; a failure includes its result and says the issue reopened. Exit 75
 does not notify. The agent is not resumed automatically, and the session remains for
 the user to inspect and close.
+
+With `[launcher] herdr = true`, a passing check also best-effort appends ` [closed]`
+to the current name of the space containing the original waiting session's exact
+terminal. User renames are preserved and the suffix is not duplicated. This does
+not require a live agent or successful notification; missing UI/spaces or rename
+failures never change the check result. Failed and retrying checks leave titles unchanged.
+
 Three properties follow from that:
 
 - **A waiting issue still blocks.** What depends on it becomes ready when the work has landed, not

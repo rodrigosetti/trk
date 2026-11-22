@@ -283,6 +283,8 @@ send   = ["hc", "send", "{name}", "{text}"]
 
 trk observes `herdr-app ls` for up to two seconds; only a direct agent pane in the created space, with the expected title and folder, counts as visible. JSON returns `placement.status` (`visible` or `failed`) with pane/tab/space IDs or a reason. Observation failures warn and retain the session and claim. If UI discovery fails before launch, the configured `start` template runs headlessly with a warning. If space creation itself fails or returns an uncertain response, the command errors and retains the claim; it never retries or falls back to a second session.
 
+After a waiting check commits a passing outcome, trk best-effort uses `herdr-app do space.rename --id … --name …` to append ` [closed]` to the current name of the space containing the exact terminal from the historical claim released as `waiting`. It never targets an active/replacement claim, overwrites a user rename, or duplicates an existing suffix. This update is independent of MCP liveness and notification delivery; unavailable UI, missing spaces and rename failures do not affect the committed outcome or prevent an otherwise deliverable notification. Failed/retrying checks do not rename spaces; non-Herdr launchers are unchanged.
+
 Replacing hc with tmux or a plain process is a config change: replace the templates and set `herdr = false`.
 
 ### Harness profiles

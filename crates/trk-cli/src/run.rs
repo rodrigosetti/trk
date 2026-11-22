@@ -530,11 +530,11 @@ pub fn send(env: &Env, id: &str, text: &str) -> Result<Out> {
         json!({"issue": id, "terminal": name, "output": out}),
     ))
 }
-/// Best-effort notification to the exact agent session that left an issue waiting.
+/// Best-effort UI update and notification to the session that left an issue waiting.
 ///
 /// The waiting claim is historical by design: resolving the issue releases it,
 /// so looking up the active claim could steer a replacement session instead.
-pub fn notify_waiting_session(env: &Env, issue: &str, text: &str) -> Result<()> {
+pub fn notify_waiting_session(env: &Env, issue: &str, text: &str, closed: bool) -> Result<()> {
     let store = env.store()?;
     let claim = store.read(None, |c| {
         Ok(c.claims(issue)?
@@ -545,13 +545,17 @@ pub fn notify_waiting_session(env: &Env, issue: &str, text: &str) -> Result<()> 
     let Some(claim) = claim else {
         return Ok(());
     };
-    if mcp_alive(&store.read(None, |c| c.actor_meta(&claim.actor))?) != Some(true) {
-        return Ok(());
-    }
     let Some(name) = claim.terminal else {
         return Ok(());
     };
     let launcher = launcher(env)?;
+    // Renaming is independent of agent liveness and message delivery.
+    if closed && launcher.herdr {
+        let _ = crate::herdr::mark_closed(&name);
+    }
+    if mcp_alive(&store.read(None, |c| c.actor_meta(&claim.actor))?) != Some(true) {
+        return Ok(());
+    }
     let Some(send) = launcher.send else {
         return Ok(());
     };

@@ -424,9 +424,14 @@ fn pass(
                     i.id
                 )
             };
-            // State and outcome are already committed. Notification is advisory:
+            // State and outcome are already committed. UI updates are advisory:
             // an exited session or a launcher failure must not affect the check.
-            let _ = crate::run::notify_waiting_session(env, &i.id, &message);
+            let _ = crate::run::notify_waiting_session(
+                env,
+                &i.id,
+                &message,
+                result == CheckResult::Passed,
+            );
         }
         let now = store.read(None, |c| c.issue(&i.id))?;
         let mut v = json!({

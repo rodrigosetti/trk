@@ -84,20 +84,45 @@ pub fn available() -> Result<(), String> {
     json_command("herdr-app", &["ls"]).map(|_| ())
 }
 
-/// Whether the exact terminal address still appears in Herdr's live inventory.
-fn contains_terminal(ui: &Value, terminal: &str) -> bool {
-    ui["spaces"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .flat_map(|space| space["tabs"].as_array().into_iter().flatten())
-        .flat_map(|tab| tab["terminals"].as_array().into_iter().flatten())
-        .any(|pane| pane["terminal"] == terminal)
+/// Find the space containing the exact terminal address, not a name or pane ID.
+fn terminal_space<'a>(ui: &'a Value, terminal: &str) -> Option<&'a Value> {
+    ui["spaces"].as_array()?.iter().find(|space| {
+        space["tabs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|tab| tab["terminals"].as_array().into_iter().flatten())
+            .any(|pane| pane["terminal"] == terminal)
+    })
 }
 
 pub fn has_terminal(terminal: &str) -> Result<bool, String> {
     let ui = json_command("herdr-app", &["ls"])?;
-    Ok(contains_terminal(&ui, terminal))
+    Ok(terminal_space(&ui, terminal).is_some())
+}
+
+/// Mark the current visible space name without replacing a user's rename.
+pub fn mark_closed(terminal: &str) -> Result<(), String> {
+    let ui = json_command("herdr-app", &["ls"])?;
+    let Some(space) = terminal_space(&ui, terminal) else {
+        return Ok(());
+    };
+    let id = space["id"].as_str().ok_or("space omitted its ID")?;
+    let name = space["name"].as_str().ok_or("space omitted its name")?;
+    if !name.ends_with(" [closed]") {
+        command(
+            "herdr-app",
+            &[
+                "do",
+                "space.rename",
+                "--id",
+                id,
+                "--name",
+                &format!("{name} [closed]"),
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 /// Never retry a space creation: an uncertain reply may already have started it.
@@ -147,7 +172,7 @@ pub fn start(title: &str, cwd: &str, shell_command: &str) -> Result<(String, Pla
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_terminal, visible_pane};
+    use super::{terminal_space, visible_pane};
     use serde_json::json;
 
     #[test]
@@ -184,8 +209,8 @@ mod tests {
         let ui = json!({"spaces": [{"tabs": [{"terminals": [
             {"terminal": "herdr://space-a/pane-1", "pane": "pane-1"}
         ]}]}]});
-        assert!(contains_terminal(&ui, "herdr://space-a/pane-1"));
-        assert!(!contains_terminal(&ui, "herdr://space-b/pane-1"));
-        assert!(!contains_terminal(&ui, "pane-1"));
+        assert!(terminal_space(&ui, "herdr://space-a/pane-1").is_some());
+        assert!(terminal_space(&ui, "herdr://space-b/pane-1").is_none());
+        assert!(terminal_space(&ui, "pane-1").is_none());
     }
 }
