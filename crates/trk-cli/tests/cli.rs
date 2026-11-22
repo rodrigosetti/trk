@@ -1793,7 +1793,7 @@ fn waiting_check_marks_only_the_origin_space_once_and_preserves_notifications() 
     assert_eq!(result["result"], "passed");
     assert_eq!(result["state"], "closed");
     assert_eq!(ui.e.ok(&["show", &id])["close_reason"], "done");
-    assert_eq!(ui.text("space-name"), "Reviewed title [closed]");
+    assert_eq!(ui.text("space-name"), "[closed] Reviewed title");
     let messages = ui.text("messages");
     assert!(messages.starts_with("exact-origin\n"), "{messages}");
     assert!(messages.contains("waiting check passed"), "{messages}");
@@ -1803,8 +1803,37 @@ fn waiting_check_marks_only_the_origin_space_once_and_preserves_notifications() 
     ui.claim(&id, "exact-origin", true);
     ui.e.ok(&["wait", &id, "--force", "-c", "exit 0"]);
     assert_eq!(ui.check(&id, "")["state"], "closed");
-    assert_eq!(ui.text("space-name"), "Reviewed title [closed]");
+    assert_eq!(ui.text("space-name"), "[closed] Reviewed title");
     assert_eq!(ui.text("renames"), "renamed\n");
+}
+
+#[test]
+fn waiting_check_normalizes_edge_markers_and_preserves_embedded_literal_text() {
+    for (title, expected) in [
+        (
+            "Append [closed] to task titles",
+            "[closed] Append [closed] to task titles",
+        ),
+        ("Reviewed title [closed]", "[closed] Reviewed title"),
+        ("Reviewed title [closed] [closed]", "[closed] Reviewed title"),
+        ("[closed] Reviewed title", "[closed] Reviewed title"),
+        ("[closed] Reviewed title [closed]", "[closed] Reviewed title"),
+        (
+            "Append [closed] to titles [closed]",
+            "[closed] Append [closed] to titles",
+        ),
+    ] {
+        let ui = WaitingUi::new();
+        std::fs::write(ui.e.dir.path().join("space-name"), title).unwrap();
+        let id = ui.waiting("exit 0", false);
+        assert_eq!(ui.check(&id, "")["state"], "closed");
+        assert_eq!(ui.text("space-name"), expected);
+        assert_eq!(
+            ui.text("renames"),
+            if title == expected { "" } else { "renamed\n" },
+            "{title}"
+        );
+    }
 }
 
 #[test]
@@ -1858,7 +1887,7 @@ fn waiting_check_ui_and_message_failures_are_independent_and_nonfatal() {
         assert_eq!(
             ui.text("space-name"),
             if renamed {
-                "Reviewed title [closed]"
+                "[closed] Reviewed title"
             } else {
                 "Reviewed title"
             },

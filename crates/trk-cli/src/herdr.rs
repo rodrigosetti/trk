@@ -109,7 +109,15 @@ pub fn mark_closed(terminal: &str) -> Result<(), String> {
     };
     let id = space["id"].as_str().ok_or("space omitted its ID")?;
     let name = space["name"].as_str().ok_or("space omitted its name")?;
-    if !name.ends_with(" [closed]") {
+    let title = name.trim_end_matches(" [closed]");
+    let prefixed;
+    let closed_name = if title.starts_with("[closed] ") {
+        title
+    } else {
+        prefixed = format!("[closed] {title}");
+        &prefixed
+    };
+    if closed_name != name {
         command(
             "herdr-app",
             &[
@@ -118,7 +126,7 @@ pub fn mark_closed(terminal: &str) -> Result<(), String> {
                 "--id",
                 id,
                 "--name",
-                &format!("{name} [closed]"),
+                closed_name,
             ],
         )?;
     }
