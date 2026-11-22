@@ -4,7 +4,7 @@ Nov 21, 2026 · @Rodrigo Setti
 
 ## Overview
 
-`trk` is a local issue tracker and agent launcher in one Rust binary. It keeps the work of every repository in one SQLite database in the user's home directory. Humans use the CLI. Agents work through a per-issue MCP server. `trk run <ID>` starts an agent session on one issue in a persistent terminal (herdr-core, `hc`), with focused instructions and only that issue's tools.
+`trk` is a local issue tracker and agent launcher in one Rust binary. It keeps the work of every repository in one SQLite database in the user's home directory. Humans use the CLI. Agents work through a per-issue MCP server. `trk run [ID]` starts an agent session on one issue in a persistent terminal (herdr-core, `hc`), with focused instructions and only that issue's tools.
 
 Issues have routing-only types and share one state machine. An agent session ends in one of two ways: the issue is **closed**, or it is **waiting** for something outside the session, described by a shell command that `trk check` runs until it passes, fails, or says "not yet".
 
@@ -180,7 +180,7 @@ A check is written by an agent and executed later, unattended, with the user's p
 
 ## Agents and sessions
 
-`trk run <ID>` starts an agent on the issue in a persistent `hc` terminal. The agent sees one issue. Agents reach trk only through MCP: their instructions never mention the `trk` CLI.
+`trk run [ID]` starts an agent on the issue in a persistent `hc` terminal. Without an ID, it selects the first ready issue in the current project (`--project` / `TRK_PROJECT` overrides), ordered by priority, then creation time, then ID, matching `trk ready`. Missing project scope returns `unknown_repo`; no ready issue returns `not_found`. Selection also applies to `--dry-run` and `--print`; an explicit ID retains its existing behavior. The agent sees one issue. Agents reach trk only through MCP: their instructions never mention the `trk` CLI.
 
 ### Configuration pieces
 

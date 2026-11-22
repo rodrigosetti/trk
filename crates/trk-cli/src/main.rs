@@ -252,9 +252,9 @@ enum Cmd {
     },
     /// Timeline: events and notes
     Log { id: String },
-    /// Start an agent session on the issue through the launcher
+    /// Start an agent session; defaults to the first ready issue in the current project
     Run {
-        id: String,
+        id: Option<String>,
         #[arg(long)]
         agent: Option<String>,
         #[arg(long)]

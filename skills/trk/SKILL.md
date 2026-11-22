@@ -119,6 +119,7 @@ trk dep rm <BLOCKER> <BLOCKED> --json
 ## Agent sessions
 
 ```bash
+trk run --json                            # start the first ready issue in the current project
 trk run <ID> --dry-run --json             # preview: agent, harness, worktree, briefing
 trk run <ID> --json                       # claim and start the agent in its own terminal
 trk runs --json                           # active sessions: agent, terminal, lease, MCP liveness
@@ -128,6 +129,10 @@ trk reap --json                           # release claims whose session has end
 ```
 
 Only ready issues can be run. A session ends by closing, waiting or handing back; an issue whose check failed is ready again, and its notes tell the next session why. Do not run `trk attach`: it takes over the terminal interactively, so suggest it to the user instead.
+
+Without an ID, `trk run` uses the current project (`--project` / `TRK_PROJECT` overrides) and
+selects by priority, then oldest creation time, then ID, matching `trk ready`. Missing project
+scope or no ready issues is an error. `trk run --dry-run --json` previews the selection.
 
 `trk run --agent NAME` overrides routing for that run only. Inspect routing sources with `trk show`
 or `trk run --dry-run`. Repo `.trk/types/*.toml` partially overrides global types by name;

@@ -84,7 +84,7 @@ fn send_with_retry(tmpl: &[String], vars: &BTreeMap<&str, String>) -> Result<(bo
 }
 
 pub struct RunArgs {
-    pub id: String,
+    pub id: Option<String>,
     pub agent: Option<String>,
     pub harness: Option<String>,
     pub fg: bool,
@@ -196,16 +196,33 @@ fn trk_bin() -> String {
 pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let human = env.actor()?.to_string();
     let mut store = env.store()?;
-    let issue = store.read(Some(&human), |c| {
-        let id = c.resolve_id(&a.id)?;
-        c.show(
-            &id,
-            With {
-                deps: true,
-                ..Default::default()
-            },
-        )
-    })?;
+    let issue = if let Some(id) = a.id.as_deref() {
+        store.read(Some(&human), |c| {
+            let id = c.resolve_id(id)?;
+            c.show(
+                &id,
+                With {
+                    deps: true,
+                    ..Default::default()
+                },
+            )
+        })?
+    } else {
+        let project = env.project(&store)?;
+        store
+            .read(Some(&human), |c| {
+                c.list("ready", Some(&project), None, Some(1))
+            })?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                Error::new(
+                    Code::NotFound,
+                    format!("no ready issues in project '{project}'"),
+                )
+                .with_hint("use `trk ready` to inspect ready work, or pass an explicit issue ID")
+            })?
+    };
     let id = issue["id"].as_str().unwrap_or_default().to_string();
 
     // 1. Ready, agent and harness.

@@ -80,7 +80,7 @@ Sort keys: `id`, `state`, `project`, `title`, `priority`, `type`, `created`, `up
 | `trk note <ID> [TEXT or -] [--amends SEQ] [--to-agent]` | Append a note |
 | `trk dep add or rm <BLOCKER> <BLOCKED>` | Blocker edges |
 | `trk log <ID>` | Timeline |
-| `trk run <ID> [--agent A] [--harness H] [--trust-repo] [--dry-run or --print]` | Start an agent session; agent override is one-off |
+| `trk run [ID] [--agent A] [--harness H] [--trust-repo] [--dry-run or --print]` | Start an agent session; without ID, first ready issue in the current project by priority then age; agent override is one-off |
 | `trk runs`, `trk send <ID> TEXT`, `trk reap` | Watch, steer and clean up sessions |
 | `trk agent list`, `trk agent preview <agent> [--issue ID]`, `trk agent check` | Inspect agents |
 | `trk project add or list`, `trk repo add or list` | Projects and repositories |

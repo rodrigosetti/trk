@@ -1,7 +1,7 @@
 # trk
 
 A local issue tracker and agent launcher in one Rust binary. All repositories share one SQLite
-database; humans use the CLI, agents work through a per-issue MCP server, and `trk run <ID>` starts
+database; humans use the CLI, agents work through a per-issue MCP server, and `trk run [ID]` starts
 an agent session on one issue in a persistent terminal (`hc`). See [SPEC.md](SPEC.md) for the design.
 
 An issue has a title, a description, notes, a priority, a required type (default `code-change`), and one of four states:
@@ -126,6 +126,7 @@ full, and `trk check --dry-run` shows the queue before anything runs.
 ## Agent sessions
 
 ```sh
+trk run                          # start the highest-priority ready issue in the current project
 trk run orch-4kq                 # claim as agent:<harness>:<uuid>, create the worktree, start in hc
 trk runs                         # active agent claims: agent, harness, terminal, lease, MCP liveness
 trk attach orch-4kq              # take over the terminal
@@ -135,6 +136,11 @@ trk reap                         # release claims whose MCP server has gone, wit
 trk run orch-4kq --dry-run       # print the launch spec; claims nothing
 trk agent preview implementer --issue orch-4kq        # instructions, briefing, tool schemas
 ```
+
+Omitting the ID selects the first ready issue in the current project, ordered by priority
+(P0–P3), then oldest creation time, then ID, matching `trk ready`. Use `--project <project>`
+to override the project. If the project cannot be resolved or has no ready issues, the command
+returns an error without launching a session. `trk run --dry-run` previews the selection.
 
 The agent for a run is `--agent` (a one-off override), else the issue type's `agent` mapping.
 The seed types are `code-change` → `implementer`, `research` → `researcher`, and `review` → `reviewer`.

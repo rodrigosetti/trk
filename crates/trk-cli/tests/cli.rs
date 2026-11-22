@@ -857,6 +857,100 @@ fn init_reports_stale_files_and_agents_check() {
 }
 
 #[test]
+fn run_without_id_selects_ready_work_by_project_priority_and_age() {
+    let e = Env::new();
+    e.ok(&["project", "add", "other"]);
+    e.ok(&[
+        "--project",
+        "other",
+        "create",
+        "Other urgent issue",
+        "-p",
+        "P0",
+    ]);
+    e.create(&["Older normal issue", "-p", "P2"]);
+    let blocker = e.create(&["Blocker", "-p", "P3"]);
+    e.create(&["Blocked urgent issue", "-p", "P0", "--blocked-by", &blocker]);
+    let claimed = e.create(&["Claimed urgent issue", "-p", "P0"]);
+    e.ok(&["claim", &claimed]);
+    let closed = e.create(&["Closed urgent issue", "-p", "P0"]);
+    e.ok(&["close", &closed]);
+    let waiting = e.create(&["Waiting urgent issue", "-p", "P0"]);
+    e.ok(&["claim", &waiting]);
+    e.ok(&["wait", &waiting, "--reason", "Needs a decision"]);
+    let older = e.at(
+        "2026-11-20T11:00:00Z",
+        &["create", "Older high-priority issue", "-p", "P1"],
+    );
+    let newer = e.at(
+        "2026-11-20T12:00:00Z",
+        &["create", "Newer high-priority issue", "-p", "P1"],
+    );
+    let id = older["id"].as_str().unwrap();
+
+    let preview = e.ok(&["run", "--harness", "omp", "--dry-run"]);
+    assert_eq!(preview["issue"], older["id"]);
+    assert_eq!(e.ok(&["show", id])["state"], "open");
+    assert!(!Path::new(preview["worktree"].as_str().unwrap()).exists());
+    let launched = e.ok(&["run", "--harness", "omp", "--print"]);
+    assert_eq!(launched["issue"], older["id"]);
+    assert_eq!(e.ok(&["show", id])["state"], "claimed");
+    assert!(Path::new(launched["worktree"].as_str().unwrap()).exists());
+    assert_eq!(
+        e.ok(&["run", "--harness", "omp", "--dry-run"])["issue"],
+        newer["id"]
+    );
+}
+
+#[test]
+fn run_without_id_requires_project_scope_and_ready_work() {
+    let e = Env::new();
+    e.ok(&["project", "add", "other"]);
+    let other = e.ok(&[
+        "--project",
+        "other",
+        "create",
+        "Other urgent issue",
+        "-p",
+        "P0",
+    ]);
+    let error = e.err(&["run", "--dry-run"], 3, "not_found");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("no ready issues in project 'orch'")
+    );
+
+    let out = e
+        .cmd()
+        .current_dir(e.dir.path())
+        .args(["--json", "run", "--dry-run"])
+        .output()
+        .unwrap();
+    let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(error["error"]["code"], "unknown_repo");
+    let out = e
+        .cmd()
+        .current_dir(e.dir.path())
+        .args([
+            "--json",
+            "--project",
+            "other",
+            "run",
+            "--harness",
+            "omp",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    let preview: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(out.status.success(), "{preview:#}");
+    assert_eq!(preview["data"]["issue"], other["id"]);
+}
+
+#[test]
 fn agent_preview_and_run_dry_run() {
     let e = Env::new();
     let list = e.ok(&["agent", "list"]);
