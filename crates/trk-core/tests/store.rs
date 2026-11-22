@@ -512,13 +512,80 @@ fn the_check_lock_has_one_holder() {
     assert!(s.read(None, |c| c.check_lock()).unwrap().is_none());
     s.write(HUMAN, false, |c| c.check_lock_take(41, Some("host")))
         .unwrap();
-    let (pid, host, _) = s.read(None, |c| c.check_lock()).unwrap().unwrap();
-    assert_eq!((pid, host.as_deref()), (41, Some("host")));
-    // Releasing with another pid leaves it alone.
+    let (pid, host, _, pgid) = s.read(None, |c| c.check_lock()).unwrap().unwrap();
+    assert_eq!((pid, host.as_deref(), pgid), (41, Some("host"), None));
+    s.write(HUMAN, false, |c| c.check_lock_group(41, Some(51)))
+        .unwrap();
+    // Another pid cannot change or release the holder's subprocess group.
+    s.write(HUMAN, false, |c| c.check_lock_group(42, Some(52)))
+        .unwrap();
     s.write(HUMAN, false, |c| c.check_lock_release(42)).unwrap();
-    assert!(s.read(None, |c| c.check_lock()).unwrap().is_some());
+    let lock = s.read(None, |c| c.check_lock()).unwrap().unwrap();
+    assert_eq!((lock.0, lock.3), (41, Some(51)));
+    s.write(HUMAN, false, |c| c.check_lock_group(41, None))
+        .unwrap();
+    assert_eq!(s.read(None, |c| c.check_lock()).unwrap().unwrap().3, None);
     s.write(HUMAN, false, |c| c.check_lock_release(41)).unwrap();
     assert!(s.read(None, |c| c.check_lock()).unwrap().is_none());
+}
+
+#[test]
+fn the_check_lock_group_persists_and_replacement_clears_it() {
+    let (d, mut s) = setup();
+    s.write(HUMAN, false, |c| {
+        c.check_lock_take(41, Some("host"))?;
+        c.check_lock_group(41, Some(51))
+    })
+    .unwrap();
+    drop(s);
+    let mut s = Store::open(&d.path().join("trk.db"), StoreOpts::default()).unwrap();
+    let lock = s.read(None, |c| c.check_lock()).unwrap().unwrap();
+    assert_eq!(
+        (lock.0, lock.1.as_deref(), lock.3),
+        (41, Some("host"), Some(51))
+    );
+    s.write(HUMAN, false, |c| c.check_lock_take(42, None))
+        .unwrap();
+    // The old runner cannot clear or release the replacement holder.
+    s.write(HUMAN, false, |c| c.check_lock_group(41, None))
+        .unwrap();
+    s.write(HUMAN, false, |c| c.check_lock_release(41)).unwrap();
+    let lock = s.read(None, |c| c.check_lock()).unwrap().unwrap();
+    assert_eq!((lock.0, lock.1, lock.3), (42, None, None));
+}
+
+#[test]
+fn migrating_the_check_lock_preserves_its_holder() {
+    let d = tempfile::tempdir().unwrap();
+    let path = d.path().join("trk.db");
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    raw.execute_batch(include_str!("../src/schema.sql"))
+        .unwrap();
+    raw.pragma_update(None, "user_version", 1).unwrap();
+    raw.execute(
+        "INSERT INTO check_lock (id, pid, host, started_at) VALUES (1, 41, 'host', '2026-11-20T10:00:00Z')",
+        [],
+    )
+    .unwrap();
+    drop(raw);
+
+    let mut s = Store::open(&path, StoreOpts::default()).unwrap();
+    let lock = s.read(None, |c| c.check_lock()).unwrap().unwrap();
+    assert_eq!(
+        lock,
+        (
+            41,
+            Some("host".into()),
+            "2026-11-20T10:00:00Z".into(),
+            Some(0)
+        )
+    );
+    s.write(HUMAN, false, |c| c.check_lock_group(41, Some(51)))
+        .unwrap();
+    assert_eq!(
+        s.read(None, |c| c.check_lock()).unwrap().unwrap().3,
+        Some(51)
+    );
 }
 
 #[test]

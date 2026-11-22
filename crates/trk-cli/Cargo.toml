@@ -22,6 +22,8 @@ owo-colors.workspace = true
 comfy-table.workspace = true
 termimad.workspace = true
 anyhow.workspace = true
+libc.workspace = true
+signal-hook.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

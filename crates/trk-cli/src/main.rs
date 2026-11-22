@@ -1002,7 +1002,7 @@ fn whoami(env: &Env) -> Result<Out> {
         "skill": skill::state(&env.root.join(skill::SKILL_DIR)),
         "default_type": "code-change",
         "issues": counts,
-        "check_running": lock.map(|(pid, host, started)| json!({"pid": pid, "host": host, "started_at": started})),
+        "check_running": lock.map(|(pid, host, started, pgid)| json!({"pid": pid, "host": host, "started_at": started, "pgid": pgid})),
     });
     Ok(Out::Data(data))
 }

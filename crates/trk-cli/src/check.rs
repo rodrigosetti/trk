@@ -5,9 +5,12 @@
 //! a note. Only one `trk check` runs at a time, so checks that merge never
 //! race each other.
 
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -18,7 +21,6 @@ use trk_core::ops::{CheckResult, CheckRun};
 
 use crate::env::{Env, git, hostname};
 use crate::render::{Out, until};
-use crate::run::pid_alive;
 
 pub struct CheckArgs {
     pub id: Option<String>,
@@ -30,32 +32,89 @@ pub struct CheckArgs {
 
 const WATCH_PAUSE: &str = "30s";
 
-/// Releases the check lock when a pass ends, however it ends.
+/// Owns both the queue lock and its current process group. Never release the
+/// durable ownership record until all live members of the group have stopped.
 struct Lock<'a> {
     env: &'a Env,
     actor: String,
     pid: i64,
+    child: Option<Child>,
+}
+
+impl Lock<'_> {
+    fn start(&mut self, cmd: &mut Command) -> std::io::Result<()> {
+        self.child = Some(cmd.spawn()?);
+        let child = self.child.as_mut().unwrap();
+        let pgid = i64::from(child.id());
+        // The shell waits on stdin. A crash before this commit closes the pipe
+        // without authorizing any check side effects; afterwards recovery sees
+        // the group even if this runner is killed before writing the token.
+        self.env
+            .store()
+            .and_then(|mut s| {
+                s.write(&self.actor, false, |c| {
+                    c.check_lock_group(self.pid, Some(pgid))
+                })
+            })
+            .map_err(std::io::Error::other)?;
+        child.stdin.take().unwrap().write_all(b"run\n")
+    }
+
+    fn finish(&mut self) -> std::io::Result<()> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(());
+        };
+        let pgid = child.id();
+        kill_group(pgid, libc::SIGTERM);
+        let grace = Instant::now();
+        loop {
+            child.try_wait()?;
+            if !group_alive(i64::from(pgid)) {
+                break;
+            }
+            if grace.elapsed() >= Duration::from_secs(2) {
+                kill_group(pgid, libc::SIGKILL);
+            }
+            // If cleanup cannot establish safety, leave the durable lock for
+            // recovery instead of ever starting another check.
+            if grace.elapsed() >= Duration::from_secs(5) {
+                return Err(std::io::Error::other("check process group did not stop"));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        child.wait()?;
+        self.env
+            .store()
+            .and_then(|mut s| s.write(&self.actor, false, |c| c.check_lock_group(self.pid, None)))
+            .map_err(std::io::Error::other)?;
+        self.child = None;
+        Ok(())
+    }
 }
 
 impl Drop for Lock<'_> {
     fn drop(&mut self) {
-        if let Ok(mut s) = self.env.store() {
+        if self.finish().is_ok()
+            && let Ok(mut s) = self.env.store()
+        {
             let _ = s.write(&self.actor, false, |c| c.check_lock_release(self.pid));
         }
     }
 }
 
-/// Take the lock, or say who holds it. A holder whose process is gone on
-/// this machine is replaced.
+/// Take the lock only when neither the previous runner nor its group survives.
+/// Unknown hosts or liveness failures conservatively retain ownership.
 fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, Value>> {
     let pid = i64::from(std::process::id());
     let host = hostname();
     let mut store = env.store()?;
     let held = store.write(actor, false, |c| {
-        if let Some((p, h, started)) = c.check_lock()? {
-            let here = h == host;
-            if p != pid && (!here || pid_alive(p)) {
-                return Ok(Some(json!({"pid": p, "host": h, "started_at": started})));
+        if let Some((p, h, started, pgid)) = c.check_lock()? {
+            let here = host.is_some() && h == host;
+            if !here || runner_alive(p) || pgid.is_some_and(group_alive) {
+                return Ok(Some(json!({
+                    "pid": p, "host": h, "started_at": started, "pgid": pgid,
+                })));
             }
         }
         c.check_lock_take(pid, host.as_deref())?;
@@ -67,6 +126,7 @@ fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, V
             env,
             actor: actor.to_string(),
             pid,
+            child: None,
         }),
     })
 }
@@ -98,11 +158,89 @@ fn place(env: &Env, issue: &Issue) -> std::result::Result<Place, String> {
     Ok(Place { cwd, repo, branch })
 }
 
-fn kill_group(pid: u32, signal: &str) {
-    let _ = Command::new("kill")
-        .args([signal, "--", &format!("-{pid}")])
-        .stderr(Stdio::null())
-        .status();
+fn kill_group(pgid: u32, signal: i32) {
+    // SAFETY: kill takes scalar arguments; a negative PID addresses the group.
+    unsafe { libc::kill(-(pgid as i32), signal) };
+}
+
+fn process_exists(pid: i32) -> bool {
+    // SAFETY: signal 0 probes existence without delivering a signal. Errors
+    // other than ESRCH (including permission errors) cannot establish safety.
+    (unsafe { libc::kill(pid, 0) }) == 0
+        || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+fn runner_alive(pid: i64) -> bool {
+    match i32::try_from(pid) {
+        Ok(pid) if pid > 0 => process_exists(pid),
+        _ => true,
+    }
+}
+
+fn group_alive(pgid: i64) -> bool {
+    let Ok(pgid) = i32::try_from(pgid) else {
+        return true;
+    };
+    if pgid <= 0 {
+        return true;
+    }
+    if !process_exists(-pgid) {
+        return false;
+    }
+    // Orphaned zombies cannot execute side effects, but kill(0) still sees
+    // them on systems whose init does not promptly reap adopted descendants.
+    let Ok(out) = Command::new("ps").args(["-axo", "pgid=,stat="]).output() else {
+        return true;
+    };
+    if !out.status.success() {
+        return true;
+    }
+    String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next().and_then(|s| s.parse::<i32>().ok()) == Some(pgid)
+            && !fields.next().is_some_and(|s| s.starts_with('Z'))
+    })
+}
+
+/// Signal handlers only set a flag; ordinary control flow owns all cleanup.
+struct Interrupt {
+    signal: Arc<AtomicUsize>,
+    handlers: Vec<signal_hook::SigId>,
+}
+
+impl Interrupt {
+    fn new() -> std::io::Result<Self> {
+        let mut interrupt = Self {
+            signal: Arc::new(AtomicUsize::new(0)),
+            handlers: Vec::with_capacity(3),
+        };
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            interrupt.handlers.push(signal_hook::flag::register_usize(
+                signal,
+                Arc::clone(&interrupt.signal),
+                signal as usize,
+            )?);
+        }
+        Ok(interrupt)
+    }
+
+    fn check(&self) -> std::io::Result<()> {
+        match self.signal.load(Ordering::Relaxed) {
+            0 => Ok(()),
+            signal => Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                format!("check runner interrupted by signal {signal}"),
+            )),
+        }
+    }
+}
+
+impl Drop for Interrupt {
+    fn drop(&mut self) {
+        for handler in self.handlers.drain(..) {
+            signal_hook::low_level::unregister(handler);
+        }
+    }
 }
 
 /// Run `sh -c check` in its own process group, with stdout and stderr
@@ -113,6 +251,8 @@ fn run_check(
     check: &str,
     p: &Place,
     timeout: Duration,
+    lock: &mut Lock<'_>,
+    interrupt: &Interrupt,
 ) -> std::io::Result<CheckRun> {
     let dir = env.checks_dir();
     std::fs::create_dir_all(&dir)?;
@@ -120,46 +260,47 @@ fn run_check(
     let out = std::fs::File::create(&log)?;
     let err = out.try_clone()?;
     let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg(check)
-        .current_dir(&p.cwd)
-        .stdin(Stdio::null())
-        .stdout(out)
-        .stderr(err)
-        .env("TRK_ISSUE", &issue.id)
-        .env("TRK_WORKTREE", &p.cwd)
-        .env("TRK_BRANCH", &p.branch)
-        .env("TRK_DIR", env.dir_env())
-        // The check is not an agent: it must not inherit a session's identity.
-        .env_remove("TRK_ACTOR")
-        .process_group(0);
+    // The gate prevents a crash between spawn and durable group registration
+    // from leaving an untracked command running. EOF means do not execute.
+    cmd.args([
+        "-c",
+        "IFS= read -r start || exit 125; [ \"$start\" = run ] || exit 125; exec sh -c \"$1\"",
+        "trk-check",
+        check,
+    ])
+    .current_dir(&p.cwd)
+    .stdin(Stdio::piped())
+    .stdout(out)
+    .stderr(err)
+    .env("TRK_ISSUE", &issue.id)
+    .env("TRK_WORKTREE", &p.cwd)
+    .env("TRK_BRANCH", &p.branch)
+    .env("TRK_DIR", env.dir_env())
+    // The check is not an agent: it must not inherit a session's identity.
+    .env_remove("TRK_ACTOR")
+    .process_group(0);
     match &p.repo {
         Some(r) => cmd.env("TRK_REPO", r),
         None => cmd.env_remove("TRK_REPO"),
     };
-    let mut child = cmd.spawn()?;
+    interrupt.check()?;
+    lock.start(&mut cmd)?;
     let started = Instant::now();
     let mut timed_out = false;
     let status = loop {
-        if let Some(st) = child.try_wait()? {
+        interrupt.check()?;
+        if let Some(st) = lock.child.as_mut().unwrap().try_wait()? {
             break Some(st);
         }
         if started.elapsed() >= timeout {
             timed_out = true;
-            kill_group(child.id(), "-TERM");
-            let grace = Instant::now();
-            while grace.elapsed() < Duration::from_secs(2) {
-                if child.try_wait()?.is_some() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            kill_group(child.id(), "-KILL");
-            let _ = child.wait();
             break None;
         }
         std::thread::sleep(Duration::from_millis(50));
     };
+    // Also stop background descendants after a successful shell exit.
+    lock.finish()?;
+    interrupt.check()?;
     let mut output = String::from_utf8_lossy(&std::fs::read(&log)?).to_string();
     let _ = std::fs::remove_file(&log);
     if timed_out {
@@ -177,7 +318,11 @@ fn run_check(
 
 /// One pass over the queue. `Err(holder)` in the inner result means another
 /// `trk check` is running.
-fn pass(env: &Env, a: &CheckArgs) -> Result<std::result::Result<Vec<Value>, Value>> {
+fn pass(
+    env: &Env,
+    a: &CheckArgs,
+    interrupt: &Interrupt,
+) -> Result<std::result::Result<Vec<Value>, Value>> {
     let actor = env.actor()?.to_string();
     let timeout = env.check_timeout()?;
     let mut store = env.store()?;
@@ -223,26 +368,35 @@ fn pass(env: &Env, a: &CheckArgs) -> Result<std::result::Result<Vec<Value>, Valu
     if queue.is_empty() {
         return Ok(Ok(vec![]));
     }
-    let _lock = match lock(env, &actor)? {
+    interrupt.check()?;
+    let mut lock = match lock(env, &actor)? {
         Ok(l) => l,
         Err(holder) => return Ok(Err(holder)),
     };
     let mut out = vec![];
     for i in &queue {
+        interrupt.check()?;
         let check = i.waiting_check.clone().unwrap_or_default();
         let started = Instant::now();
         let run = match place(env, i) {
-            Ok(p) => run_check(env, i, &check, &p, timeout).unwrap_or_else(|e| CheckRun {
-                exit: None,
-                timed_out: false,
-                output: format!("[trk] could not start the check: {e}\n"),
-            }),
+            Ok(p) => match run_check(env, i, &check, &p, timeout, &mut lock, interrupt) {
+                Ok(run) => run,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted || lock.child.is_some() => {
+                    return Err(e.into());
+                }
+                Err(e) => CheckRun {
+                    exit: None,
+                    timed_out: false,
+                    output: format!("[trk] could not start the check: {e}\n"),
+                },
+            },
             Err(why) => CheckRun {
                 exit: None,
                 timed_out: false,
                 output: format!("[trk] {why}\n"),
             },
         };
+        interrupt.check()?;
         let result = store.write(&actor, false, |c| c.check_record(&i.id, &check, &run))?;
         if matches!(result, CheckResult::Passed | CheckResult::Failed) {
             let message = if result == CheckResult::Passed {
@@ -340,12 +494,14 @@ fn busy_text(h: &Value) -> String {
 }
 
 pub fn check(env: &Env, a: CheckArgs) -> Result<Out> {
+    let interrupt = Interrupt::new()?;
     if let Some(pause) = &a.watch {
         let pause = parse_duration(pause.as_deref().unwrap_or(WATCH_PAUSE))?;
         let pause = Duration::from_secs(pause.as_secs().max(1) as u64);
         // Runs until interrupted; each result is printed as it happens.
         loop {
-            match pass(env, &a) {
+            interrupt.check()?;
+            match pass(env, &a, &interrupt) {
                 Ok(Ok(results)) => {
                     for r in &results {
                         println!("{}", line(r));
@@ -354,10 +510,14 @@ pub fn check(env: &Env, a: CheckArgs) -> Result<Out> {
                 Ok(Err(holder)) => eprintln!("{}", busy_text(&holder)),
                 Err(e) => eprintln!("error: {}", e.message()),
             }
-            std::thread::sleep(pause);
+            let until = Instant::now() + pause;
+            while Instant::now() < until {
+                interrupt.check()?;
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
     }
-    match pass(env, &a)? {
+    match pass(env, &a, &interrupt)? {
         Err(holder) => Ok(Out::Text(
             busy_text(&holder),
             json!({"busy": true, "holder": holder, "results": []}),

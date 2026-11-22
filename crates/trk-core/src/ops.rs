@@ -761,19 +761,21 @@ impl Ctx<'_> {
         Ok(v)
     }
 
-    /// The pid, host and start time of the running `trk check`, if any.
-    pub fn check_lock(&self) -> Result<Option<(i64, Option<String>, String)>> {
+    /// The runner pid, host, start time and active subprocess group, if any.
+    /// Ownership must remain until both the runner and its subprocess group are gone.
+    pub fn check_lock(&self) -> Result<Option<(i64, Option<String>, String, Option<i64>)>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT pid, host, started_at FROM check_lock WHERE id = 1",
+                "SELECT pid, host, started_at, pgid FROM check_lock WHERE id = 1",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?)
     }
 
-    /// Take the check lock, replacing whoever held it.
+    /// Take the check lock, replacing its holder and clearing its subprocess group.
+    /// The caller must first establish that the old holder and group are gone.
     pub fn check_lock_take(&self, pid: i64, host: Option<&str>) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO check_lock (id, pid, host, started_at) VALUES (1, ?1, ?2, ?3)",
@@ -782,6 +784,16 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// Set or clear the subprocess group only if `pid` still owns the lock.
+    pub fn check_lock_group(&self, pid: i64, pgid: Option<i64>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE check_lock SET pgid = ?1 WHERE id = 1 AND pid = ?2",
+            params![pgid, pid],
+        )?;
+        Ok(())
+    }
+
+    /// Release only the matching holder, after its subprocess group is gone.
     pub fn check_lock_release(&self, pid: i64) -> Result<()> {
         self.conn
             .execute("DELETE FROM check_lock WHERE id = 1 AND pid = ?1", [pid])?;

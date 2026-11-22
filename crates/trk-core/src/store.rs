@@ -188,7 +188,15 @@ fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<(
 }
 
 fn migrations() -> Vec<M<'static>> {
-    vec![M::up(include_str!("schema.sql"))]
+    vec![
+        M::up(include_str!("schema.sql")),
+        // Existing holders predate group tracking: retain unknown ownership
+        // rather than treating a dead runner as proof its command is gone.
+        M::up(
+            "ALTER TABLE check_lock ADD COLUMN pgid INTEGER;
+             UPDATE check_lock SET pgid = 0",
+        ),
+    ]
 }
 
 /// Issue id prefixes: a lowercase letter, then lowercase letters and digits.

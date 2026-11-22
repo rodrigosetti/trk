@@ -158,6 +158,25 @@ Three properties follow from that:
   output in the notes. A command that is missing or times out (`[check] timeout`, 10m) fails
   rather than waiting forever.
 
+`trk check` owns each check's process group as well as the queue lock. On shell exit,
+timeout, SIGINT, SIGTERM or SIGHUP, it stops remaining group members (SIGTERM, then
+SIGKILL after two seconds) and reaps the shell before releasing ownership. Interrupting
+the runner stops the pass/watch loop and leaves the interrupted issue waiting without
+recording a partial result. Checks must not detach from their process group.
+
+After SIGKILL or a runner crash, a new runner reports busy while the previous runner
+or any live member of its recorded group survives. Once both are gone, it recovers
+automatically; zombie processes do not block recovery. `trk whoami` shows
+`check_running.pid`, `.host` and `.pgid`. A different/unknown host or unavailable
+process information prevents automatic takeover. Inspect/stop surviving checks on
+the owning host before retrying; never delete the lock while a check can still run.
+
+Upgrading a database with an existing, untracked check marks its group as `0`
+(unknown), preventing automatic recovery. Stop pre-upgrade runners and their checks,
+verify none remain, then clear only that legacy lock with
+`sqlite3 .trk/trk.db 'DELETE FROM check_lock WHERE pgid = 0'` in the primary checkout
+(use the actual database path if overridden).
+
 A check is written by an agent and runs later, unattended, as you. `trk show` always prints it in
 full, and `trk check --dry-run` shows the queue before anything runs.
 

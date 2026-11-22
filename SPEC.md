@@ -368,7 +368,9 @@ migrates the database, and installs the agent skill at `.agents/skills/trk` (lin
 
 - Each connection is opened with `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON` and `busy_timeout=5000`.
 - Each mutating command is exactly one `BEGIN IMMEDIATE` transaction: sweep expired leases, validate, check claims, write rows, append events, commit. A command either happens fully or not at all.
-- A check runs outside any transaction; only taking the lock and recording the result are transactions.
+- A check runs outside any transaction; taking the lock, registering/clearing its process group and recording the result are separate transactions. A spawned shell waits for authorization over a pipe until its group is durably registered; EOF before authorization cannot execute the check.
+  The runner owns the shell/group and queue lock together. Shell exit, timeout and INT/TERM/HUP terminate remaining group members (TERM, then KILL after two seconds), reap the shell, then clear group ownership. Cleanup failures retain the lock. Runner interruption stops the queue/watch loop and leaves the interrupted issue waiting without recording a partial result.
+  Crash recovery replaces a same-host holder only after both its runner and all live group members are gone; zombies do not count. Unknown hosts/liveness fail closed. Migrated pre-group holders use `pgid = 0` for unknown ownership and require manual recovery after all old checks have stopped. Checks must not escape their process group; they are not sandboxed.
 - Read commands use deferred transactions, so they never wait on writers under WAL.
 - Expired claim leases are swept at the start of every write transaction: one indexed `UPDATE`, so no daemon is needed.
 - The schema is applied on open, keyed on SQLite's `user_version`. `trk backup <path>` uses `VACUUM INTO` to write a consistent copy.

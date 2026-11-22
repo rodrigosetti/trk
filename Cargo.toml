@@ -31,6 +31,8 @@ owo-colors = "4.4"
 comfy-table = "8"
 termimad = "0.35"
 anyhow = "1"
+libc = "0.2"
+signal-hook = "0.3"
 assert_cmd = "2.2"
 insta = { version = "1.49", features = ["json"] }
 tempfile = "3"

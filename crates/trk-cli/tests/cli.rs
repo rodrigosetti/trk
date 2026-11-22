@@ -1,6 +1,7 @@
 //! End-to-end tests that run the `trk` binary.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
 
@@ -548,41 +549,297 @@ fn a_check_that_runs_too_long_is_killed() {
 #[test]
 fn only_one_check_runs_at_a_time() {
     let e = Env::new();
-    let id = e.waiting("slow merge", "sleep 2; exit 75");
-    let mut first = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"))
-        .current_dir(e.repo())
-        .args(["--json", "check"])
-        .env("HOME", e.dir.path().join("home"))
-        .env("TRK_ACTOR", "human:alice@example.com")
-        .env("TRK_NOW", "2026-11-20T10:00:00Z")
-        .stdout(Stdio::piped())
-        .spawn()
+    let id = e.waiting(
+        "slow merge",
+        "echo $$ > \"$TRK_REPO/check-shell\"; \
+         while [ ! -f \"$TRK_REPO/check-release\" ]; do sleep 0.02; done; exit 75",
+    );
+    let mut first = CheckRunner::spawn(&e);
+    let pgid = first.ready();
+
+    // A broken lock must fail through a side effect, not hang a second runner
+    // on the first command's readiness gate.
+    e.ok(&[
+        "wait",
+        &id,
+        "-c",
+        "echo second > \"$TRK_REPO/check-second\"; exit 75",
+    ]);
+    assert_check_busy(&e, first.child.id(), pgid);
+    assert!(!e.repo().join("check-second").exists());
+    std::fs::write(e.repo().join("check-release"), "").unwrap();
+    assert!(first.wait().success());
+    assert_eq!(e.ok(&["whoami"])["check_running"], Value::Null);
+    assert_eq!(e.ok(&["check", "--all"])["results"][0]["result"], "retry");
+    assert!(e.repo().join("check-second").exists());
+}
+
+/// A runner and every check group it starts are cleaned up even on assertion
+/// failure. The shell publishes its group before starting any descendants.
+struct CheckRunner {
+    child: std::process::Child,
+    group_file: PathBuf,
+}
+
+impl CheckRunner {
+    fn spawn(e: &Env) -> Self {
+        let child = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"))
+            .current_dir(e.repo())
+            .args(["--json", "check", "--all"])
+            .env("HOME", e.dir.path().join("home"))
+            .env("TRK_ACTOR", "human:alice@example.com")
+            .env("TRK_NOW", "2026-11-20T10:00:00Z")
+            .env_remove("TRK_FORMAT")
+            .env_remove("TRK_DIR")
+            .process_group(0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        Self {
+            child,
+            group_file: e.repo().join("check-shell"),
+        }
+    }
+
+    fn ready(&self) -> i64 {
+        let mut pgid = None;
+        check_wait_until("the check shell to publish its group", || {
+            pgid = std::fs::read_to_string(&self.group_file)
+                .ok()
+                .and_then(|s| s.trim().parse().ok());
+            pgid.is_some()
+        });
+        pgid.unwrap()
+    }
+
+    fn signal(&self, signal: &str) {
+        assert!(check_signal(i64::from(self.child.id()), signal));
+    }
+
+    fn wait(&mut self) -> std::process::ExitStatus {
+        let mut status = None;
+        check_wait_until("the check runner to exit", || {
+            status = self.child.try_wait().unwrap();
+            status.is_some()
+        });
+        status.unwrap()
+    }
+}
+
+impl Drop for CheckRunner {
+    fn drop(&mut self) {
+        // Stop the runner first so cleanup cannot race a new group being
+        // spawned before the shell has published its readiness file.
+        check_signal(i64::from(self.child.id()), "-STOP");
+        if let Ok(group) = std::fs::read_to_string(&self.group_file)
+            && let Ok(pgid) = group.trim().parse::<i64>()
+        {
+            check_signal(-pgid, "-KILL");
+        }
+        // A failed startup can leave a child blocked before its group is
+        // persisted or its readiness file exists. The stopped runner cannot
+        // spawn any more children while we discover those groups.
+        if let Ok(output) = StdCommand::new("ps")
+            .args(["-ax", "-o", "ppid=,pgid="])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let mut columns = line.split_whitespace();
+                let parent = columns.next().and_then(|s| s.parse::<u32>().ok());
+                let group = columns.next().and_then(|s| s.parse::<i64>().ok());
+                if parent == Some(self.child.id())
+                    && let Some(group) = group
+                {
+                    check_signal(-group, "-KILL");
+                }
+            }
+        }
+        // Also cover a failure before the shell's readiness file is written.
+        check_signal(-i64::from(self.child.id()), "-KILL");
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn check_signal(target: i64, signal: &str) -> bool {
+    StdCommand::new("kill")
+        .args([signal, "--", &target.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn check_wait_until(description: &str, mut ready: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {description}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn check_group_alive(pgid: i64) -> bool {
+    let output = StdCommand::new("ps")
+        .args(["-ax", "-o", "pgid=,stat="])
+        .output()
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .any(|line| {
+            let mut columns = line.split_whitespace();
+            columns.next().and_then(|s| s.parse::<i64>().ok()) == Some(pgid)
+            // An orphan zombie cannot execute a check. Do not wait on init's
+            // platform-dependent reaping schedule.
+            && columns.next().is_some_and(|state| !state.starts_with('Z'))
+        })
+}
+
+fn assert_check_busy(e: &Env, pid: u32, pgid: i64) {
     let second = e.ok(&["check", "--all"]);
     assert_eq!(second["busy"], true, "{second:#}");
     assert!(second["results"].as_array().unwrap().is_empty());
-    assert!(e.ok(&["whoami"])["check_running"]["pid"].is_number());
-    assert!(first.wait().unwrap().success());
-    // The lock is released, and a run that died holding it does not keep it.
+    assert_eq!(second["holder"]["pid"], pid);
+    assert_eq!(second["holder"]["pgid"], pgid);
+    let holder = &e.ok(&["whoami"])["check_running"];
+    assert_eq!(holder["pid"], pid);
+    assert_eq!(holder["pgid"], pgid);
+}
+
+/// The descendant handles TERM without terminating, forcing group-wide
+/// escalation. Its readiness file is published only after installing the trap.
+const STUBBORN_CHECK: &str = "\
+    echo $$ > \"$TRK_REPO/check-shell\"; \
+    sh -c 'trap \":\" TERM; echo $$ > \"$TRK_REPO/check-child\"; \
+        while [ ! -f \"$TRK_REPO/check-child-release\" ]; do sleep 0.02; done' & \
+    child=$!; wait \"$child\"; exit 75";
+
+fn check_interruption(signal: &str) {
+    let e = Env::new();
+    let id = e.waiting("interrupted check", STUBBORN_CHECK);
+    let before = e.ok(&["show", &id]);
+    let log_before = e.ok(&["log", &id]);
+    let mut runner = CheckRunner::spawn(&e);
+    let pgid = runner.ready();
+    check_wait_until("the TERM-resistant descendant to start", || {
+        std::fs::read_to_string(e.repo().join("check-child"))
+            .is_ok_and(|s| s.trim().parse::<i64>().is_ok())
+    });
+    runner.signal(signal);
+    runner.wait();
+    assert!(
+        !check_group_alive(pgid),
+        "a check descendant survived {signal}"
+    );
+    let after = e.ok(&["show", &id]);
+    assert_eq!(after["state"], "waiting");
+    assert_eq!(after["waiting"], before["waiting"]);
+    assert_eq!(after["notes"], before["notes"]);
+    assert_eq!(e.ok(&["log", &id]), log_before);
     assert_eq!(e.ok(&["whoami"])["check_running"], Value::Null);
-    let mut dying = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"))
-        .current_dir(e.repo())
-        .args(["--json", "check", "--all"])
-        .env("HOME", e.dir.path().join("home"))
-        .env("TRK_ACTOR", "human:alice@example.com")
-        .env("TRK_NOW", "2026-11-20T10:00:00Z")
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(700));
-    dying.kill().unwrap();
-    dying.wait().unwrap();
-    assert!(e.ok(&["whoami"])["check_running"]["pid"].is_number());
-    e.ok(&["wait", &id, "-c", "exit 75"]);
-    let after = e.ok(&["check", "--all"]);
-    assert_eq!(after["busy"], false, "{after:#}");
-    assert_eq!(after["results"][0]["result"], "retry");
+
+    e.ok(&[
+        "wait",
+        &id,
+        "-c",
+        "echo second > \"$TRK_REPO/check-second\"; exit 75",
+    ]);
+    assert_eq!(e.ok(&["check", "--all"])["results"][0]["result"], "retry");
+    assert!(e.repo().join("check-second").exists());
+}
+
+#[test]
+fn check_sigint_cleans_up_without_recording_a_result() {
+    check_interruption("-INT");
+}
+
+#[test]
+fn check_sigterm_cleans_up_without_recording_a_result() {
+    check_interruption("-TERM");
+}
+
+#[test]
+fn check_sighup_cleans_up_without_recording_a_result() {
+    check_interruption("-HUP");
+}
+
+#[test]
+fn check_sigkill_keeps_ownership_until_the_old_group_is_gone() {
+    let e = Env::new();
+    let id = e.waiting("crashed check", STUBBORN_CHECK);
+    let before = e.ok(&["show", &id]);
+    let mut runner = CheckRunner::spawn(&e);
+    let pgid = runner.ready();
+    check_wait_until("the crash survivor to start", || {
+        std::fs::read_to_string(e.repo().join("check-child"))
+            .is_ok_and(|s| s.trim().parse::<i64>().is_ok())
+    });
+    runner.signal("-KILL");
+    assert!(!runner.wait().success());
+    assert!(check_group_alive(pgid));
+    let after = e.ok(&["show", &id]);
+    assert_eq!(after["state"], "waiting");
+    assert_eq!(after["waiting"], before["waiting"]);
+
+    e.ok(&[
+        "wait",
+        &id,
+        "-c",
+        "echo second > \"$TRK_REPO/check-second\"; exit 75",
+    ]);
+    assert_check_busy(&e, runner.child.id(), pgid);
+    assert!(!e.repo().join("check-second").exists());
+
+    // Let the original shell reap its descendant itself. Recovery must not
+    // depend on how quickly init happens to reap orphaned background children.
+    std::fs::write(e.repo().join("check-child-release"), "").unwrap();
+    check_wait_until("the crashed runner's check group to finish", || {
+        !check_group_alive(pgid)
+    });
+    let recovered = e.ok(&["check", "--all"]);
+    assert_eq!(recovered["busy"], false, "{recovered:#}");
+    assert_eq!(recovered["results"][0]["result"], "retry");
+    assert!(e.repo().join("check-second").exists());
+    assert_eq!(e.ok(&["whoami"])["check_running"], Value::Null);
+}
+
+#[test]
+fn check_shell_exit_cleans_up_surviving_descendants_before_release() {
+    let e = Env::new();
+    let check = STUBBORN_CHECK.replace(
+        "child=$!; wait \"$child\"; exit 75",
+        "while [ ! -f \"$TRK_REPO/check-release\" ]; do sleep 0.02; done; exit 75",
+    );
+    let id = e.waiting("background check", &check);
+    let mut runner = CheckRunner::spawn(&e);
+    let pgid = runner.ready();
+    check_wait_until("the background descendant to start", || {
+        std::fs::read_to_string(e.repo().join("check-child"))
+            .is_ok_and(|s| s.trim().parse::<i64>().is_ok())
+    });
+    e.ok(&[
+        "wait",
+        &id,
+        "-c",
+        "echo second > \"$TRK_REPO/check-second\"; exit 75",
+    ]);
+    assert_check_busy(&e, runner.child.id(), pgid);
+    assert!(!e.repo().join("check-second").exists());
+    std::fs::write(e.repo().join("check-release"), "").unwrap();
+    assert!(runner.wait().success());
+    assert!(
+        !check_group_alive(pgid),
+        "the background check survived release"
+    );
+    assert_eq!(e.ok(&["show", &id])["state"], "waiting");
+    assert_eq!(e.ok(&["whoami"])["check_running"], Value::Null);
+    assert_eq!(e.ok(&["check", "--all"])["results"][0]["result"], "retry");
+    assert!(e.repo().join("check-second").exists());
 }
 
 #[test]
