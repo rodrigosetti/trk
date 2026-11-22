@@ -445,6 +445,9 @@ fn main() {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("trk mcp: {e:#}");
+                if let Some(hint) = e.downcast_ref::<Error>().and_then(Error::hint) {
+                    eprintln!("hint: {hint}");
+                }
                 1
             }
         };

@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use rusqlite_migration::{HookError, M, Migrations};
+use rusqlite_migration::{HookError, M, MigrationDefinitionError, Migrations};
 use serde_json::{Value, json};
 
 use crate::error::{Code, Error, Result, bad_args, not_found};
@@ -107,7 +107,7 @@ impl Store {
                 },
             ),
         ];
-        Migrations::from_slice(&migrations).to_latest(&mut conn)?;
+        migrate(&mut conn, path, &migrations)?;
         Ok(Store { conn, opts })
     }
 
@@ -174,6 +174,38 @@ impl Store {
         self.conn
             .execute("VACUUM INTO ?1", params![path.to_string_lossy()])?;
         Ok(())
+    }
+}
+
+fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<()> {
+    match Migrations::from_slice(migrations).to_latest(conn) {
+        Err(rusqlite_migration::Error::MigrationDefinition(
+            MigrationDefinitionError::DatabaseTooFarAhead,
+        )) => {
+            let database_version: u32 =
+                conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            Err(Error::new(
+                Code::NewerDatabase,
+                format!(
+                    "{} has SQLite migration version {database_version}, but this trk supports \
+                     only up to {}; the database was opened by a newer trk",
+                    path.display(),
+                    migrations.len(),
+                ),
+            )
+            .with_detail("database", path.to_string_lossy().as_ref())
+            .with_detail("database_version", database_version)
+            .with_detail("supported_version", migrations.len())
+            .with_hint(
+                "upgrade trk, then restart the harness's trk MCP server using the upgraded \
+                 executable and the same database/config, issue and actor; reconnect and call \
+                 get_task before resuming. Replacing the executable does not upgrade a running \
+                 server. If the claim is gone or the issue is blocked, preserve the handoff for \
+                 the human; do not bypass claim/dependency rules. Do not downgrade or reset \
+                 the database.",
+            ))
+        }
+        result => result.map_err(Into::into),
     }
 }
 
@@ -767,5 +799,95 @@ impl Ctx<'_> {
             params![id, patch.to_string()],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::{ClaimOpts, NewIssue};
+    use crate::view::With;
+
+    #[test]
+    fn older_migrations_refuse_newer_database_without_losing_handoff() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let actor = "agent:omp:upgrade";
+        let opts = StoreOpts {
+            now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
+            ..Default::default()
+        };
+        let mut store = Store::open(&path, opts.clone()).unwrap();
+        let id = store
+            .write("human:alice@example.com", false, |c| {
+                c.project_add("orch", "Orchestra")?;
+                c.create(NewIssue {
+                    project: "orch".into(),
+                    title: "Preserve this issue".into(),
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+        store
+            .write(actor, false, |c| c.claim(&id, ClaimOpts::default()))
+            .unwrap();
+        let before = store.read(None, |c| c.show(&id, With::default())).unwrap();
+        let schema = |conn: &Connection| {
+            conn.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY type, name")
+                .unwrap()
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let before_schema = schema(store.conn());
+        drop(store);
+
+        // A still-running executable retains only the first migration after
+        // another executable has advanced this same database to version 2.
+        let mut stale = Connection::open(&path).unwrap();
+        let error = migrate(&mut stale, &path, &[M::up(include_str!("schema.sql"))]).unwrap_err();
+        assert_eq!(error.code(), Code::NewerDatabase);
+        assert_eq!(error.to_json()["database_version"], 2);
+        assert_eq!(error.to_json()["supported_version"], 1);
+        assert_eq!(schema(&stale), before_schema);
+        assert_eq!(
+            stale
+                .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+                .unwrap(),
+            2
+        );
+        drop(stale);
+
+        // Reopen with the compatible migration set, not a downgraded DB.
+        let mut recovered = Store::open(&path, opts).unwrap();
+        assert_eq!(
+            recovered
+                .read(None, |c| c.show(&id, With::default()))
+                .unwrap(),
+            before
+        );
+        recovered
+            .write(actor, false, |c| {
+                c.unclaim(&id, false, Some("Recovered handoff"))
+            })
+            .unwrap();
+        assert_eq!(
+            recovered.read(None, |c| c.issue(&id)).unwrap().state,
+            State::Open
+        );
+        assert!(
+            recovered
+                .read(None, |c| c.notes(&id))
+                .unwrap()
+                .iter()
+                .any(|n| n["body"] == "Recovered handoff")
+        );
     }
 }
