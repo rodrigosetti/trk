@@ -1399,3 +1399,215 @@ fn pretty_priority_and_state_labels_are_readable_without_color() {
     assert!(!json.stdout.contains(&0x1b));
     serde_json::from_slice::<Value>(&json.stdout).unwrap();
 }
+
+/// Stateful Herdr boundary: names survive commands just as user renames do.
+struct WaitingUi {
+    e: Env,
+    bin: PathBuf,
+}
+
+impl WaitingUi {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+
+        let e = Env::new();
+        let bin = e.dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        for (name, script) in [
+            (
+                "herdr-app",
+                r#"#!/bin/sh
+set -eu
+cd "$TRK_TEST_UI"
+case "$1" in
+ls)
+    [ "$TRK_TEST_UI_FAILURE" != unavailable ] || exit 1
+    if [ "$TRK_TEST_UI_FAILURE" = missing ]; then
+        printf '{"spaces":[]}'
+    else
+        printf '{"spaces":[
+          {"id":"unrelated","name":"Reviewed title","tabs":[{"terminals":[{"terminal":"other"}]}]},
+          {"id":"origin","name":"%s","tabs":[{"terminals":[{"terminal":"exact-origin"}]}]},
+          {"id":"replacement","name":"Replacement","tabs":[{"terminals":[{"terminal":"new-session"}]}]}
+        ]}' "$(cat space-name)"
+    fi
+    ;;
+do)
+    [ "$2" = space.rename ] && [ "$3" = --id ] && [ "$4" = origin ]
+    [ "$5" = --name ]
+    [ "$TRK_TEST_UI_FAILURE" != rename ] || exit 1
+    printf '%s' "$6" > space-name
+    printf 'renamed\n' >> renames
+    ;;
+*) exit 1 ;;
+esac
+"#,
+            ),
+            (
+                "hc",
+                r#"#!/bin/sh
+set -eu
+[ "$1" = send ]
+printf '%s\n%s\n' "$2" "$3" >> "$TRK_TEST_UI/messages"
+"#,
+            ),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(e.dir.path().join("space-name"), "Reviewed title").unwrap();
+        Self { e, bin }
+    }
+
+    fn claim(&self, id: &str, terminal: &str, alive: bool) {
+        let mut store = trk_core::Store::open(
+            &self.e.trk_dir().join("trk.db"),
+            trk_core::StoreOpts {
+                now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let actor = format!("agent:omp:{id}-{terminal}");
+        store
+            .write(&actor, false, |c| {
+                c.claim(
+                    id,
+                    trk_core::ops::ClaimOpts {
+                        terminal: Some(terminal.into()),
+                        ..Default::default()
+                    },
+                )?;
+                let meta = if alive {
+                    json!({"mcp_pid": std::process::id()})
+                } else {
+                    json!({"mcp_exited_at": "2026-11-20T10:00:00Z"})
+                };
+                c.patch_actor_meta(&actor, meta)
+            })
+            .unwrap();
+    }
+
+    fn waiting(&self, check: &str, alive: bool) -> String {
+        let id = self.e.create(&["Issue title"]);
+        self.claim(&id, "exact-origin", alive);
+        self.e.ok(&["wait", &id, "--force", "-c", check]);
+        id
+    }
+
+    fn check(&self, id: &str, failure: &str) -> Value {
+        let path = std::env::join_paths(
+            std::iter::once(self.bin.clone())
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let out = self
+            .e
+            .cmd()
+            .env("PATH", path)
+            .env("TRK_TEST_UI", self.e.dir.path())
+            .env("TRK_TEST_UI_FAILURE", failure)
+            .args(["--json", "check", id])
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(out.status.success(), "{v:#}");
+        v["data"]["results"][0].clone()
+    }
+
+    fn text(&self, name: &str) -> String {
+        let path = self.e.dir.path().join(name);
+        if !path.exists() {
+            return String::new();
+        }
+        std::fs::read_to_string(path).unwrap()
+    }
+}
+
+#[test]
+fn waiting_check_marks_only_the_origin_space_once_and_preserves_notifications() {
+    let ui = WaitingUi::new();
+    let id = ui.waiting("exit 0", true);
+    let replacement = ui.e.create(&["Replacement session"]);
+    ui.claim(&replacement, "new-session", true);
+
+    let result = ui.check(&id, "");
+    assert_eq!(result["result"], "passed");
+    assert_eq!(result["state"], "closed");
+    assert_eq!(ui.e.ok(&["show", &id])["close_reason"], "done");
+    assert_eq!(ui.text("space-name"), "Reviewed title [closed]");
+    let messages = ui.text("messages");
+    assert!(messages.starts_with("exact-origin\n"), "{messages}");
+    assert!(messages.contains("waiting check passed"), "{messages}");
+    assert_eq!(ui.e.ok(&["show", &replacement])["state"], "claimed");
+
+    ui.e.ok(&["reopen", &id]);
+    ui.claim(&id, "exact-origin", true);
+    ui.e.ok(&["wait", &id, "--force", "-c", "exit 0"]);
+    assert_eq!(ui.check(&id, "")["state"], "closed");
+    assert_eq!(ui.text("space-name"), "Reviewed title [closed]");
+    assert_eq!(ui.text("renames"), "renamed\n");
+}
+
+#[test]
+fn failed_and_retrying_waiting_checks_do_not_mark_spaces_closed() {
+    for (exit, result, state) in [(1, "failed", "open"), (75, "retry", "waiting")] {
+        let ui = WaitingUi::new();
+        let id = ui.waiting(&format!("exit {exit}"), true);
+        let out = ui.check(&id, "");
+        assert_eq!(out["result"], result);
+        assert_eq!(out["state"], state);
+        assert_eq!(ui.text("space-name"), "Reviewed title");
+        assert_eq!(ui.text("renames"), "");
+        let messages = ui.text("messages");
+        if exit == 1 {
+            assert!(messages.starts_with("exact-origin\n"), "{messages}");
+            assert!(messages.contains("waiting check failed"), "{messages}");
+        } else {
+            assert_eq!(messages, "");
+        }
+    }
+}
+
+#[test]
+fn waiting_check_ui_and_message_failures_are_independent_and_nonfatal() {
+    for mode in [
+        "dead",
+        "no-send",
+        "send",
+        "rename",
+        "unavailable",
+        "missing",
+        "headless",
+    ] {
+        let ui = WaitingUi::new();
+        match mode {
+            "no-send" => ui.e.set_config(
+                "send       = [\"hc\", \"send\", \"{name}\", \"{text}\"]",
+                "",
+            ),
+            "send" => ui.e.set_config(
+                "send       = [\"hc\",",
+                "send       = [\"missing-send-program\",",
+            ),
+            "headless" => ui.e.set_config("herdr      = true", "herdr      = false"),
+            _ => {}
+        }
+        let id = ui.waiting("exit 0", mode != "dead");
+        assert_eq!(ui.check(&id, mode)["state"], "closed", "{mode}");
+        assert_eq!(ui.e.ok(&["show", &id])["state"], "closed", "{mode}");
+        let renamed = matches!(mode, "dead" | "no-send" | "send");
+        assert_eq!(
+            ui.text("space-name"),
+            if renamed {
+                "Reviewed title [closed]"
+            } else {
+                "Reviewed title"
+            },
+            "{mode}"
+        );
+        let notified = matches!(mode, "rename" | "headless");
+        assert_eq!(!ui.text("messages").is_empty(), notified, "{mode}");
+    }
+}
