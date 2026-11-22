@@ -368,6 +368,7 @@ When `--project` is not given, the CLI runs `git rev-parse --show-toplevel` and 
 - Read commands use deferred transactions, so they never wait on writers under WAL.
 - Expired claim leases are swept at the start of every write transaction: one indexed `UPDATE`, so no daemon is needed.
 - The schema is applied on open, keyed on SQLite's `user_version`. `trk backup <path>` uses `VACUUM INTO` to write a consistent copy.
+- A database ahead of the executable's compiled migration set is refused without downgrading or resetting it: `newer_database` (exit 1), with `database`, `database_version` (SQLite `user_version`), `supported_version` and a recovery hint. Active MCP sessions must restart/reconnect using a compatible executable with the same session identity and database/config; there is no automatic hot upgrade. Recovery does not reclaim issues or bypass authorization/dependencies; see README's active-session upgrade procedure.
 - A database written by the earlier six-type design is refused with `old_database`. There is no migration; `scripts/import-v1.sh` recreates an export of its open issues.
 - The preceding current-model database migrates persisted issue agents into generated `migrated-agent-<hex>` types, where `<hex>` is the lowercase hexadecimal encoding of the agent's UTF-8 bytes. Explicit assignments retain their agent; NULL assignments capture the old `[run].default_agent` or `implementer` when absent. The issue's required `type` replaces `agent` with no CLI/API aliases or compatibility shims. Claim `agent` remains the actual launched agent, and lifecycle/check behavior is unchanged.
 
@@ -573,7 +574,7 @@ In JSON mode, errors are written to stdout in the same envelope:
 | Exit | Meaning | Codes |
 | --- | --- | --- |
 | 0 | OK |  |
-| 1 | Internal error | `internal`, `db_corrupt`, `old_database` |
+| 1 | Internal/compatibility error | `internal`, `db_corrupt`, `old_database`, `newer_database` |
 | 2 | Usage error | `bad_args`, `bad_query` |
 | 3 | Not found | `not_found`, `ambiguous_id`, `unknown_repo` |
 | 4 | Validation failed | `invalid_field`, `invalid_state`, `cycle`, `config_invalid` |

@@ -47,6 +47,7 @@ pub enum Code {
     Cycle,
     ConfigInvalid,
     OldDatabase,
+    NewerDatabase,
     ClaimedByOther,
     NotClaimant,
     Busy,
@@ -69,6 +70,7 @@ impl Code {
             Code::Cycle => "cycle",
             Code::ConfigInvalid => "config_invalid",
             Code::OldDatabase => "old_database",
+            Code::NewerDatabase => "newer_database",
             Code::ClaimedByOther => "claimed_by_other",
             Code::NotClaimant => "not_claimant",
             Code::Busy => "busy",
@@ -78,7 +80,7 @@ impl Code {
 
     pub fn exit_code(self) -> i32 {
         match self {
-            Code::Internal | Code::DbCorrupt | Code::OldDatabase => 1,
+            Code::Internal | Code::DbCorrupt | Code::OldDatabase | Code::NewerDatabase => 1,
             Code::BadArgs | Code::BadQuery => 2,
             Code::NotFound | Code::AmbiguousId | Code::UnknownRepo => 3,
             Code::InvalidField | Code::InvalidState | Code::Cycle | Code::ConfigInvalid => 4,

@@ -31,6 +31,40 @@ binary, never overwrites your config, lists the default-config files in `seed/` 
 yours, and runs `trk agent check`. `trk --version` prints the commit the binary was built from.
 Running agent sessions keep the binary they started with.
 
+### Active sessions during upgrades
+
+Opening the shared database with a newer trk can apply forward schema migrations. An older,
+already-running MCP server cannot use a schema newer than its compiled migration set. It returns
+`newer_database`, with the database path, `database_version` (SQLite `user_version`) and
+`supported_version`, plus restart guidance. These numbers are **not** the JSON envelope's
+`schema_version`. The database is not downgraded or reset. Binaries predating this error may
+instead return the internal rusqlite_migration “migration number that is too high” error;
+the recovery is the same.
+
+To avoid interrupted tools and lease renewal, finish active sessions before a schema-changing
+upgrade. Otherwise:
+
+1. Preserve uncommitted work and handoff text. Have the human compare the installed
+   `trk --version` and `trk whoami --json` with the harness's MCP launch command and its
+   `TRK_DB`/`TRK_CONFIG` (for omp, the worktree's `.omp/mcp.json`). Confirm the executable and
+   database/config paths match; a working CLI alone does not establish that.
+2. Install a trk that supports the database, then restart the harness's trk MCP connection
+   using that executable. Keep the original issue, actor, agent, database/config and trust
+   settings. Restart/reconnect through the harness if supported; otherwise preserve the
+   session context and restart the harness with its existing MCP configuration.
+   trk does not hot-reload migrations or automatically replace/re-exec a running MCP server.
+3. Call `get_task` after reconnecting. Reads work without an active claim, but writes and
+   `hand_back` still require legitimate ownership. If the original claim remains active,
+   resume or hand back normally. Lease renewal cannot access an incompatible database, so
+   do not assume a long-interrupted session still owns its issue.
+4. If the claim was released, expired or taken over, stop agent writes. The human can record
+   preserved handoff text with their own identity (`trk note <ID> ...`). If further work is
+   needed, they can end the stale session and use `trk run <ID>` once the issue is open and
+   ready. If blocked, resolve its blockers first; do not steal a claim, remove dependencies,
+   impersonate another actor or edit the database merely to recover a handoff.
+
+Restarting an MCP server does not claim an issue or bypass dependency/ownership checks.
+
 A database written by the earlier six-type trk is refused (`old_database`): there is no migration.
 Export its open issues with the old binary and recreate them with
 [`scripts/import-v1.sh`](scripts/import-v1.sh), which documents both steps.

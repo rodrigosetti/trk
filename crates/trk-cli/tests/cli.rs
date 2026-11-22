@@ -1156,6 +1156,114 @@ fn repository_routing_and_agent_prompts_require_trust() {
     );
 }
 
+#[test]
+fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
+    let e = Env::new();
+    let id = e.create(&["Preserve active session"]);
+    let spec = e.ok(&["run", &id, "--harness", "omp", "--print"]);
+    let path = e.dir.path().join("trk.db");
+    let opts = trk_core::StoreOpts {
+        now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
+        ..Default::default()
+    };
+    let server = trk_mcp::TrkServer::new(trk_mcp::McpArgs {
+        db: path.clone(),
+        config: trk_core::config::ConfigDir {
+            path: e.dir.path().join("config"),
+        },
+        opts: opts.clone(),
+        issue: id.clone(),
+        actor: spec["actor"].as_str().unwrap().into(),
+        agent: "implementer".into(),
+        trust_repo: false,
+    })
+    .unwrap();
+    let (ok, before) = server.call_sync("get_task", json!({}));
+    assert!(ok, "{before}");
+    let store = trk_core::Store::open(&path, opts).unwrap();
+    let current: u32 = store
+        .conn()
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    let future = current + 1;
+    // A deterministic additive future migration while the MCP stays alive.
+    store
+        .conn()
+        .execute_batch(&format!(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE future_data (body TEXT NOT NULL);
+             INSERT INTO future_data VALUES ('preserve future data');
+             PRAGMA user_version = {future};
+             COMMIT;"
+        ))
+        .unwrap();
+    for (tool, args) in [
+        ("get_task", json!({})),
+        ("hand_back", json!({"note": "must not be written"})),
+    ] {
+        let (ok, error) = server.call_sync(tool, args);
+        assert!(!ok, "{error}");
+        assert_eq!(error["code"], "newer_database");
+        assert_eq!(error["database"], path.to_str().unwrap());
+        assert_eq!(error["database_version"], future);
+        assert_eq!(error["supported_version"], current);
+        let hint = error["hint"].as_str().unwrap();
+        assert!(hint.contains("restart") && hint.contains("MCP") && hint.contains("get_task"));
+    }
+    e.err(&["show", &id], 1, "newer_database");
+    let startup = e
+        .cmd()
+        .args([
+            "mcp",
+            "--issue",
+            &id,
+            "--actor",
+            spec["actor"].as_str().unwrap(),
+            "--agent",
+            "implementer",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(startup.status.code(), Some(1));
+    assert!(startup.stdout.is_empty(), "MCP stdout is protocol-only");
+    let stderr = String::from_utf8(startup.stderr).unwrap();
+    assert!(stderr.contains("SQLite migration version"), "{stderr}");
+    assert!(
+        stderr.contains("restart") && stderr.contains("MCP"),
+        "{stderr}"
+    );
+    let after = store
+        .read(None, |c| {
+            c.show(
+                &id,
+                trk_core::view::With {
+                    deps: true,
+                    notes: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    assert_eq!(after["claim"], before["claim"]);
+    assert_eq!(after["state"], "claimed");
+    assert_eq!(after["notes"], before["notes"]);
+    assert_eq!(
+        store
+            .conn()
+            .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+            .unwrap(),
+        future
+    );
+    assert_eq!(
+        store
+            .conn()
+            .query_row("SELECT body FROM future_data", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "preserve future data"
+    );
+}
+
 /// Talk to `trk mcp` over stdio like a harness would: the session ends by
 /// waiting on a check that merges its branch, and `trk check` lands it.
 #[test]
