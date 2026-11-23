@@ -358,6 +358,36 @@ contain it, so those sessions do not see it. `trk install` and `trk run` warn wh
 tracks the skill anyway; the omp profile also hides it with a per-session `--config` overlay
 (`skills.ignoredSkills: [trk]`), and the skill itself tells an agent that has trk MCP tools to stop.
 
+## Herdr panel
+
+Where the [Herdr](https://herdr.dev) app is set up (`~/.config/herdr-app` exists), `trk install`
+also installs a Herdr mod (from [`herdr/mods/trk/`](herdr/mods/trk/main.js), embedded in the
+binary): the dashboard as a native panel. It reads `trk dashboard --json`, the snapshot the
+terminal dashboard draws, and every button runs `trk` itself, so both behave the same.
+
+```sh
+herdr-app do pane.split --direction right --mod trk    # beside the focused pane
+herdr-app do tab.new --mod trk                          # as its own tab
+herdr-app do layout.switch --name trk                   # the trk layout: issues left, the selected session right
+```
+
+- It shows the project of the shown space (the focused pane's folder), and follows it as you
+  switch spaces. `--props '{"folder": "/path/to/project"}'` pins a copy to one project;
+  `"select": "<id>"` opens it on an issue.
+- Issues are grouped as in the dashboard. A session whose agent Herdr reports as blocked moves to
+  **Needs you**; a working one shows a spinner. New needs-you issues post a toast, and the Dock
+  badge counts them across the projects shown.
+- Select an issue for its description, notes and timeline, and to go to or peek at its session,
+  run it, send text, resume, check now, add notes, change priority, unclaim, reopen or close.
+  Destructive buttons ask for a second click. Edit opens `trk edit` in a pane below.
+- With the panel focused: `j`/`k` move, `Enter` opens, `a` goes to the session, `p` peeks,
+  `s` sends, `m`/`M` note (to the agent), `v` resumes, `x` closes, `c` creates.
+- `trk.new` and `trk.refresh` are mod commands for `keys.json`, for example
+  `"global": { "ctrl-shift-i": "trk.new" }`. They reach a shown copy of the panel.
+
+The mod folder is trk's and is rewritten by every `trk install`. `layouts/trk.json` is yours once
+written: it is kept unless `--force` is given.
+
 ## Configuration
 
 Everything trk keeps for a project is in `.trk/` at its root, written by `trk install`:
@@ -400,6 +430,7 @@ There is no global configuration and no cross-project view: `trk list`, `trk run
 | `trk-cli` | The `trk` binary, rendering, `trk check`, `trk run` and the launcher templates |
 
 `seed/` holds the default configuration, embedded into the binary for `trk install`.
+`herdr/` holds the Herdr mod and layout, embedded the same way.
 
 ## Notes on the implementation
 

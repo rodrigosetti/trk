@@ -1,0 +1,22 @@
+{
+  "id": "root",
+  "type": "row",
+  "background": "canvas",
+  "preview": "layouts/trk.svg",
+  "divider": { "width": 1, "color": "border" },
+  "children": [
+    {
+      "id": "trk",
+      "type": "block",
+      "size": { "px": 460 },
+      "min": 300,
+      "max": 900,
+      "content": { "mod": "trk", "props": { "focus": "agent" } }
+    },
+    {
+      "id": "session",
+      "type": "block",
+      "content": { "agent": "focused" }
+    }
+  ]
+}

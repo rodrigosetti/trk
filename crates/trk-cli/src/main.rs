@@ -5,6 +5,7 @@ mod dashboard;
 mod editor;
 mod env;
 mod herdr;
+mod herdr_ui;
 mod render;
 mod run;
 mod seed;
@@ -64,7 +65,9 @@ enum Cmd {
         after_help = "Run it in the project's root directory (in a git repository, the root of the\n\
         primary checkout is used). Everything goes in .trk/, which starts out ignored by git.\n\
         Safe to run again: it refreshes the agent skill and upgrades the database, and keeps\n\
-        existing config files unless --force is given."
+        existing config files unless --force is given.\n\
+        Where the Herdr app is set up (~/.config/herdr-app), it also installs the trk mod and\n\
+        the trk layout there: the dashboard as a Herdr panel."
     )]
     Install {
         /// Overwrite existing config files with the defaults
@@ -786,7 +789,8 @@ fn default_prefix(root: &std::path::Path) -> String {
 }
 
 /// `trk install`: `.trk/` with the default config and the database, plus the
-/// agent skill. Existing config files are kept unless `force`.
+/// agent skill and, where Herdr is set up, its dashboard mod. Existing config
+/// files are kept unless `force`.
 fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
     let loc = env::Location::find(g);
     let dir = loc.dir.clone();
@@ -848,6 +852,7 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
     let created = !env.db.is_file();
     trk_core::Store::install(&env.db, env.store_opts()?)?;
     let skill = skill::install(&root, env.checkout().is_some())?;
+    let herdr = herdr_ui::install(&herdr_ui::app_home(), force)?;
 
     let mut text = format!(
         "project   {}\nconfig    {}\n          wrote {} files{}\ndatabase  {}{}\nprefix    {}\nskill     {}",
@@ -864,6 +869,9 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
         env.user.issues.prefix,
         skill.lines.join("\n          "),
     );
+    if let Some(h) = &herdr {
+        text.push_str(&format!("\nherdr     {}", h.lines.join("\n          ")));
+    }
     if !differ.is_empty() {
         text.push_str(&format!(
             "\n\nKept files that differ from this trk's defaults (your edits, or newer defaults):\n  {}",
@@ -887,7 +895,8 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
         text,
         json!({"root": root, "dir": dir, "db": env.db, "db_created": created,
                "prefix": env.user.issues.prefix, "written": written, "kept": kept,
-               "differ": differ, "skill": skill.data, "warnings": warnings}),
+               "differ": differ, "skill": skill.data,
+               "herdr": herdr.map(|h| h.data), "warnings": warnings}),
     ))
 }
 
