@@ -114,6 +114,10 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
         let issue = sample_issue();
         let input = PromptInput {
             issue: &issue,
+            project_root: std::path::Path::new("/tmp/project"),
+            config: user,
+            issue_type: "code-change",
+            type_description: "Sample type description",
             agent: a,
             tools: &tools,
             worktree: Some("/tmp/wt"),

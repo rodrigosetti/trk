@@ -101,6 +101,10 @@ fn the_briefing_carries_description_notes_and_blockers() {
     });
     let input = trk_agent::prompt::PromptInput {
         issue: &issue,
+        project_root: std::path::Path::new("/project"),
+        config: &user_config(),
+        issue_type: "code-change",
+        type_description: "code change",
         agent: &a,
         tools: &tools,
         worktree: Some("/wt/orch-abc"),

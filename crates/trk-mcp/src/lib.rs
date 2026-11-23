@@ -20,13 +20,15 @@ use serde_json::{Value, json};
 use trk_agent::agent::AgentDef;
 use trk_agent::exec::{Session, call, error_json};
 use trk_agent::tools::ToolDef;
-use trk_core::config::ConfigDir;
+use trk_core::config::{ConfigDir, UserConfig};
 use trk_core::view::With;
 use trk_core::{Store, StoreOpts};
 
 pub struct McpArgs {
     pub db: PathBuf,
     pub config: ConfigDir,
+    pub project_root: PathBuf,
+    pub user: UserConfig,
     pub opts: StoreOpts,
     pub issue: String,
     pub actor: String,
@@ -77,6 +79,10 @@ impl TrkServer {
         let tools = trk_agent::agent_tools(&agent);
         let input = trk_agent::prompt::PromptInput {
             issue: &issue_json,
+            project_root: &args.project_root,
+            config: &args.user,
+            issue_type: &routing.issue_type,
+            type_description: &routing.description,
             agent: &agent,
             tools: &tools,
             worktree: worktree.as_deref(),
@@ -426,6 +432,8 @@ mod tests {
                 let mut server = TrkServer::new(McpArgs {
                     db,
                     config: ConfigDir::new(&seed),
+                    project_root: dir.path().to_path_buf(),
+                    user: UserConfig::default(),
                     opts,
                     issue: issue.clone(),
                     actor: ACTOR.into(),

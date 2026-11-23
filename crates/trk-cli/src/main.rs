@@ -474,10 +474,12 @@ fn mcp(g: &Global, issue: &str, actor: &str, agent: &str) -> anyhow::Result<()> 
         db: env.db.clone(),
         config: env.config.clone(),
         opts: env.store_opts()?,
+        base: env.base(),
+        project_root: env.root,
+        user: env.user,
         issue: issue.to_string(),
         actor: actor.to_string(),
         agent: agent.to_string(),
-        base: env.base(),
     })
 }
 
@@ -1304,6 +1306,10 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             let tools = trk_agent::agent_tools(&a);
             let input = trk_agent::prompt::PromptInput {
                 issue: &issue_json,
+                project_root: &env.root,
+                config: &env.user,
+                issue_type: &routing.issue_type,
+                type_description: &routing.description,
                 agent: &a,
                 tools: &tools,
                 worktree: issue_json["claim"]["worktree"].as_str(),

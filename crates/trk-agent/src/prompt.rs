@@ -2,8 +2,10 @@
 //! config dir and are named by their path relative to it, so templates can
 //! `{% include "prompts/_rules.md.j2" %}`.
 
+use std::path::Path;
+
 use serde_json::{Value, json};
-use trk_core::config::ConfigDir;
+use trk_core::config::{ConfigDir, UserConfig};
 use trk_core::error::{Code, Error, Result};
 
 use crate::agent::AgentDef;
@@ -12,6 +14,11 @@ use crate::tools::ToolDef;
 pub struct PromptInput<'a> {
     /// The issue object (`show --json` shape, with deps and derived).
     pub issue: &'a Value,
+    pub project_root: &'a Path,
+    pub config: &'a UserConfig,
+    /// Metadata from the resolved type, independent of an agent override.
+    pub issue_type: &'a str,
+    pub type_description: &'a str,
     pub agent: &'a AgentDef,
     pub tools: &'a [ToolDef],
     pub worktree: Option<&'a str>,
@@ -24,6 +31,21 @@ impl PromptInput<'_> {
     fn context(&self, instructions: Option<&str>) -> Value {
         json!({
             "issue": self.issue,
+            "project": {
+                "name": self.project_root.file_name().unwrap_or_default().to_string_lossy(),
+                "root": self.project_root,
+                "prefix": self.config.issues.prefix,
+            },
+            "type": {"name": self.issue_type, "description": self.type_description},
+            "config": {
+                "check": {
+                    "interval": self.config.check.interval,
+                    "timeout": self.config.check.timeout,
+                    "max_wakes": self.config.check.max_wakes,
+                },
+                "claims": {"agent_lease": self.config.claims.agent_lease},
+                "run": {"worktrees": self.config.run.worktrees},
+            },
             "agent": {"name": self.agent.name, "description": self.agent.description},
             "tools": self.tools.iter().map(|t| json!({"name": t.name, "description": t.description})).collect::<Vec<_>>(),
             "worktree": self.worktree,
