@@ -79,6 +79,10 @@ upgrade. Otherwise:
 Restarting an MCP server does not claim an issue or bypass dependency/ownership checks.
 
 For development: `cargo build` and `cargo test --workspace`.
+Keep build outputs local to each issue worktree; do not point `CARGO_TARGET_DIR`
+or `--target-dir` at the primary checkout. Seed-dependent tests materialize the
+installer's embedded defaults in temporary directories, so their binaries also
+work after the checkout they were compiled in has been removed.
 
 ## Quick start
 
