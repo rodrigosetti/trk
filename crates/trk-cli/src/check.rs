@@ -5,6 +5,11 @@
 //! to open with the output as a note. Only one `trk check` runs at a time,
 //! so checks that merge never race each other.
 
+mod restart;
+
+use restart::Executable;
+pub(crate) use restart::resume;
+
 use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -39,6 +44,7 @@ struct Lock<'a> {
     actor: String,
     pid: i64,
     child: Option<Child>,
+    released: bool,
 }
 
 impl Lock<'_> {
@@ -90,14 +96,21 @@ impl Lock<'_> {
         self.child = None;
         Ok(())
     }
+
+    fn release(&mut self) -> Result<()> {
+        self.finish()?;
+        self.env
+            .store()?
+            .write(&self.actor, false, |c| c.check_lock_release(self.pid))?;
+        self.released = true;
+        Ok(())
+    }
 }
 
 impl Drop for Lock<'_> {
     fn drop(&mut self) {
-        if self.finish().is_ok()
-            && let Ok(mut s) = self.env.store()
-        {
-            let _ = s.write(&self.actor, false, |c| c.check_lock_release(self.pid));
+        if !self.released {
+            let _ = self.release();
         }
     }
 }
@@ -127,6 +140,7 @@ fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, V
             actor: actor.to_string(),
             pid,
             child: None,
+            released: false,
         }),
     })
 }
@@ -322,6 +336,8 @@ fn pass(
     env: &Env,
     a: &CheckArgs,
     interrupt: &Interrupt,
+    executable: &Executable,
+    completed: &[Value],
 ) -> Result<std::result::Result<Vec<Value>, Value>> {
     let actor = env.actor()?.to_string();
     let timeout = env.check_timeout()?;
@@ -332,6 +348,9 @@ fn pass(
                 let id = c.resolve_id(id)?;
                 c.issue(&id)
             })?;
+            if completed.iter().any(|r| r["issue"] == issue.id) {
+                return Ok(Ok(vec![]));
+            }
             if issue.state != State::Waiting || issue.waiting_check.is_none() {
                 return Err(Error::new(
                     Code::InvalidState,
@@ -352,6 +371,10 @@ fn pass(
         }
         None => store.read(None, |c| c.check_queue(a.all))?,
     };
+    let queue: Vec<_> = queue
+        .into_iter()
+        .filter(|i| !completed.iter().any(|r| r["issue"] == i.id))
+        .collect();
     if a.dry_run {
         let mut out = vec![];
         for i in &queue {
@@ -376,6 +399,9 @@ fn pass(
     let mut out = vec![];
     for i in &queue {
         interrupt.check()?;
+        if executable.changed()? {
+            break;
+        }
         let check = i.waiting_check.clone().unwrap_or_default();
         let started = Instant::now();
         let run = match place(env, i) {
@@ -459,6 +485,7 @@ fn pass(
         }
         out.push(v);
     }
+    lock.release()?;
     Ok(Ok(out))
 }
 
@@ -517,7 +544,8 @@ fn busy_text(h: &Value) -> String {
     )
 }
 
-pub fn check(env: &Env, a: CheckArgs) -> Result<Out> {
+pub fn check(env: &Env, a: CheckArgs, mut completed: Vec<Value>) -> Result<Out> {
+    let executable = Executable::new()?;
     let interrupt = Interrupt::new()?;
     if let Some(pause) = &a.watch {
         let pause = parse_duration(pause.as_deref().unwrap_or(WATCH_PAUSE))?;
@@ -525,11 +553,15 @@ pub fn check(env: &Env, a: CheckArgs) -> Result<Out> {
         // Runs until interrupted; each result is printed as it happens.
         loop {
             interrupt.check()?;
-            match pass(env, &a, &interrupt) {
+            if executable.changed()? {
+                executable.restart(env, &completed)?;
+            }
+            match pass(env, &a, &interrupt, &executable, &completed) {
                 Ok(Ok(results)) => {
                     for r in &results {
                         println!("{}", line(r));
                     }
+                    completed.extend(results);
                 }
                 Ok(Err(holder)) => eprintln!("{}", busy_text(&holder)),
                 Err(e) => eprintln!("error: {}", e.message()),
@@ -537,16 +569,32 @@ pub fn check(env: &Env, a: CheckArgs) -> Result<Out> {
             let until = Instant::now() + pause;
             while Instant::now() < until {
                 interrupt.check()?;
+                if executable.changed()? {
+                    executable.restart(env, &completed)?;
+                }
                 std::thread::sleep(Duration::from_millis(50));
             }
+            completed.clear();
         }
     }
-    match pass(env, &a, &interrupt)? {
-        Err(holder) => Ok(Out::Text(
-            busy_text(&holder),
-            json!({"busy": true, "holder": holder, "results": []}),
-        )),
+    if executable.changed()? {
+        executable.restart(env, &completed)?;
+    }
+    match pass(env, &a, &interrupt, &executable, &completed)? {
+        Err(holder) => {
+            let mut text = completed.iter().map(line).collect::<Vec<_>>();
+            text.push(busy_text(&holder));
+            Ok(Out::Text(
+                text.join("\n"),
+                json!({"busy": true, "holder": holder, "results": completed}),
+            ))
+        }
         Ok(results) => {
+            completed.extend(results);
+            if executable.changed()? {
+                executable.restart(env, &completed)?;
+            }
+            let results = completed;
             let text = if results.is_empty() {
                 if a.all || a.id.is_some() {
                     "no waiting issue has a check".to_string()

@@ -8,6 +8,9 @@ use std::process::{Command as StdCommand, Stdio};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
+#[path = "cli/restart.rs"]
+mod restart;
+
 struct Env {
     dir: tempfile::TempDir,
 }
@@ -583,17 +586,23 @@ struct CheckRunner {
 
 impl CheckRunner {
     fn spawn(e: &Env) -> Self {
-        let child = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"))
-            .current_dir(e.repo())
+        let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"));
+        command
             .args(["--json", "check", "--all"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        Self::spawn_command(e, command)
+    }
+
+    fn spawn_command(e: &Env, mut command: StdCommand) -> Self {
+        let child = command
+            .current_dir(e.repo())
             .env("HOME", e.dir.path().join("home"))
             .env("TRK_ACTOR", "human:alice@example.com")
             .env("TRK_NOW", "2026-11-20T10:00:00Z")
             .env_remove("TRK_FORMAT")
             .env_remove("TRK_DIR")
             .process_group(0)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
             .spawn()
             .unwrap();
         Self {
