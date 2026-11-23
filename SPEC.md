@@ -163,6 +163,21 @@ One pass:
 
 `--watch` repeats passes with a pause (default 30s) until interrupted. `trk check` is otherwise one-shot, so cron or launchd can drive it. `--dry-run` prints the queue, each command and its directory, and runs nothing.
 
+**Executable upgrades.** Before each queued issue and during the watch pause,
+compare the installed executable's device/inode and file metadata with the startup
+snapshot, not semantic versions. On replacement, finish the active command, stop
+its remaining process group and record/deliver its outcome, then release the queue
+lock before exec of the installed path. Keep the original arguments (including
+argv[0]), working directory and environment. An anonymous inherited descriptor
+carries completed results across exec; its private environment locator is restored
+to its original value at startup, before argument parsing or subprocess creation.
+One-shot output includes results from before and after exec. Completed IDs are
+excluded from the resumed pass even for `--all` and explicit IDs; watch results
+already printed are not repeated. An idle watcher notices replacement without
+waiting for its configured pause. A missing path during installation is tolerated
+until it reappears; exec errors fail the runner but leave recorded outcomes intact.
+If cleanup or lock release fails, retain ownership rather than exec unsafely.
+
 **Running a check.** The command runs in `wait_cwd`; when the issue was claimed outside a checkout, in the repository's main checkout. A directory that no longer exists is a failure. The environment adds:
 
 | Variable | Value |
@@ -295,7 +310,7 @@ send   = ["hc", "send", "{name}", "{text}"]
 
 trk observes `herdr-app ls` for up to two seconds; only a direct agent pane in the created space, with the expected title and folder, counts as visible. JSON returns `placement.status` (`visible` or `failed`) with pane/tab/space IDs or a reason. Observation failures warn and retain the session and claim. If UI discovery fails before launch, the configured `start` template runs headlessly with a warning. If space creation itself fails or returns an uncertain response, the command errors and retains the claim; it never retries or falls back to a second session.
 
-After a waiting check commits a passing outcome, trk best-effort uses `herdr-app do space.rename --id … --name …` to prepend `[closed] ` to the current name of the space containing the exact terminal from the historical claim released as `waiting`. It never targets an active/replacement claim or overwrites a user rename. An existing leading marker is not duplicated; old trailing ` [closed]` markers are removed, while literal `[closed]` text inside the title is preserved. This update is independent of MCP liveness and notification delivery; unavailable UI, missing spaces and rename failures do not affect the committed outcome or prevent an otherwise deliverable notification. Failed/retrying checks do not rename spaces; non-Herdr launchers are unchanged. Running watchers must be restarted after a binary upgrade; restarting does not replay closed checks.
+After a waiting check commits a passing outcome, trk best-effort uses `herdr-app do space.rename --id … --name …` to prepend `[closed] ` to the current name of the space containing the exact terminal from the historical claim released as `waiting`. It never targets an active/replacement claim or overwrites a user rename. An existing leading marker is not duplicated; old trailing ` [closed]` markers are removed, while literal `[closed]` text inside the title is preserved. This update is independent of MCP liveness and notification delivery; unavailable UI, missing spaces and rename failures do not affect the committed outcome or prevent an otherwise deliverable notification. Failed/retrying checks do not rename spaces; non-Herdr launchers are unchanged. Watchers automatically restart after executable replacement without replaying completed checks or renaming their spaces again.
 
 Replacing hc with tmux or a plain process is a config change: replace the templates and set `herdr = false`.
 

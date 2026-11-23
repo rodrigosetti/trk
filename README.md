@@ -172,9 +172,15 @@ This does not require a live agent or successful notification; missing UI/spaces
 or rename failures never change the check result. Failed and retrying checks leave
 titles unchanged.
 
-After upgrading the binary, stop and restart any running `trk check --watch`
-process: an existing watcher keeps running its old code, even if its check merges
-the upgrade. Restarting does not replay already-closed checks or rename their spaces.
+`trk check` detects replacement of its executable, including same-version builds.
+It finishes the active check, records the outcome and stops its remaining process
+group, then releases the queue lock and re-executes the installed binary with the
+original arguments and environment. Replacement is checked before each queued
+issue and while idle in `--watch`; no manual watcher restart is needed. One-shot
+results survive the restart, and completed checks (including exit 75 with `--all`
+or an explicit ID) are not replayed within that pass. Already-printed watch results
+are not printed again. A temporarily missing executable is retried until it returns;
+an exec failure reports an error without undoing recorded outcomes.
 
 Three properties follow from that:
 

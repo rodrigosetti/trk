@@ -325,6 +325,11 @@ enum AgentCmd {
 }
 
 fn main() {
+    // Restore the exec handoff before any threads or environment readers start.
+    let completed = check::resume().unwrap_or_else(|e| {
+        eprintln!("trk: cannot resume check after restart: {e}");
+        std::process::exit(1);
+    });
     let cli = Cli::parse();
     let g = cli.global.clone();
     let format = if g.json {
@@ -367,7 +372,7 @@ fn main() {
         };
         std::process::exit(code);
     }
-    match dispatch(&g, cli.cmd) {
+    match dispatch(&g, cli.cmd, completed) {
         Ok(out) => r.emit(out),
         Err(e) => {
             r.error(&e);
@@ -422,7 +427,7 @@ fn show_one(env: &Env, store: &trk_core::Store, id: &str) -> Result<Out> {
     ))
 }
 
-fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
+fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
     if let Cmd::Install { force, prefix } = cmd {
         return install(g, force, prefix);
     }
@@ -627,6 +632,7 @@ fn dispatch(g: &Global, cmd: Cmd) -> Result<Out> {
                 watch,
                 dry_run,
             },
+            completed,
         ),
         Cmd::Note {
             id,
