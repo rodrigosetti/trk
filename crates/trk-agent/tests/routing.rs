@@ -45,6 +45,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
         tools: &[],
         worktree: None,
         base: "release/stable",
+        verify: "",
         actor: "human:test@example.com",
         harness: None,
     };

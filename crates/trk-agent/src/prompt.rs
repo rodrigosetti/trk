@@ -16,6 +16,7 @@ pub struct PromptInput<'a> {
     pub tools: &'a [ToolDef],
     pub worktree: Option<&'a str>,
     pub base: &'a str,
+    pub verify: &'a str,
     pub actor: &'a str,
     pub harness: Option<&'a str>,
 }
@@ -28,6 +29,7 @@ impl PromptInput<'_> {
             "tools": self.tools.iter().map(|t| json!({"name": t.name, "description": t.description})).collect::<Vec<_>>(),
             "worktree": self.worktree,
             "base": self.base,
+            "verify": self.verify,
             "actor": self.actor,
             "harness": self.harness,
             "fold_instructions": instructions.is_some(),

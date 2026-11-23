@@ -130,10 +130,12 @@ fn run_starts_at_base_and_seed_recipe_lands_with_trk_base() {
         let preview = e.ok(&["agent", "preview", "implementer"]);
         let instructions = preview["instructions"].as_str().unwrap();
         let recipe = instructions
-            .lines()
-            .find(|line| line.trim_start().starts_with("cd \"$TRK_REPO\""))
+            .split_once("```sh\n")
             .unwrap()
-            .trim();
+            .1
+            .split_once("```")
+            .unwrap()
+            .0;
         let check = format!("[ \"$TRK_BASE\" = {base} ] || exit 2; {recipe}");
         let out = e
             .cmd()

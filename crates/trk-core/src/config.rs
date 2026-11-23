@@ -114,6 +114,9 @@ pub struct CheckSection {
     pub interval: String,
     /// How long one check may run before it counts as an error, e.g. "10m".
     pub timeout: String,
+    /// Shell command for verifying the merged tree before local landing.
+    #[serde(default)]
+    pub verify: String,
     /// Maximum failed-check wakes per session; zero disables waking.
     #[serde(default = "default_max_wakes")]
     pub max_wakes: u32,
@@ -130,6 +133,7 @@ impl Default for CheckSection {
         CheckSection {
             interval: default_check_interval(),
             timeout: default_check_timeout(),
+            verify: String::new(),
             max_wakes: default_max_wakes(),
             gc: default_check_gc(),
             gc_grace: default_gc_grace(),

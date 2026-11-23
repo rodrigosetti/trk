@@ -55,6 +55,7 @@ impl Env {
             actor: actor.into(),
             agent: "implementer".into(),
             base: "main".into(),
+            verify: String::new(),
         })
         .unwrap()
     }

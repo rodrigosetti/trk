@@ -478,6 +478,7 @@ fn mcp(g: &Global, issue: &str, actor: &str, agent: &str) -> anyhow::Result<()> 
         actor: actor.to_string(),
         agent: agent.to_string(),
         base: env.base(),
+        verify: env.user.check.verify,
     })
 }
 
@@ -1310,6 +1311,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 actor: "agent:<harness>:<session>",
                 harness: None,
                 base: &env.base(),
+                verify: &env.user.check.verify,
             };
             let instructions = trk_agent::prompt::instructions(&resolved.config, &input)?;
             let briefing = trk_agent::prompt::briefing(&resolved.config, &input, None)?;

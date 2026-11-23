@@ -342,6 +342,7 @@ fn run_check(
     .env("TRK_WORKTREE", &p.cwd)
     .env("TRK_BRANCH", &p.branch)
     .env("TRK_BASE", env.base())
+    .env("TRK_VERIFY", &env.user.check.verify)
     .env("TRK_DIR", env.dir_env())
     // The check is not an agent: it must not inherit a session's identity.
     .env_remove("TRK_ACTOR")

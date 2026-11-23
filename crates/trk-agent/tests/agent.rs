@@ -96,6 +96,7 @@ fn the_briefing_carries_description_notes_and_blockers() {
         tools: &tools,
         worktree: Some("/wt/orch-abc"),
         base: "develop",
+        verify: "cargo test --workspace",
         actor: "agent:omp:u1",
         harness: Some("omp"),
     };

@@ -288,6 +288,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         actor: &actor,
         harness: Some(&hname),
         base: &base,
+        verify: &env.user.check.verify,
     };
     let instructions = trk_agent::prompt::instructions(&resolved.config, &input)?;
     let fold = if profile.server_instructions {

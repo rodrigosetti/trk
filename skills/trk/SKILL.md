@@ -104,9 +104,19 @@ CHECK
 )
 trk wait <ID> --json -r "PR 12 merged" --every 10m -c "$pr_check"
 
-# Done once the branch is merged into the base branch: the check does the merge.
-trk wait <ID> --json -r "merge into base branch" \
-  -c 'cd "$TRK_REPO" && [ "$(git branch --show-current)" = "$TRK_BASE" ] && git merge --no-edit "$TRK_BRANCH"'
+# Merge your branch only after verifying the merged result in the issue worktree.
+local_check=$(cat <<'CHECK'
+cd "$TRK_WORKTREE" || exit 1
+git merge --no-edit "$TRK_BASE" || { git merge --abort 2>/dev/null; exit 1; }
+if [ -n "$TRK_VERIFY" ]; then
+  sh -c "$TRK_VERIFY" || exit 1
+fi
+cd "$TRK_REPO" || exit 1
+[ "$(git branch --show-current)" = "$TRK_BASE" ] || exit 1
+git merge --ff-only "$TRK_BRANCH" || exit 1
+CHECK
+)
+trk wait <ID> --json -r "verify and merge into base branch" -c "$local_check"
 
 # Waiting on a person: no check.
 trk wait <ID> --json -r "Which store: SQLite or Dolt?"
@@ -122,7 +132,9 @@ The check is a shell command that `trk check` runs later, unattended, with `sh -
 
 The PR states describe the example, not built-in PR handling. By default the agent opens the PR and waits; trk closes the issue when it merges. The agent fixes reported base-branch conflicts and failed head-commit CI unattended. Review threads and merging belong to the human unless they ask the agent to handle them. The check names the conflicting base or prints failed jobs and their URLs.
 
-It may do the remaining work or only look. It may run more than once, so it must be safe to repeat, non-interactive and non-blocking (no `--watch`). Let real failures exit non-zero on their own; do not turn them into 75. It sees `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` (the primary checkout), `TRK_BRANCH` and `TRK_BASE` (the resolved base branch). Use quoted `"$TRK_BASE"` in landing checks rather than assuming a branch name.
+It may do the remaining work or only look. It may run more than once, so it must be safe to repeat, non-interactive and non-blocking (no `--watch`). Let real failures exit non-zero on their own; do not turn them into 75. It sees `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` (the primary checkout), `TRK_BRANCH`, `TRK_BASE` (the resolved base branch) and `TRK_VERIFY` (`[check] verify`, default empty). Use quoted `"$TRK_BASE"` in landing checks rather than assuming a branch name.
+
+`[check] verify` is an opaque shell command in `.trk/config.toml`, also exposed to prompt templates as `{{ verify }}`. The local recipe merges the current base into the issue worktree, aborts conflicts, runs the command there if nonempty, then fast-forwards the guarded primary checkout. Verification failure, including exit 75, fails the check rather than retrying. Empty verification skips only the command. This local gate applies only when the issue type uses an issue worktree and branch; a type opting out has no issue branch to merge or test. Include dependency setup in the command if needed, for example `verify = "npm ci && npm test"`. The whole check shares `[check] timeout` (default 10m) and holds the serialized queue: use a fast subset or raise the timeout for slow suites. The PR recipe is unchanged.
 
 A failed check restores the original claim with a fresh lease if the session's MCP server is alive on this host, its terminal is recorded (and present with Herdr), `[launcher] send` is configured, and its wake count is below `[check] max_wakes` (default `5`, also when omitted; `0` disables waking). Each restoration increments the persistent count, even if delivery fails. Entering or updating `wait` preserves it; a fresh explicit claim, including `--steal`, resets it to zero, but an idempotent claim by the current owner does not. The prompt includes `wake N of M` and the output to fix the failure and end again, normally with `wait`; the session's MCP tools work again. At the cap, the issue reopens with a note saying `wake cap of M reached` and retaining the output. A gone session or failed send also leaves it open. trk only interprets exit codes, never PRs or CI.
 

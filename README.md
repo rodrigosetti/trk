@@ -116,9 +116,19 @@ contain ANSI styling.
 ## Waiting and `trk check`
 
 ```sh
-# Done once the branch is in the configured base: the check does the merge.
-trk wait orch-4kq -r "merge into base branch" \
-  -c 'cd "$TRK_REPO" && [ "$(git branch --show-current)" = "$TRK_BASE" ] && git merge --no-edit "$TRK_BRANCH"'
+# Merge your branch only after verifying the merged result in the issue worktree.
+local_check=$(cat <<'CHECK'
+cd "$TRK_WORKTREE" || exit 1
+git merge --no-edit "$TRK_BASE" || { git merge --abort 2>/dev/null; exit 1; }
+if [ -n "$TRK_VERIFY" ]; then
+  sh -c "$TRK_VERIFY" || exit 1
+fi
+cd "$TRK_REPO" || exit 1
+[ "$(git branch --show-current)" = "$TRK_BASE" ] || exit 1
+git merge --ff-only "$TRK_BRANCH" || exit 1
+CHECK
+)
+trk wait orch-4kq -r "verify and merge into base branch" -c "$local_check"
 
 # Done once the PR is merged; wake for conflicts or failed head-commit CI.
 # gh's built-in jq filter reads the head commit's check runs and statuses.
@@ -210,8 +220,8 @@ trk ready type=research --sort type
 ```
 
 The check runs with `sh -c` in the worktree the issue was claimed in, with `TRK_ISSUE`,
-`TRK_WORKTREE`, `TRK_REPO` (the primary checkout), `TRK_BRANCH` and `TRK_BASE` (the
-resolved base branch) set. Its exit code decides:
+`TRK_WORKTREE`, `TRK_REPO` (the primary checkout), `TRK_BRANCH`, `TRK_BASE` (the
+resolved base branch) and `TRK_VERIFY` (`[check] verify`, default empty) set. Its exit code decides:
 
 | Exit | Meaning | Result |
 | --- | --- | --- |
@@ -226,6 +236,18 @@ merging belong to the human unless they ask the agent to handle them.
 The check names the conflicting base or prints failed jobs and their URLs. It
 does not block on CI or review. Checks must be non-interactive, non-blocking
 (no `--watch`) and safe to repeat.
+
+Configure `[check] verify` in `.trk/config.toml` as an opaque shell command, for example
+`verify = "npm ci && npm test"`. It is also available to prompt templates as `{{ verify }}`.
+The local recipe merges the current base into the issue worktree, aborts merge conflicts,
+then runs the command there if nonempty. Any verification failure (including exit 75)
+fails the check and leaves the primary checkout untouched. Only the verified result is
+fast-forwarded into the primary checkout after checking its branch. Empty verification
+skips only the command. This local gate applies only when the issue type uses an issue
+worktree and branch; a type opting out has no issue branch to merge or test. The PR recipe is unchanged.
+Include dependency setup in the command if the worktree needs it. Verification uses the
+whole check's `[check] timeout` (default 10m) and holds the serialized queue; choose a fast
+subset or increase the timeout for slow suites.
 
 A failed check restores the original session's claim with a fresh lease when its MCP
 server is alive on this host, its terminal is recorded (and present when using Herdr),

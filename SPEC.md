@@ -110,7 +110,22 @@ The check's exit code is the whole protocol:
 
 Error is the default. A command that is misspelled, whose credentials expired, or whose branch conflicts fails loudly and returns as work, instead of waiting forever. Only the one reserved code keeps an issue waiting, so "not yet" is always a deliberate answer.
 
-A check may do the remaining work (merge the branch) or only look (is the PR merged?). It runs under `sh -c` in the claim's worktree with `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO`, `TRK_BRANCH` and `TRK_BASE` (the resolved base branch). It must be non-interactive, non-blocking (no `--watch`) and safe to run more than once: `trk check` may die between running a command and recording its result, and the next pass runs it again.
+A check may do the remaining work (merge the branch) or only look (is the PR merged?). It runs under `sh -c` in the claim's worktree with `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO`, `TRK_BRANCH`, `TRK_BASE` (the resolved base branch) and `TRK_VERIFY` (`[check] verify`, default empty). It must be non-interactive, non-blocking (no `--watch`) and safe to run more than once: `trk check` may die between running a command and recording its result, and the next pass runs it again.
+
+Merge your branch locally only after verifying the merged result in the issue worktree:
+
+```sh
+cd "$TRK_WORKTREE" || exit 1
+git merge --no-edit "$TRK_BASE" || { git merge --abort 2>/dev/null; exit 1; }
+if [ -n "$TRK_VERIFY" ]; then
+  sh -c "$TRK_VERIFY" || exit 1
+fi
+cd "$TRK_REPO" || exit 1
+[ "$(git branch --show-current)" = "$TRK_BASE" ] || exit 1
+git merge --ff-only "$TRK_BRANCH" || exit 1
+```
+
+The seed local landing recipe merges the current base into the issue branch, aborts conflicts, runs nonempty `TRK_VERIFY` with `sh -c`, then fast-forwards the guarded primary checkout. Explicit failure exits prevent fallthrough; a failed verify is normalized to exit 1 even if it returned 75. Empty verification skips only the command, never the worktree merge. This local gate applies only when the issue type uses an issue worktree and branch; a type opting out has no issue branch to merge or test. PR checks are unchanged.
 
 Default PR scope: the agent opens the PR and waits; trk closes the issue when it merges. The agent fixes reported base-branch conflicts and failed CI on the head commit unattended. Review threads and merging belong to the human unless they ask the agent to handle them. The following example uses `gh`'s built-in jq filter and the head commit's `statusCheckRollup` (check runs and commit statuses); it names a conflicting base, prints failed jobs and their URLs, and fails if the PR closes without merging. Other open states keep waiting:
 
@@ -452,7 +467,7 @@ Everything is in `<project root>/.trk/`, created by `trk install`:
 ```
 
 `config.toml` is explicit: `trk install` writes every setting. Missing settings are errors except
-for compatibility defaults such as `[check] max_wakes`, `gc`, `gc_grace`, and the detected
+for compatibility defaults such as `[check] verify`, `max_wakes`, `gc`, `gc_grace`, and the detected
 `[run] base`. Types, agents and prompts are read when routing is resolved.
 
 `[run] base` configures the base branch (for example, `base = "develop"`). When writing
@@ -464,8 +479,11 @@ branch is used for new issue branches, prompt-template `{{ base }}` and waiting-
 
 | Check setting | Default, also when omitted | Meaning |
 | --- | --- | --- |
+| `[check] verify` | `""` | Opaque shell command, exported as `TRK_VERIFY` to checks and `verify` to prompt templates; used by the seed local landing recipe |
 | `[check] gc` | `true` | Sweep closed-as-done issues at the end of non-ID check passes; `--no-gc` disables it for the invocation |
 | `[check] gc_grace` | `"1h"` | Minimum duration since closure before automatic cleanup, not a removal deadline |
+
+`verify` is not parsed into arguments or automatically executed by the check runner. The seed implementer instructions name the configured command, falling back to generic project tests when empty. Include dependency setup in the command when needed (for example, `npm ci && npm test`). Verification runs under the whole check's `[check] timeout` (default 10m) and holds the serialized queue. For slow suites, configure a fast subset or increase the timeout.
 
 ### Project resolution
 
@@ -646,7 +664,7 @@ Queries cover the project's whole database; there is no cross-project scope.
     "close_reason": null,
     "waiting": {
       "reason": "merge into base",
-      "check": "cd \"$TRK_REPO\" && [ \"$(git branch --show-current)\" = \"$TRK_BASE\" ] && git merge --no-edit \"$TRK_BRANCH\"",
+      "check": "cd \"$TRK_WORKTREE\" || exit 1; git merge --no-edit \"$TRK_BASE\" || { git merge --abort 2>/dev/null; exit 1; }; if [ -n \"$TRK_VERIFY\" ]; then sh -c \"$TRK_VERIFY\" || exit 1; fi; cd \"$TRK_REPO\" || exit 1; [ \"$(git branch --show-current)\" = \"$TRK_BASE\" ] || exit 1; git merge --ff-only \"$TRK_BRANCH\" || exit 1",
       "interval": 300,
       "next_check_at": "2026-11-21T18:07:11Z",
       "last_check_at": "2026-11-21T18:02:11Z",

@@ -20,6 +20,9 @@ mod gc;
 #[path = "cli/base.rs"]
 mod base;
 
+#[path = "cli/verify.rs"]
+mod verify;
+
 struct Env {
     dir: tempfile::TempDir,
 }
@@ -1452,6 +1455,7 @@ fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
         actor: spec["actor"].as_str().unwrap().into(),
         agent: "implementer".into(),
         base: "main".into(),
+        verify: String::new(),
     })
     .unwrap();
     let (ok, before) = server.call_sync("get_task", json!({}));

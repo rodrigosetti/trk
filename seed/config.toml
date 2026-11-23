@@ -20,6 +20,10 @@ agent_lease = "30m"
 interval = "5m"
 # How long one check may run before it counts as a failure.
 timeout  = "10m"
+# Verify the merged tree before local landing; empty skips verification.
+# Runs in the issue worktree: include dependency setup here if needed.
+# Holds the check queue and must fit timeout; use a fast subset or raise timeout.
+verify = ""
 # Maximum failed-check wakes per session. 0 disables waking and always reopens.
 max_wakes = 5
 # Sweep closed, done issues after each full `trk check` pass.

@@ -32,6 +32,7 @@ pub struct McpArgs {
     pub actor: String,
     pub agent: String,
     pub base: String,
+    pub verify: String,
 }
 
 struct Inner {
@@ -83,6 +84,7 @@ impl TrkServer {
             actor: &args.actor,
             harness: args.actor.split(':').nth(1),
             base: &args.base,
+            verify: &args.verify,
         };
         let instructions = trk_agent::prompt::instructions(&resolved.config, &input)?;
         let issue = issue_json["id"].as_str().unwrap_or(&args.issue).to_string();
@@ -425,6 +427,7 @@ mod tests {
                     actor: ACTOR.into(),
                     agent: "implementer".into(),
                     base: "main".into(),
+                    verify: String::new(),
                 })
                 .unwrap();
                 let (ok, out) = server.call_sync(
