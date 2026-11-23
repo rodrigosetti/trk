@@ -242,9 +242,11 @@ titles unchanged.
 It finishes the active check, records the outcome and stops its remaining process
 group, then releases the queue lock and re-executes the installed binary with the
 original arguments and environment. Replacement is checked before each queued
-issue and while idle in `--watch`; no manual watcher restart is needed. One-shot
-results survive the restart, and completed checks (including exit 75 with `--all`
-or an explicit ID) are not replayed within that pass. Already-printed watch results
+issue and while idle in `--watch`; no manual watcher restart is needed. Before
+re-executing, it logs an executable-update notice and the binary path to stderr,
+leaving JSON stdout unchanged. One-shot results survive the restart, and completed
+checks (including exit 75 with `--all` or an explicit ID) are not replayed within
+that pass. Already-printed watch results
 are not printed again. A temporarily missing executable is retried until it returns;
 an exec failure reports an error without undoing recorded outcomes.
 
