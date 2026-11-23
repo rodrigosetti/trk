@@ -120,6 +120,10 @@ impl Executable {
             return Err(std::io::Error::last_os_error().into());
         }
         std::io::stdout().flush()?;
+        eprintln!(
+            "trk check: executable updated; restarting with {}",
+            self.path.display()
+        );
         std::io::stderr().flush()?;
         let mut args = std::env::args_os();
         let mut command = Command::new(&self.path);

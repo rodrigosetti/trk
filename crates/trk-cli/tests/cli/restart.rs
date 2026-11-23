@@ -9,6 +9,7 @@ struct Installation {
     binary: PathBuf,
     replacement: PathBuf,
     output: PathBuf,
+    stderr: PathBuf,
 }
 
 impl Installation {
@@ -39,6 +40,7 @@ impl Installation {
             binary,
             replacement,
             output: e.dir.path().join("runner-output"),
+            stderr: e.dir.path().join("runner-stderr"),
         }
     }
 
@@ -52,7 +54,7 @@ impl Installation {
                 std::ffi::OsString::from_vec(vec![0xff, b'x']),
             )
             .stdout(std::fs::File::create(&self.output).unwrap())
-            .stderr(Stdio::inherit());
+            .stderr(std::fs::File::create(&self.stderr).unwrap());
         CheckRunner::spawn_command(e, command)
     }
 
@@ -74,6 +76,10 @@ impl Installation {
             serde_json::from_slice(&std::fs::read(e.repo().join("restart-lock.json")).unwrap())
                 .unwrap();
         assert_eq!(lock["data"]["check_running"], Value::Null);
+        let stderr = std::fs::read_to_string(&self.stderr).unwrap();
+        assert_eq!(stderr.matches("executable updated").count(), 1, "{stderr}");
+        assert!(stderr.contains("restarting"), "{stderr}");
+        assert!(stderr.contains(&*self.binary.to_string_lossy()), "{stderr}");
     }
 }
 
@@ -111,6 +117,7 @@ fn active_restart(exit: i32, targeted: bool) {
     });
     install.replace();
     assert_check_busy(&e, runner.child.id(), pgid);
+    assert_eq!(std::fs::read(&install.stderr).unwrap(), b"");
     assert!(
         !e.repo().join("restarted").exists(),
         "restarted during a check"
@@ -197,6 +204,7 @@ fn restart_while_watch_is_idle_preserves_emitted_results() {
     check_wait_until("the watcher to print its completed result", || {
         std::fs::read_to_string(&install.output).is_ok_and(|s| s.contains("not yet"))
     });
+    assert_eq!(std::fs::read(&install.stderr).unwrap(), b"");
     let next = e.waiting(
         "queued while idle",
         "test -f \"$TRK_REPO/restarted\" || exit 42; \
