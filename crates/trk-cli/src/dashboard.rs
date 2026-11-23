@@ -638,6 +638,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use trk_core::ops::{ClaimOpts, NewIssue, WaitOpts};
     use trk_core::{Store, StoreOpts};
+    use unicode_width::UnicodeWidthStr;
 
     use super::ui::{self, Mode, Ui};
 
@@ -723,6 +724,14 @@ mod tests {
     fn draws_groups_with_their_details_in_the_list_and_activity() {
         let (_d, s) = sample();
         let mut ui = ui_of(&s);
+        for (i, issue_type) in
+            ui.snap
+                .issues
+                .iter_mut()
+                .zip(["code-change", "bug", "feature", "task"])
+        {
+            i.issue_type = issue_type.into();
+        }
         let text = screen(&mut ui, 140, 40);
         for want in [
             "house",
@@ -747,6 +756,32 @@ mod tests {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }
         assert!(text.contains("▸ P2"));
+        for i in &ui.snap.issues {
+            let prefix = format!("{} {} ", i.priority, i.id);
+            let row = text.lines().find(|line| line.contains(&prefix)).unwrap();
+            assert!(
+                row.contains(&format!("{}  {:<11}  {}", i.id, i.issue_type, i.title)),
+                "id, type and title in order:\n{row}"
+            );
+        }
+        let title_column = text
+            .lines()
+            .find_map(|line| {
+                line.split_once("Paint the walls")
+                    .map(|(prefix, _)| prefix.width())
+            })
+            .unwrap();
+        let more_column = text
+            .lines()
+            .find_map(|line| {
+                line.split_once("implementer (omp)")
+                    .map(|(prefix, _)| prefix.width())
+            })
+            .unwrap();
+        assert_eq!(
+            title_column, more_column,
+            "continuation aligned under title"
+        );
         // The list has the whole width: the issue's text is behind Enter.
         assert!(!text.contains("Description"));
     }
