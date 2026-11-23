@@ -30,6 +30,8 @@ anstream = "1.0"
 owo-colors = "4.4"
 comfy-table = "8"
 termimad = "0.35"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+unicode-width = "0.2"
 anyhow = "1"
 libc = "0.2"
 signal-hook = "0.3"

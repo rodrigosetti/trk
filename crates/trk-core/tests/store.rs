@@ -1261,3 +1261,76 @@ fn queries_and_sorts_use_type_not_issue_agent() {
     );
     assert!(trk_core::query::order_by(Some("agent")).is_err());
 }
+
+#[test]
+fn dashboard_groups_issues_by_what_they_need() {
+    use trk_core::dashboard::Group;
+    let (_d, mut s) = setup();
+    let ready = create(&mut s, "Ready");
+    let blocked = create(&mut s, "Blocked");
+    s.write(HUMAN, false, |c| c.dep_add(&ready, &blocked))
+        .unwrap();
+    let running = create(&mut s, "Running");
+    claim(&mut s, AGENT, &running);
+    let landing = create(&mut s, "Landing");
+    claim(&mut s, AGENT, &landing);
+    wait(&mut s, AGENT, &landing, Some("true"), Some("merge"));
+    let decision = create(&mut s, "Decision");
+    claim(&mut s, AGENT2, &decision);
+    wait(&mut s, AGENT2, &decision, None, Some("pick one"));
+    let bounced = create(&mut s, "Bounced");
+    claim(&mut s, AGENT2, &bounced);
+    wait(&mut s, AGENT2, &bounced, Some("false"), None);
+    assert_eq!(
+        record(&mut s, &bounced, "false", &run(1, "boom")),
+        CheckResult::Failed
+    );
+    let done = create(&mut s, "Done");
+    s.write(HUMAN, false, |c| c.close(&done, "done", None, false))
+        .unwrap();
+
+    let d = s.read(None, |c| c.dashboard(3, &|_| Some(true))).unwrap();
+    let group = |id: &str| d.issues.iter().find(|i| i.id == id).unwrap().group;
+    assert_eq!(group(&ready), Group::Ready);
+    assert_eq!(group(&blocked), Group::Blocked);
+    assert_eq!(group(&running), Group::Running);
+    assert_eq!(group(&landing), Group::Waiting);
+    assert_eq!(group(&decision), Group::Attention);
+    assert_eq!(group(&bounced), Group::Attention);
+    assert!(d.issues.iter().all(|i| i.id != done));
+    assert!(d.issues.is_sorted_by_key(|i| i.group));
+    assert_eq!(
+        (d.counts.attention, d.counts.running, d.counts.waiting),
+        (2, 1, 1)
+    );
+    assert_eq!(
+        (d.counts.ready, d.counts.blocked, d.counts.closed),
+        (1, 1, 1)
+    );
+    assert_eq!(d.activity.len(), 3);
+    assert!(d.activity[0].seq > d.activity[1].seq);
+
+    let b = d.issues.iter().find(|i| i.id == blocked).unwrap();
+    assert_eq!(b.blocked_by[0].id, ready);
+    let l = d.issues.iter().find(|i| i.id == landing).unwrap();
+    let session = l.session.as_ref().unwrap();
+    assert!(!session.active && session.actor == AGENT);
+    assert!(l.waiting.as_ref().unwrap().due);
+    let bounce = d.issues.iter().find(|i| i.id == bounced).unwrap();
+    assert_eq!(bounce.attention, ["check failed; open again"]);
+
+    // A session whose server is gone, and a lease nobody has swept yet.
+    let d = s.read(None, |c| c.dashboard(0, &|_| Some(false))).unwrap();
+    let r = d.issues.iter().find(|i| i.id == running).unwrap();
+    assert_eq!(r.group, Group::Attention);
+    assert_eq!(r.attention, ["session ended; reap to release"]);
+    s.opts.now = Some(ts("2026-11-20T12:00:00Z"));
+    let d = s.read(None, |c| c.dashboard(0, &|_| Some(true))).unwrap();
+    let r = d.issues.iter().find(|i| i.id == running).unwrap();
+    assert_eq!(r.attention, ["lease expired"]);
+    assert_eq!(state(&s, &running), State::Claimed);
+
+    let detail = s.read(None, |c| c.dashboard_detail(&bounced)).unwrap();
+    assert_eq!(detail.description, "why and what");
+    assert!(!detail.notes.is_empty() && !detail.events.is_empty());
+}

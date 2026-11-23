@@ -1,6 +1,7 @@
 //! `trk`: a local issue tracker and agent launcher.
 
 mod check;
+mod dashboard;
 mod editor;
 mod env;
 mod herdr;
@@ -271,6 +272,13 @@ enum Cmd {
     },
     /// Active and waiting agent sessions with state, terminal and lease
     Runs,
+    /// Live overview: what needs you, sessions, waiting checks, ready and blocked work
+    #[command(
+        visible_alias = "dash",
+        after_help = "Opens a full-screen view that follows the database. Press ? for the keys.\n\
+        Without a terminal, or with --json, it prints the same snapshot once."
+    )]
+    Dashboard,
     /// Attach to the session's terminal
     Attach { id: String },
     /// Type text into the session's terminal
@@ -722,6 +730,10 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
             },
         ),
         Cmd::Runs => run::runs(&env),
+        Cmd::Dashboard => dashboard::dashboard(
+            &env,
+            g.json || g.format.as_deref().is_some_and(|f| f != "pretty"),
+        ),
         Cmd::Attach { id } => run::attach(&env, &id),
         Cmd::Send { id, text } => run::send(&env, &id, &text),
         Cmd::Reap => run::reap(&env),

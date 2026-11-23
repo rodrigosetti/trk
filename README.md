@@ -220,6 +220,7 @@ full, and `trk check --dry-run` shows the queue before anything runs.
 trk run                          # start the highest-priority ready issue
 trk run orch-4kq                 # claim as agent:<harness>:<uuid>, create the worktree, start in hc
 trk runs                         # active and waiting sessions: state, terminal, claim metadata, MCP liveness
+trk dashboard                    # live full-screen overview of all of this; ? lists the keys
 trk attach orch-4kq              # take over the terminal
 trk note orch-4kq --to-agent "Also update the docs"   # delivered with the agent's next tool result
 trk send orch-4kq "Wrap up and finish"                # typed into the session

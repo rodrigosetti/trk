@@ -306,6 +306,10 @@ send   = ["hc", "send", "{name}", "{text}"]
 
 `{shell_command}` changes into the worktree and sets the environment; `--cwd` also sets the terminal's launch folder. `--no-parent` keeps the session independent of the launching terminal.
 
+**Dashboard.** `trk dashboard` shows every issue that is not closed, grouped by what it needs and sorted by priority inside each group: *needs you* (waiting with no check, a failed check or lost session that returned the issue to open, a session whose MCP server is gone, an expired lease, the wake cap reached), *in flight* (claimed), *waiting* (on a check), *ready* and *blocked* (with its open blockers). Under each title, a second line says who holds the issue, what it waits for and what blocks it. `Enter` opens the selected issue in full: session, waiting condition, dependencies, description, notes and history. Below the list are the latest events of all issues. The header counts each group and says whether a check runner holds the queue lock. The dashboard never runs checks.
+
+The view is one read-only snapshot (`trk_core::dashboard`), re-read when the database changes; reading it writes nothing, so an expired lease is reported, not swept. `--json` prints that snapshot. Keys act on the selected issue: `r` run, `a` go to the session, `s` send, `m`/`M` note (to the agent), `x` close, `o` reopen, `u` unclaim, `R` reap, `p` priority, `e`/`c` edit and create in `$EDITOR`, `/` filter. `run`, `reopen`, `unclaim` and `reap` ask first; `x` and `u` override an agent's claim, as `--force` does. `a` shows the session's own pane when the dashboard runs inside the Herdr window and `herdr = true`; otherwise it runs the `attach` template in the dashboard's terminal.
+
 `herdr = true` starts the agent directly with `herdr-app do space.new`: the space's name is the issue title, its folder is the worktree (session scratch for issues without a repository), and its first terminal runs the harness shell command. The launching space and its tabs are unchanged. The returned terminal address is bound to the claim and used by `trk attach`, `trk send` and `trk runs`.
 
 trk observes `herdr-app ls` for up to two seconds; only a direct agent pane in the created space, with the expected title and folder, counts as visible. JSON returns `placement.status` (`visible` or `failed`) with pane/tab/space IDs or a reason. Observation failures warn and retain the session and claim. If UI discovery fails before launch, the configured `start` template runs headlessly with a warning. If space creation itself fails or returns an uncertain response, the command errors and retains the claim; it never retries or falls back to a second session.
@@ -491,6 +495,7 @@ Every command builds one typed result, then renders it in the requested format. 
 | **Agent sessions** |  |
 | `trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]` | Start an agent session; agent override is one-off |
 | `trk runs` | Active and waiting agent sessions, marked by state, with agent, harness, terminal and claim metadata |
+| `trk dashboard` (`dash`) | Live full-screen overview; without a terminal or with `--json`, the snapshot once |
 | `trk attach <ID>` / `trk send <ID> TEXT` | Attach to or type into the active session, or the waiting session when no claim is active |
 | `trk reap` | Release claims whose session has ended, with a note |
 | `trk mcp --issue ID --actor A --agent N` | The per-issue MCP server (started by the harness, not by hand) |

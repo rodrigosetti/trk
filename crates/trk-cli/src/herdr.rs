@@ -101,6 +101,38 @@ pub fn has_terminal(terminal: &str) -> Result<bool, String> {
     Ok(terminal_space(&ui, terminal).is_some())
 }
 
+/// Show the pane of `terminal` in the Herdr window. Only when this process
+/// runs in a pane of that window, so the person is looking at it: `false`
+/// means the caller should reach the terminal another way.
+pub fn focus(terminal: &str) -> Result<bool, String> {
+    let Ok(own) = std::env::var("HC_TERMINAL_ID") else {
+        return Ok(false);
+    };
+    let Ok(ui) = json_command("herdr-app", &["ls"]) else {
+        return Ok(false);
+    };
+    if terminal_space(&ui, &own).is_none() {
+        return Ok(false);
+    }
+    let Some(space) = terminal_space(&ui, terminal) else {
+        return Ok(false);
+    };
+    let tab = space["tabs"].as_array().into_iter().flatten().find(|tab| {
+        tab["terminals"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|pane| pane["terminal"] == terminal)
+    });
+    let space = space["id"].as_str().ok_or("space omitted its ID")?;
+    command("herdr-app", &["do", "space.select", "--id", space])?;
+    if let Some(tab) = tab.and_then(|t| t["id"].as_str()) {
+        command("herdr-app", &["do", "tab.select", "--id", tab])?;
+    }
+    command("herdr-app", &["do", "pane.focus", "--terminal", terminal])?;
+    Ok(true)
+}
+
 /// Mark the current visible space name without replacing a user's rename.
 pub fn mark_closed(terminal: &str) -> Result<(), String> {
     let ui = json_command("herdr-app", &["ls"])?;
