@@ -148,10 +148,23 @@ An empty message is `bad_args`; an agent actor is `not_permitted`. `invalid_stat
 trk check --json              # run the checks that are due, one at a time
 trk check <ID> --json         # run one issue's check now
 trk check --all --json        # run every check, due or not
-trk check --dry-run --json    # show what would run and where
+trk check --dry-run --json    # preview checks and eligible cleanup without changing anything
+trk check --no-gc --json      # run checks without automatic cleanup
 ```
 
 Each result is `passed`, `retry`, `woken` (failed check, original session resumed), `failed` (reopened, including failed wake delivery), or `skipped` (changed meanwhile). Both `woken` and `failed` include output. Only one `trk check` runs at a time (`"busy": true` means another is running), so checks that merge never race. The user usually keeps `trk check --watch` running in a spare terminal; do not start that yourself, since it never returns.
+
+Non-ID passes also sweep all eligible closed-as-done issues, including manual closes,
+under the same queue lock and safety gates as `trk gc`. Abandoned issues are excluded.
+`[check] gc = true` and `gc_grace = "1h"` default even when omitted; the grace is a minimum
+age since closure, not a cleanup deadline. `--no-gc` disables sweeping for the whole
+invocation, including watch; explicit-ID checks never sweep. Dry runs only preview:
+no checks run, resources are not removed and cleanup notes are not written.
+Cleanup errors are advisory and never change check outcomes or exit status.
+Optional `data.gc` contains `dry_run`, manual-GC-shaped `issues`, and optional `errors`
+strings; it is absent when there are no eligible issues or errors. Pretty output
+adds one line per issue with removals (planned removals for dry runs); skips and their
+reasons are shown once per issue per run, not on every watch pass.
 
 ## Blockers
 
@@ -191,8 +204,9 @@ trk gc <ID> --json                        # collect one closed issue's resources
 trk gc --older-than 7d --abandoned --json # also include abandoned issues older than a week
 ```
 
-Closing retains resources until explicit GC. Only closed-as-done issues are eligible by default;
-`--abandoned` also includes abandoned issues. Open, claimed and waiting issues are never collected.
+Closing retains resources until manual GC or an eligible automatic check sweep. Only
+closed-as-done issues are eligible by default; manual `--abandoned` also includes abandoned
+issues. Open, claimed and waiting issues are never collected.
 GC considers all historical claims but only local-host resources. It protects the current worktree,
 the caller's terminal space and other issues' active/waiting sessions; worktree paths must be under
 the configured directory. Herdr sessions are matched by exact terminal, not title. Git removals

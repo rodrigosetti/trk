@@ -63,7 +63,7 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk wait <ID> [-c CHECK] [--every 5m] [-r REASON] [--force] [--dry-run]` | claimed → waiting; on a waiting issue, replace its check |
 | `trk reopen <ID> [-m NOTE]` | waiting or closed → open |
 | `trk resume <ID> -m MESSAGE` | Human-authorized waiting → claimed for the original live session, then deliver the required message |
-| `trk check [ID] [--all] [--watch [PAUSE]] [--dry-run]` | Run waiting checks, one at a time |
+| `trk check [ID] [--all] [--watch [PAUSE]] [--dry-run] [--no-gc]` | Run waiting checks, one at a time, then optionally sweep closed-as-done resources |
 | `trk note <ID> [TEXT or -] [--amends SEQ] [--to-agent]` | Append a note |
 | `trk dep add or rm <BLOCKER> <BLOCKED>` | Blocker edges |
 | `trk log <ID>` | Timeline |
@@ -81,6 +81,22 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 `trk check --json` results: `passed` closes, `retry` keeps waiting, `woken` restores the live waiting session's claim and sends a repair prompt, `failed` reopens (no live session, wake cap reached or failed delivery), and `skipped` means the issue changed during the check or wake delivery. `woken` and `failed` include output, also saved in a note. Liveness requires the original MCP server on this host, a terminal (present in Herdr when enabled), and `[launcher] send`. trk only interprets exit codes; timeout is failure, exit 75 is retry.
 
 `[check] max_wakes` caps automatic failed-check claim restorations per session: default `5`, including when omitted from older configs; `0` disables automatic waking. The cap check and persistent `wake_count` increment happen transactionally with automatic claim restoration, before delivery, so a failed send still consumes a wake. Passes, retries and failures without restoration do not increment it. Entering or updating waiting and human resume preserve it. A fresh explicit claim, including `--steal`, resets it to zero; an idempotent claim by the current owner does not. Wake prompts include `wake N of M`. At the cap, a failed check reopens the issue with `wake cap of M reached` and the command's output in its note.
+
+After each non-ID pass, including a pass with no due checks, `trk check` sweeps all eligible
+closed-as-done issues, including manual closes; abandoned issues are excluded. `[check] gc`
+defaults to `true` and `[check] gc_grace` to `"1h"`, also when omitted. The grace is a minimum
+duration since closure, not a cleanup deadline; unsafe resources may remain for later passes.
+`--no-gc` disables the sweep for the entire invocation, including watch; explicit-ID checks
+never sweep. Automatic cleanup uses the same queue lock, lifecycle transaction and safety
+gates as manual GC, after checks and before releasing the lock. `--dry-run` previews checks
+and cleanup without executing checks, removing resources or writing cleanup notes.
+
+Cleanup errors are advisory: they do not undo check outcomes or alter the command's exit
+status. Optional check `data.gc` is `{dry_run: bool, issues: [...]}` with the same
+issue/resource objects as manual GC below and optional `errors: [string, ...]`; omit `gc`
+when there are no eligible issues and no errors. Pretty output adds one concise line per
+issue with removals (planned removals in dry runs); skips and their reasons appear once
+per issue per run, avoiding repeated watch noise.
 
 ### Human-authorized resume
 
