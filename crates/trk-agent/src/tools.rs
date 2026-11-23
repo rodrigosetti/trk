@@ -110,15 +110,18 @@ pub fn catalogue() -> Vec<ToolDef> {
             "wait",
             Action::Wait,
             format!(
-                "End your session with the issue not yet done: it waits for something outside this session. \
+                "End this work cycle with the issue not yet done: it waits for something outside this session. \
                  With `check`, a shell command that trk runs later, on a schedule, in your worktree: \
                  exit 0 closes the issue as done; exit {CHECK_RETRY_EXIT} means not yet, check again after `interval`; \
                  any other exit or timeout records the output as a note and wakes you to fix the failure if your session is still alive. \
-                 Your claim and tools are restored; address the failure and end again, normally with wait. \
+                 Your claim and tools are restored; fix only what the check reported and end the new cycle again, normally with the same wait. \
                  If your session is gone, wake delivery fails, or [check] max_wakes is reached, the issue returns to open for a new session. \
-                 The wake cap defaults to 5 per session; 0 disables waking. Each wake includes its count. \
+                 The wake cap defaults to 5 per session; 0 disables waking. Each wake includes its count; hand_back with evidence if the same failure keeps returning. \
+                 While waiting you can still add notes and may receive requests from the human. \
                  The command may do the remaining work itself (merge the branch) or only look (is the PR merged?). \
-                 It runs unattended and may run more than once: make it non-interactive and safe to repeat. \
+                 For a PR, pass when merged; fail with actionable output for base-branch conflicts, failed head-commit CI, or closure without merging; otherwise return {CHECK_RETRY_EXIT}. \
+                 Pending CI, review threads, approval and unknown mergeability are not failures. Do not resolve review threads or merge the PR unless a person asks. \
+                 It runs unattended under sh -c and may run more than once: make it non-interactive, non-blocking (no --watch) and safe to repeat. \
                  Without `check`, the issue waits for a human to close or reopen it."
             ),
             object_schema(vec![

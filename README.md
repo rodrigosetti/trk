@@ -113,9 +113,35 @@ contain ANSI styling.
 trk wait orch-4kq -r "merge into main" \
   -c 'cd "$TRK_REPO" && [ "$(git branch --show-current)" = main ] && git merge --no-edit "$TRK_BRANCH"'
 
-# Done once the PR is merged: the check only looks, every 10 minutes.
-trk wait orch-4kq -r "PR 12 merged" --every 10m \
-  -c 'case "$(gh pr view 12 --json state -q .state)" in MERGED) exit 0;; OPEN) exit 75;; *) exit 1;; esac'
+# Done once the PR is merged; wake for conflicts or failed head-commit CI.
+# gh's built-in jq filter reads the head commit's check runs and statuses.
+pr_check=$(cat <<'CHECK'
+result=$(gh pr view 12 --json state,baseRefName,mergeable,headRefOid,statusCheckRollup --jq '
+  if .state == "MERGED" then "merged"
+  elif .state == "CLOSED" then "PR closed without merging"
+  elif .mergeable == "CONFLICTING" then "PR conflicts with base branch \(.baseRefName)"
+  else
+    .headRefOid as $head |
+    [.statusCheckRollup[]? |
+      select(
+        (.__typename == "CheckRun" and .status == "COMPLETED" and
+          (.conclusion | IN("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"))) or
+        (.__typename == "StatusContext" and (.state | IN("FAILURE", "ERROR")))
+      ) |
+      "\(.name // .context): \(.conclusion // .state) \(.detailsUrl // .targetUrl // "")"
+    ] |
+    if length > 0 then "CI failed on head \($head):\n" + join("\n")
+    else "waiting" end
+  end
+') || exit "$?"
+case "$result" in
+  merged) exit 0 ;;
+  waiting) exit 75 ;;
+  *) printf "%s\n" "$result"; exit 1 ;;
+esac
+CHECK
+)
+trk wait orch-4kq -r "PR 12 merged" --every 10m -c "$pr_check"
 
 # Waiting on a person: no check. Resolve it with `trk close` or `trk reopen -m "the answer"`.
 trk wait orch-4kq -r "SQLite or Dolt?"
@@ -140,9 +166,17 @@ The check runs with `sh -c` in the worktree the issue was claimed in, with `TRK_
 
 | Exit | Meaning | Result |
 | --- | --- | --- |
-| 0 | pass | the issue closes as done |
-| 75 | not yet | still waiting; checked again after `--every` (default `[check] interval`, 5m) |
-| anything else, or a timeout | error | wake the original live session, otherwise reopen; record the command's output in a note |
+| 0 | pass (PR merged) | the issue closes as done |
+| 75 | not yet (CI pending, awaiting review, unresolved threads, approved but not merged, unknown mergeability) | still waiting; checked again after `--every` (default `[check] interval`, 5m) |
+| anything else, or a timeout | error (base-branch conflict, failed head-commit CI, closed without merging, or query/authentication failure) | wake the original live session, otherwise reopen; record the command's output in a note |
+
+The PR states above describe the example, not built-in PR handling. The agent opens
+the PR and waits; trk closes the issue when it merges. The agent fixes reported
+base-branch conflicts and failed head-commit CI unattended. Review threads and
+merging belong to the human unless they ask the agent to handle them.
+The check names the conflicting base or prints failed jobs and their URLs. It
+does not block on CI or review. Checks must be non-interactive, non-blocking
+(no `--watch`) and safe to repeat.
 
 A failed check restores the original session's claim with a fresh lease when its MCP
 server is alive on this host, its terminal is recorded (and present when using Herdr),
@@ -151,8 +185,11 @@ The cap defaults to `5`, including in existing configs that omit it; `0` disable
 Each restored claim increments the session's persistent count, even if sending fails.
 Entering or updating `wait` preserves it. A fresh explicit claim (including `--steal`)
 resets it to zero; repeating a claim as its current owner does not.
-The session receives `wake N of M`, the output and a prompt to fix the failure and end
-again, normally with `wait`. Its MCP tools work again.
+The session receives `wake N of M`, the output and a prompt to fix only what the
+check reported, then end the new work cycle, normally with the same `wait`. Its
+MCP tools work again. If the same failure keeps returning, it should `hand_back`
+with the evidence instead of repeating indefinitely. While waiting, it can still
+add notes and receive requests from the human.
 If the cap is reached, the issue reopens with a note saying `wake cap of M reached`
 and retaining the check output. A gone session or failed send also reopens the issue.
 `trk show` displays a `wakes` line for a nonzero count while claimed or waiting;

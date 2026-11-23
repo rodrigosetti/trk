@@ -6,7 +6,7 @@ Nov 21, 2026 · @Rodrigo Setti
 
 `trk` is a local issue tracker and agent launcher in one Rust binary. It keeps the work of every repository in one SQLite database in the user's home directory. Humans use the CLI. Agents work through a per-issue MCP server. `trk run [ID]` starts an agent session on one issue in a persistent terminal (herdr-core, `hc`), with focused instructions and only that issue's tools.
 
-Issues have routing-only types and share one state machine. An agent session ends in one of two ways: the issue is **closed**, or it is **waiting** for something outside the session, described by a shell command that `trk check` runs until it passes, fails, or says "not yet".
+Issues have routing-only types and share one state machine. An agent work cycle ends with the issue **closed**, **waiting** for something outside the session, or handed back **open**. A waiting check is a shell command that `trk check` runs until it passes, fails, or says "not yet"; a failed check may wake the same session for another work cycle.
 
 **Terms.** An *agent* is instructions plus tools. A *harness* is the program that runs an agent: Claude Code, pi, omp, Codex, OpenCode. A *launcher* is where the harness runs: `hc`. A *check* is the shell command of a waiting issue.
 
@@ -103,18 +103,52 @@ The check's exit code is the whole protocol:
 
 | Exit | Meaning | Effect |
 | --- | --- | --- |
-| 0 | pass | closed with reason `done` |
-| 75 (`EX_TEMPFAIL`) | not yet | still waiting; due again after the interval |
-| anything else | error | resume the live waiting session, otherwise reopen; a note records the command, its directory and the last 4 KB of its output |
+| 0 | pass (e.g. PR merged) | closed with reason `done` |
+| 75 (`EX_TEMPFAIL`) | not yet (e.g. CI pending, awaiting review, unresolved threads, approved but not merged, unknown mergeability) | still waiting; due again after the interval |
+| anything else | error (e.g. base-branch conflict, failed head-commit CI, closed without merging, query/authentication failure) | resume the live waiting session, otherwise reopen; a note records the command, its directory and the last 4 KB of its output |
 | killed by the timeout | error | the same, saying it timed out |
 
 Error is the default. A command that is misspelled, whose credentials expired, or whose branch conflicts fails loudly and returns as work, instead of waiting forever. Only the one reserved code keeps an issue waiting, so "not yet" is always a deliberate answer.
 
-A check may do the remaining work (merge the branch) or only look (is the PR merged?). It must be safe to run more than once: `trk check` may die between running a command and recording its result, and the next pass runs it again.
+A check may do the remaining work (merge the branch) or only look (is the PR merged?). It runs under `sh -c` in the claim's worktree with `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` and `TRK_BRANCH`. It must be non-interactive, non-blocking (no `--watch`) and safe to run more than once: `trk check` may die between running a command and recording its result, and the next pass runs it again.
+
+Default PR scope: the agent opens the PR and waits; trk closes the issue when it merges. The agent fixes reported base-branch conflicts and failed CI on the head commit unattended. Review threads and merging belong to the human unless they ask the agent to handle them. The following example uses `gh`'s built-in jq filter and the head commit's `statusCheckRollup` (check runs and commit statuses); it names a conflicting base, prints failed jobs and their URLs, and fails if the PR closes without merging. Other open states keep waiting:
+
+```sh
+pr_check=$(cat <<'CHECK'
+result=$(gh pr view 12 --json state,baseRefName,mergeable,headRefOid,statusCheckRollup --jq '
+  if .state == "MERGED" then "merged"
+  elif .state == "CLOSED" then "PR closed without merging"
+  elif .mergeable == "CONFLICTING" then "PR conflicts with base branch \(.baseRefName)"
+  else
+    .headRefOid as $head |
+    [.statusCheckRollup[]? |
+      select(
+        (.__typename == "CheckRun" and .status == "COMPLETED" and
+          (.conclusion | IN("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"))) or
+        (.__typename == "StatusContext" and (.state | IN("FAILURE", "ERROR")))
+      ) |
+      "\(.name // .context): \(.conclusion // .state) \(.detailsUrl // .targetUrl // "")"
+    ] |
+    if length > 0 then "CI failed on head \($head):\n" + join("\n")
+    else "waiting" end
+  end
+') || exit "$?"
+case "$result" in
+  merged) exit 0 ;;
+  waiting) exit 75 ;;
+  *) printf "%s\n" "$result"; exit 1 ;;
+esac
+CHECK
+)
+trk wait <ID> --json -r "PR 12 merged" --every 10m -c "$pr_check"
+```
 
 Entering waiting releases the claim with reason `waiting`; nobody holds the issue. The session and terminal may stay open as the waiting session (see Claims). Running `wait` on an issue that is already waiting replaces its check, interval and reason, which is how a human repairs a bad check without reopening.
 
 On failure, the CLI checks the latest claim released as `waiting`: its MCP server must still be alive on this host, its terminal must be recorded (and present in Herdr when enabled), and `[launcher] send` must be configured. `[check] max_wakes` limits restorations per session (default `5`, including when omitted from existing configs); `0` disables waking. In the same transaction that records the failed check, trk verifies `wake_count < max_wakes`, restores that session's actor, worktree, host, agent and terminal in a new claim with a fresh lease, and increments the persistent `wake_count`. The original MCP server can renew and use its tools again. The CLI then sends a prompt with `wake N of M` and the check output asking the session to address the failure and end again, normally with `wait`.
+
+The woken session fixes only what the check reported, then ends the new cycle, normally with the same `wait`. It should use `hand_back` with evidence when the same failure keeps returning rather than repeat indefinitely. While waiting, it can still add notes and receive requests from the human.
 
 Entering or updating waiting preserves `wake_count`. A fresh explicit claim, including a stolen claim, resets it to zero; an idempotent claim by the current owner does not. Only restoring a claim increments it, not a retry, pass, or failed check that reopens without restoration. While claimed or waiting with a nonzero count, issue JSON includes top-level `wake_count` and pretty `trk show` displays a `wakes` line; otherwise the count is omitted from these displays.
 
