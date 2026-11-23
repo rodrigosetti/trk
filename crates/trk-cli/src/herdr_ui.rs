@@ -366,7 +366,7 @@ pub fn open(env: &Env, app: &Path, place: Place, space: Option<&str>) -> Result<
     let made = match place {
         Place::Tab => json_command(
             "herdr-app",
-            &["do", "tab.new", "--space", &target.space, "--name", "trk", "--mod", MOD, "--props", &props],
+            &["do", "tab.new", "--space", &target.space, "--name", "trk dashboard", "--mod", MOD, "--props", &props],
         ),
         Place::Right | Place::Down => {
             let Some((tab, pane)) = &target.own else {

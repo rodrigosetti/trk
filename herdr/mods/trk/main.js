@@ -594,7 +594,7 @@ export default class Trk extends View {
       run("tab.select", { id: panel.tab });
       run("pane.focus", { pane: panel.pane });
     } else {
-      run("tab.new", { name: "trk", space: space.id, mod: "trk" });
+      run("tab.new", { name: "trk dashboard", space: space.id, mod: "trk" });
     }
   }
 
