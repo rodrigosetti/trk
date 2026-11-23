@@ -527,7 +527,7 @@ Every command builds one typed result, then renders it in the requested format. 
 | `trk list [QUERY] [--fields F,..] [--sort F] [--limit N]` | Query issues; `@view` runs a saved view |
 | `trk ready [QUERY]` | Ready issues |
 | `trk show <ID>... [--with notes,events,deps,claims]` | Full issue with derived state |
-| `trk create [TITLE] [-d TEXT] [-p P] [--type T] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; type defaults to `code-change`; opens `$EDITOR` when there is no title on a TTY |
+| `trk create [TITLE] [-d TEXT] [-p P] [--type T] [--blocked-by ID]... [--blocks ID]... [--run] [--dry-run]` | Create; type defaults to `code-change`; opens `$EDITOR` when there is no title on a TTY; `--run` immediately starts the new issue's agent |
 | `trk edit <ID> [-t TITLE] [-d TEXT] [-p P] [--type T] [--dry-run]` | Change the authored fields; `$EDITOR` with no options |
 | `trk claim <ID> [--lease 30m] [--worktree PATH] [--steal]` | open → claimed |
 | `trk unclaim <ID> [-m NOTE] [--force]` / `trk renew <ID>` | claimed → open / extend the lease |
@@ -552,6 +552,12 @@ Every command builds one typed result, then renders it in the requested format. 
 | `trk backup <PATH>` | Consistent copy via `VACUUM INTO` |
 
 `-d` and `-c` take text, `@file`, or `@-` for stdin. In the interactive editor, `title`, `priority` and required `type` are TOML front matter and the description is the markdown body; if validation fails on save, the file reopens with the errors added as comments. `--dry-run` runs every check and returns the would-be result or the error, and writes nothing.
+
+`trk create --run` creates the issue, then runs that exact ID through `trk run` with
+default agent routing, harness selection and launcher settings, returning the run result
+instead of the issue (`data.issue` identifies it in JSON). It conflicts with `--dry-run`.
+Creation is not rolled back if running fails: the error includes the created issue ID,
+and the caller can retry with `trk run <ID>`.
 
 ### Query language
 
