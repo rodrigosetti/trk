@@ -342,9 +342,17 @@ mod tests {
         store.read(None, |c| c.active_claim(issue)).unwrap()
     }
 
-    fn assert_inactive(server: &TrkServer) {
+    fn assert_released(server: &TrkServer, state: State) {
+        let (ok, out) = server.call_sync("add_note", json!({"body": "released session note"}));
+        if state == State::Waiting {
+            assert!(ok, "{out}");
+            assert_eq!(out["task"]["state"], "waiting");
+            assert_eq!(out["task"]["claimed"], false);
+        } else {
+            assert!(!ok, "{out}");
+            assert_eq!(out["error"]["code"], "not_permitted");
+        }
         for (tool, args) in [
-            ("add_note", json!({"body": "must not be added"})),
             ("wait", json!({"reason": "must not wait again"})),
             ("close", json!({"reason": "done", "note": "must not close"})),
             ("hand_back", json!({"note": "must not hand back"})),
@@ -413,7 +421,7 @@ mod tests {
             );
             assert!(ok, "{out}");
             assert_eq!(out["waiting"], issue);
-            assert_inactive(&server);
+            assert_released(&server, State::Waiting);
             server.renew_lease();
             assert!(active_claim(&store, &issue).is_none());
             let historical = store.read(None, |c| c.claims(&issue)).unwrap();
@@ -465,7 +473,7 @@ mod tests {
                 expected_state
             );
             assert!(active_claim(&store, &issue).is_none());
-            assert_inactive(&server);
+            assert_released(&server, expected_state);
         }
     }
 }
