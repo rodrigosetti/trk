@@ -197,7 +197,7 @@ A check that says "not yet" writes no event and does not touch `updated_at`: an 
 ## `trk check`
 
 ```
-trk check [ID] [--all] [--watch [PAUSE]] [--dry-run]
+trk check [ID] [--all] [--watch [PAUSE]] [--dry-run] [--no-gc]
 ```
 
 One pass:
@@ -205,9 +205,14 @@ One pass:
 1. Read the queue: waiting issues with a check whose `next_check_at` has come, ordered by priority, then due time. `--all` ignores the due time; an `ID` runs that issue alone, due or not.
 2. Take the lock (below). If another pass holds it, report `busy` and do nothing.
 3. For each issue, in order, one at a time: run `sh -c <check>` and record the result.
-4. Release the lock.
+4. Unless an `ID` was supplied, `[check] gc = false`, or `--no-gc` was passed, sweep eligible closed-as-done issues while still holding the queue lock, using the same lifecycle transaction and safety gates as `trk gc`.
+5. Release the lock.
 
-`--watch` repeats passes with a pause (default 30s) until interrupted. `trk check` is otherwise one-shot, so cron or launchd can drive it. `--dry-run` prints the queue, each command and its directory, and runs nothing.
+`--watch` repeats passes with a pause (default 30s) until interrupted. `trk check` is otherwise one-shot, so cron or launchd can drive it. `--dry-run` prints the queue, each command and its directory, and previews eligible cleanup without running checks, removing resources or writing cleanup notes.
+
+**Automatic cleanup.** The end-of-pass sweep considers all closed-as-done issues, including manual closes and issues closed in earlier passes, even when no checks were due. Abandoned issues are excluded. `[check] gc` defaults to `true` and `[check] gc_grace` to `"1h"`, including when omitted from existing configs. The grace is a minimum time since closure, not a cleanup deadline: the next pass after it elapses may collect safe resources, while unsafe resources remain protected and can be reconsidered later. `--no-gc` disables cleanup for the entire invocation, including every watch pass; `trk check ID` never sweeps.
+
+Cleanup errors are advisory: they neither undo check outcomes nor change the check command's exit status. Check JSON data optionally includes `gc: {dry_run: bool, issues: [...]}`, with the same issue/resource objects as manual `trk gc` and an optional `errors: [string, ...]`. Omit `gc` when there are no eligible issues and no errors. Pretty output emits one concise line per issue with removals (planned removals in a dry run); skips and their reasons are shown once per issue per run, not on every watch pass.
 
 **Executable upgrades.** Before each queued issue and during the watch pause,
 compare the installed executable's device/inode and file metadata with the startup
@@ -341,7 +346,7 @@ trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]
 
 Related commands: `trk attach <ID>` and `trk send <ID>` (only when their launcher templates are set) target the active claim's terminal, or the waiting session's terminal when there is no active claim. An active claim takes precedence even if it has no terminal; historical terminals are never a fallback once the issue leaves waiting. `trk runs` lists active and waiting agent sessions with `state` (`claimed` or `waiting`), agent, harness, terminal and claim metadata. A waiting row's lease is historical, not active. `trk reap` releases active claims whose MCP server has gone, recording the exit as a note; it leaves waiting sessions alone.
 
-The worktree outlives the claim: a waiting issue's check runs in it. Closing an issue retains its resources until an explicit `trk gc` removes them.
+The worktree outlives the claim: a waiting issue's check runs in it. Closing an issue retains its resources until manual `trk gc` or an eligible end-of-pass `trk check` sweep removes them.
 
 ### `trk gc`
 
@@ -446,8 +451,9 @@ Everything is in `<project root>/.trk/`, created by `trk install`:
   prompts/*.j2         # MiniJinja templates for instructions and briefings
 ```
 
-`config.toml` is explicit: `trk install` writes every setting; most missing settings are errors.
-Types, agents and prompts are read when routing is resolved.
+`config.toml` is explicit: `trk install` writes every setting. Missing settings are errors except
+for compatibility defaults such as `[check] max_wakes`, `gc`, `gc_grace`, and the detected
+`[run] base`. Types, agents and prompts are read when routing is resolved.
 
 `[run] base` configures the base branch (for example, `base = "develop"`). When writing
 a new config, `trk install` detects the branch named by `origin/HEAD`, then the current
@@ -455,6 +461,11 @@ branch of the primary checkout, then falls back to `main`. At runtime an explici
 `base` wins; older configs that omit it use the same detection order. The resolved
 branch is used for new issue branches, prompt-template `{{ base }}` and waiting-check
 `TRK_BASE`.
+
+| Check setting | Default, also when omitted | Meaning |
+| --- | --- | --- |
+| `[check] gc` | `true` | Sweep closed-as-done issues at the end of non-ID check passes; `--no-gc` disables it for the invocation |
+| `[check] gc_grace` | `"1h"` | Minimum duration since closure before automatic cleanup, not a removal deadline |
 
 ### Project resolution
 
@@ -562,7 +573,7 @@ Every command builds one typed result, then renders it in the requested format. 
 | `trk close <ID> [-r done\|abandoned] [-m NOTE] [--force] [--dry-run]` | Close from open, claimed or waiting |
 | `trk wait <ID> [-c CHECK] [--every DUR] [-r REASON] [--force] [--dry-run]` | claimed → waiting; on a waiting issue, replace the check |
 | `trk reopen <ID> [-m NOTE]` | waiting or closed → open |
-| `trk check [ID] [--all] [--watch [PAUSE]] [--dry-run]` | Run the checks of waiting issues |
+| `trk check [ID] [--all] [--watch [PAUSE]] [--dry-run] [--no-gc]` | Run the checks of waiting issues, then optionally sweep closed-as-done resources |
 | `trk note <ID> [TEXT\|-] [--amends SEQ] [--to-agent]` | Append a note; `--to-agent` also queues it for the agent's inbox |
 | `trk dep add\|rm <BLOCKER> <BLOCKED>` | Add or remove a blocks edge |
 | `trk log <ID>` | Timeline: events and notes |
@@ -732,7 +743,7 @@ Git, `sh` and `kill` are invoked as executables through `std::process`. Tests us
 ### Open questions
 
 - [ ] **Maximum wait.** Nothing ends a wait whose check answers "not yet" forever (an abandoned PR). `trk list state=waiting --sort next-check` shows them; an optional deadline that turns into a failure would make it automatic.
-- [x] **Worktree cleanup.** Explicit `trk gc` collects closed issues' local resources with dry-run support and conservative session, path and Git safety checks; waiting and active issues remain protected.
+- [x] **Worktree cleanup.** Explicit `trk gc` and automatic end-of-pass `trk check` sweeps collect closed-as-done local resources with the same queue lock, lifecycle transaction and conservative session, path and Git safety checks. Automatic cleanup defaults on with a one-hour minimum grace, not a deadline; abandoned, waiting and active issues remain protected. Config or `--no-gc` disables the sweep; explicit-ID checks never sweep, dry runs only preview, and cleanup errors are advisory.
 - [ ] **Check lock across hosts.** A lock held from another host is never replaced. With one machine this cannot happen; with a shared database it would need a timeout.
 - [ ] **Running agents automatically.** `trk check` reopens failed issues but does not start a session on them. A loop that runs `trk check` and then `trk run` on what is ready would close the cycle; it needs a limit on concurrent sessions first.
 - [ ] **Lease length.** 30 minutes for agent claims is a guess. It should exceed the longest silent stretch of a typical agent session.

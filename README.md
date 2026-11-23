@@ -156,9 +156,22 @@ trk wait orch-4kq -r "SQLite or Dolt?"
 trk check                 # run the checks that are due, one at a time
 trk check --watch         # keep doing that; leave it running in a spare terminal
 trk check orch-4kq        # run one now
-trk check --dry-run       # show what would run, and where
+trk check --dry-run       # preview checks and eligible cleanup without changing anything
+trk check --no-gc         # run checks without automatic cleanup (also works with --watch)
 trk list state=waiting    # what is waiting, on what, and when it is checked next
 ```
+
+After each non-ID pass, `trk check` automatically sweeps all eligible closed-as-done
+issues, including manual closes, under the same queue lock and safety gates as `trk gc`.
+Abandoned issues are excluded. `[check] gc = true` and `gc_grace = "1h"` are the defaults,
+also when those keys are missing. The grace is a minimum age since closure, not a cleanup
+deadline: cleanup waits for a later pass and may skip unsafe resources. `trk check ID`
+never sweeps; `--no-gc` disables sweeping for the whole run or watch session.
+`--dry-run` previews cleanup without removals or cleanup notes. Cleanup errors are advisory
+and do not change check outcomes or exit status. JSON includes optional `data.gc` with
+`dry_run`, manual-GC-shaped `issues`, and optional `errors` strings, omitted when there
+are no eligible issues or errors. Pretty output shows one line per issue with removals;
+skips and their reasons are shown once per issue per run, rather than on every watch pass.
 
 ### Human-authorized resume
 
@@ -474,9 +487,11 @@ Everything trk keeps for a project is in `.trk/` at its root, written by `trk in
   checks/                 logs of running checks
 ```
 
-`config.toml` is explicit: `trk install` writes every setting; most missing settings are
-errors. `[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory
-name, or `trk install --prefix NAME`. Changing it later only affects new issues.
+`config.toml` is explicit: `trk install` writes every setting. Missing settings are errors
+except for compatibility defaults such as `[check] max_wakes`, `gc`, `gc_grace`, and
+the detected `[run] base`.
+`[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory name,
+or `trk install --prefix NAME`. Changing it later only affects new issues.
 
 `[run] base` selects the base branch, for example:
 
@@ -490,6 +505,11 @@ then the current branch of the primary checkout, and finally falls back to `main
 Older configs that omit `base` use the same detection at runtime. An explicit `base`
 takes precedence. Waiting checks receive the resolved branch as `TRK_BASE`; instruction
 and briefing prompt templates can use `{{ base }}`.
+
+| Check setting | Default, also when omitted | Meaning |
+| --- | --- | --- |
+| `[check] gc` | `true` | Automatically sweep closed-as-done resources after non-ID passes; `--no-gc` overrides it for a run/watch |
+| `[check] gc_grace` | `"1h"` | Minimum age since closure for automatic cleanup, not a deadline |
 
 There is no schema to apply: states, the close reasons (`done`, `abandoned`), priorities and the
 one dependency kind (`blocks`) are fixed. Agents and prompts are read when a session starts;

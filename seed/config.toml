@@ -22,6 +22,10 @@ interval = "5m"
 timeout  = "10m"
 # Maximum failed-check wakes per session. 0 disables waking and always reopens.
 max_wakes = 5
+# Sweep closed, done issues after each full `trk check` pass.
+gc = true
+# Minimum time closed before cleanup. "0" removes immediately; --no-gc skips it.
+gc_grace = "1h"
 
 [run]
 # Where `trk run` creates git worktrees: absolute, ~/…, or relative to the

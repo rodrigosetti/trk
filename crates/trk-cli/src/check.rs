@@ -10,6 +10,7 @@ mod restart;
 use restart::Executable;
 pub(crate) use restart::resume;
 
+use std::collections::HashSet;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,7 @@ pub struct CheckArgs {
     /// `Some(None)`: watch with the default pause.
     pub watch: Option<Option<String>>,
     pub dry_run: bool,
+    pub no_gc: bool,
 }
 
 const WATCH_PAUSE: &str = "30s";
@@ -381,6 +383,103 @@ fn run_check(
     })
 }
 
+#[derive(Default)]
+struct Pass {
+    results: Vec<Value>,
+    gc: Option<Value>,
+}
+
+/// A sweep is advisory and separate from recording check outcomes. Real passes
+/// already own the queue lock; previews use GC's rollback-only lock path.
+fn sweep(env: &Env, a: &CheckArgs) -> Option<Value> {
+    if a.id.is_some() || a.no_gc || !env.user.check.gc {
+        return None;
+    }
+    let collect = |c: &mut trk_core::store::Ctx<'_>| {
+        crate::gc::collect(
+            env,
+            c,
+            &[],
+            a.dry_run,
+            false,
+            Some(&env.user.check.gc_grace),
+            true,
+        )
+    };
+    let result = if a.dry_run {
+        with_gc_lock(env, true, collect)
+    } else {
+        env.actor()
+            .and_then(|actor| env.store()?.write(actor, false, collect))
+    };
+    let data = result.unwrap_or_else(
+        |error| json!({"dry_run": a.dry_run, "issues": [], "errors": [error.to_string()]}),
+    );
+    if data["issues"].as_array().is_some_and(|v| !v.is_empty())
+        || data["errors"].as_array().is_some_and(|v| !v.is_empty())
+    {
+        Some(data)
+    } else {
+        None
+    }
+}
+
+fn gc_lines(gc: Option<&Value>, seen_skips: &mut HashSet<String>) -> Vec<String> {
+    let mut lines = Vec::new();
+    let Some(gc) = gc else { return lines };
+    if let Some(issues) = gc["issues"].as_array() {
+        for issue in issues {
+            let id = issue["id"].as_str().unwrap_or_default();
+            let removed: Vec<_> = ["session", "worktree", "branch"]
+                .into_iter()
+                .filter(|resource| issue[*resource]["status"] == "removed")
+                .collect();
+            if !removed.is_empty() {
+                lines.push(format!(
+                    "{}  gc: {} {}",
+                    id,
+                    if gc["dry_run"] == true {
+                        "would remove"
+                    } else {
+                        "removed"
+                    },
+                    removed.join(", "),
+                ));
+            }
+            if !seen_skips.contains(id) {
+                let reasons = ["session", "worktree", "branch"]
+                    .into_iter()
+                    .filter(|resource| issue[*resource]["status"] == "skipped")
+                    .map(|resource| {
+                        format!(
+                            "{resource}: {}",
+                            issue[resource]["reason"].as_str().unwrap_or_default()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                if !reasons.is_empty() {
+                    seen_skips.insert(id.to_owned());
+                    if removed.is_empty() {
+                        lines.push(format!("{id}  gc: skipped {reasons}"));
+                    } else {
+                        lines
+                            .last_mut()
+                            .unwrap()
+                            .push_str(&format!("; skipped {reasons}"));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(errors) = gc["errors"].as_array() {
+        for error in errors.iter().filter_map(Value::as_str) {
+            lines.push(format!("gc: {error} (will retry on the next pass)"));
+        }
+    }
+    lines
+}
+
 /// One pass over the queue. `Err(holder)` in the inner result means another
 /// `trk check` is running.
 fn pass(
@@ -389,7 +488,7 @@ fn pass(
     interrupt: &Interrupt,
     executable: &Executable,
     completed: &[Value],
-) -> Result<std::result::Result<Vec<Value>, Value>> {
+) -> Result<std::result::Result<Pass, Value>> {
     let actor = env.actor()?.to_string();
     let timeout = env.check_timeout()?;
     let mut store = env.store()?;
@@ -411,7 +510,7 @@ fn pass(
                 c.issue(&id)
             })?;
             if completed.iter().any(|r| r["issue"] == issue.id) {
-                return Ok(Ok(vec![]));
+                return Ok(Ok(Pass::default()));
             }
             if issue.state != State::Waiting || issue.waiting_check.is_none() {
                 return Err(Error::new(
@@ -448,10 +547,10 @@ fn pass(
                 "problem": p.err(),
             }));
         }
-        return Ok(Ok(out));
-    }
-    if queue.is_empty() {
-        return Ok(Ok(vec![]));
+        return Ok(Ok(Pass {
+            results: out,
+            gc: sweep(env, a),
+        }));
     }
     interrupt.check()?;
     let lock = queue_lock.as_mut().unwrap();
@@ -561,8 +660,9 @@ fn pass(
         }
         out.push(v);
     }
+    let gc = sweep(env, a);
     lock.release()?;
-    Ok(Ok(out))
+    Ok(Ok(Pass { results: out, gc }))
 }
 
 fn line(r: &Value) -> String {
@@ -623,6 +723,7 @@ fn busy_text(h: &Value) -> String {
 pub fn check(env: &Env, a: CheckArgs, mut completed: Vec<Value>) -> Result<Out> {
     let executable = Executable::new()?;
     let interrupt = Interrupt::new()?;
+    let mut seen_skips = HashSet::new();
     if let Some(pause) = &a.watch {
         let pause = parse_duration(pause.as_deref().unwrap_or(WATCH_PAUSE))?;
         let pause = Duration::from_secs(pause.as_secs().max(1) as u64);
@@ -633,11 +734,14 @@ pub fn check(env: &Env, a: CheckArgs, mut completed: Vec<Value>) -> Result<Out> 
                 executable.restart(env, &completed)?;
             }
             match pass(env, &a, &interrupt, &executable, &completed) {
-                Ok(Ok(results)) => {
-                    for r in &results {
+                Ok(Ok(pass)) => {
+                    for r in &pass.results {
                         println!("{}", line(r));
                     }
-                    completed.extend(results);
+                    for line in gc_lines(pass.gc.as_ref(), &mut seen_skips) {
+                        println!("{line}");
+                    }
+                    completed.extend(pass.results);
                 }
                 Ok(Err(holder)) => eprintln!("{}", busy_text(&holder)),
                 Err(e) => eprintln!("error: {}", e.message()),
@@ -665,13 +769,13 @@ pub fn check(env: &Env, a: CheckArgs, mut completed: Vec<Value>) -> Result<Out> 
                 json!({"busy": true, "holder": holder, "results": completed}),
             ))
         }
-        Ok(results) => {
-            completed.extend(results);
+        Ok(pass) => {
+            completed.extend(pass.results);
             if executable.changed()? {
                 executable.restart(env, &completed)?;
             }
             let results = completed;
-            let text = if results.is_empty() {
+            let mut text = if results.is_empty() {
                 if a.all || a.id.is_some() {
                     "no waiting issue has a check".to_string()
                 } else {
@@ -680,7 +784,16 @@ pub fn check(env: &Env, a: CheckArgs, mut completed: Vec<Value>) -> Result<Out> 
             } else {
                 results.iter().map(line).collect::<Vec<_>>().join("\n")
             };
-            Ok(Out::Text(text, json!({"busy": false, "results": results})))
+            let gc_text = gc_lines(pass.gc.as_ref(), &mut seen_skips);
+            if !gc_text.is_empty() {
+                text.push('\n');
+                text.push_str(&gc_text.join("\n"));
+            }
+            let mut data = json!({"busy": false, "results": results});
+            if let Some(gc) = pass.gc {
+                data["gc"] = gc;
+            }
+            Ok(Out::Text(text, data))
         }
     }
 }

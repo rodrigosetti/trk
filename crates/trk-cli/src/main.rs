@@ -252,9 +252,12 @@ enum Cmd {
         /// Keep running, pausing between passes (default 30s)
         #[arg(long, value_name = "PAUSE", num_args = 0..=1)]
         watch: Option<Option<String>>,
-        /// Show what would run, without running it
+        /// Show what would run and be cleaned up, without changing anything
         #[arg(long)]
         dry_run: bool,
+        /// Skip automatic closed-issue cleanup for this run or watch loop
+        #[arg(long)]
+        no_gc: bool,
     },
     /// Append a note (text, or - / nothing for stdin)
     Note {
@@ -747,6 +750,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
             all,
             watch,
             dry_run,
+            no_gc,
         } => check::check(
             &env,
             check::CheckArgs {
@@ -754,6 +758,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
                 all,
                 watch,
                 dry_run,
+                no_gc,
             },
             completed,
         ),

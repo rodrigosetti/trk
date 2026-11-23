@@ -1,5 +1,5 @@
 //! The project's `.trk/` directory and the settings in its `config.toml`.
-//! `trk install` writes every setting explicitly. Older configs default `max_wakes`.
+//! `trk install` writes every setting explicitly. New settings default in older configs.
 //!
 //! ```text
 //! config.toml      settings, launcher templates, harness profiles, views
@@ -117,6 +117,12 @@ pub struct CheckSection {
     /// Maximum failed-check wakes per session; zero disables waking.
     #[serde(default = "default_max_wakes")]
     pub max_wakes: u32,
+    /// Sweep closed, done issues after each full check pass.
+    #[serde(default = "default_check_gc")]
+    pub gc: bool,
+    /// Minimum time closed before automatic cleanup; zero means immediately.
+    #[serde(default = "default_gc_grace")]
+    pub gc_grace: String,
 }
 
 impl Default for CheckSection {
@@ -125,12 +131,22 @@ impl Default for CheckSection {
             interval: default_check_interval(),
             timeout: default_check_timeout(),
             max_wakes: default_max_wakes(),
+            gc: default_check_gc(),
+            gc_grace: default_gc_grace(),
         }
     }
 }
 
 fn default_max_wakes() -> u32 {
     5
+}
+
+fn default_check_gc() -> bool {
+    true
+}
+
+fn default_gc_grace() -> String {
+    "1h".into()
 }
 
 fn default_check_interval() -> String {
