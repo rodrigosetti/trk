@@ -10,7 +10,8 @@ trk keeps a project's work in a local database inside the project, in `.trk/`. A
 ```
 open → claimed → closed
                 → waiting → closed   (its check passed, or a human closed it)
-                          → open     (its check failed, or a human reopened it)
+                          → claimed  (its check failed and its session was woken)
+                          → open     (no live session, wake delivery failed, or a human reopened it)
 ```
 
 ## Inside a trk session? Stop here
@@ -91,9 +92,11 @@ The check is a shell command that `trk check` runs later, unattended, with `sh -
 | --- | --- | --- |
 | 0 | pass | the issue closes as done |
 | 75 | not yet | still waiting; checked again after `--every` (default 5m) |
-| anything else, or a timeout | error | the issue returns to open, with the output in a note |
+| anything else, or a timeout | error | wake the original live session, otherwise reopen; keep the output in a note |
 
 It may do the remaining work or only look. It may run more than once, so it must be safe to repeat, and it must never prompt. Let real failures exit non-zero on their own; do not turn them into 75. It sees `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` (the main checkout) and `TRK_BRANCH`.
+
+A failed check restores the original claim with a fresh lease if the session's MCP server is alive on this host, its terminal is recorded (and present with Herdr), and `[launcher] send` is configured. It sends a prompt with the output to fix the failure and end again, normally with `wait`; the session's MCP tools work again. A gone session or failed send leaves the issue open. trk only interprets exit codes, never PRs or CI.
 
 Without a check, the issue waits until a human runs `trk close <ID>` or `trk reopen <ID> -m "the answer"`. Running `trk wait` on an issue that is already waiting replaces its check, interval and reason.
 
@@ -106,7 +109,7 @@ trk check --all --json        # run every check, due or not
 trk check --dry-run --json    # show what would run and where
 ```
 
-Each result is `passed`, `retry` or `failed`. Only one `trk check` runs at a time (`"busy": true` means another is running), so checks that merge never race. The user usually keeps `trk check --watch` running in a spare terminal; do not start that yourself, since it never returns.
+Each result is `passed`, `retry`, `woken` (failed check, original session resumed), `failed` (reopened, including failed wake delivery), or `skipped` (changed meanwhile). Both `woken` and `failed` include output. Only one `trk check` runs at a time (`"busy": true` means another is running), so checks that merge never race. The user usually keeps `trk check --watch` running in a spare terminal; do not start that yourself, since it never returns.
 
 ## Blockers
 
@@ -127,7 +130,7 @@ trk send <ID> "Wrap up and finish" --json                # typed into its termin
 trk reap --json                           # release claims whose session has ended
 ```
 
-Only ready issues can be run. A session releases its claim by closing, waiting or handing back; an issue whose check failed is ready again, and its notes tell the next session why. Do not run `trk attach`: it takes over the terminal interactively, so suggest it to the user instead.
+Only ready issues can be run. A session releases its claim by closing, waiting or handing back; a failed check wakes its original live session, otherwise reopens the issue with notes telling the next session why. Do not run `trk attach`: it takes over the terminal interactively, so suggest it to the user instead.
 
 The waiting session is the actor of the latest claim released with reason `waiting`, only while the issue is still waiting. It can keep notes, file follow-ups and receive `--to-agent` messages, but cannot `wait`, `close` or `hand_back` again. `send` and `attach` use its terminal when no active claim exists; an active claim always wins, even without a terminal. `runs` marks it with `state: "waiting"`; its lease is historical and `reap` skips it. Closing, reopening or a replacement claim ends the old session's access.
 

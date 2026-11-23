@@ -73,6 +73,8 @@ Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `cl
 
 `trk attach <ID>` interactively takes over the same terminal as `send`; suggest it to the user rather than running it. Active claims take precedence even without a terminal. With no active claim, `send`, `attach` and inbox delivery use the latest claim only if released with reason `waiting` and the issue is still waiting. That session may add notes and report follow-ups, but cannot change lifecycle state. Once the issue closes, reopens or is claimed again, the old session loses this access.
 
+`trk check --json` results: `passed` closes, `retry` keeps waiting, `woken` restores the live waiting session's claim and sends a repair prompt, `failed` reopens (no live session or failed delivery), and `skipped` means the issue changed during the check or wake delivery. `woken` and `failed` include output, also saved in a note. Liveness requires the original MCP server on this host, a terminal (present in Herdr when enabled), and `[launcher] send`. trk only interprets exit codes; timeout is failure, exit 75 is retry.
+
 ## Errors
 
 | Exit | Meaning | Codes |

@@ -79,7 +79,7 @@ fn run(exit: i32, output: &str) -> CheckRun {
 }
 
 fn record(s: &mut Store, id: &str, check: &str, r: &CheckRun) -> CheckResult {
-    s.write(HUMAN, false, |c| c.check_record(id, check, r))
+    s.write(HUMAN, false, |c| c.check_record(id, check, r, None))
         .unwrap()
 }
 
@@ -574,6 +574,271 @@ fn a_timeout_or_a_killed_check_is_a_failure() {
         wait(&mut s, AGENT, &id, Some("sleep 999"), None);
         assert_eq!(record(&mut s, &id, "sleep 999", &r), CheckResult::Failed);
         assert_eq!(state(&s, &id), State::Open);
+    }
+}
+
+#[test]
+fn a_failed_check_restores_the_waiting_session_with_a_fresh_claim() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Work");
+    let original = s
+        .write(AGENT, false, |c| {
+            c.claim(
+                &id,
+                ClaimOpts {
+                    lease: Some(jiff::SignedDuration::from_hours(2)),
+                    worktree: Some("/tmp/session-worktree".into()),
+                    host: Some("session-host".into()),
+                    agent: Some("implementer".into()),
+                    terminal: Some("session-terminal".into()),
+                    on_behalf_of: Some(HUMAN.into()),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    wait(&mut s, AGENT, &id, Some("merge"), Some("land the branch"));
+    let history = s.read(None, |c| c.claims(&id)).unwrap();
+    s.opts.now = Some(ts("2026-11-20T13:00:00Z"));
+
+    let result = s
+        .write(HUMAN, false, |c| {
+            c.check_record(&id, "merge", &run(1, "merge conflict\n"), Some(original.id))
+        })
+        .unwrap();
+    let CheckResult::Woken { claim } = result else {
+        panic!("expected a restored claim, got {result:?}");
+    };
+    assert_eq!(result.as_str(), "woken");
+    assert_ne!(claim, original.id);
+    let active = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    assert_eq!(active.id, claim);
+    assert_eq!(active.actor, original.actor);
+    assert_eq!(active.on_behalf_of, original.on_behalf_of);
+    assert_eq!(active.worktree, original.worktree);
+    assert_eq!(active.host, original.host);
+    assert_eq!(active.agent, original.agent);
+    assert_eq!(active.terminal, original.terminal);
+    assert_eq!(active.claimed_at, "2026-11-20T13:00:00Z");
+    assert_eq!(active.lease_until.as_deref(), Some("2026-11-20T13:30:00Z"));
+    assert!(active.released_at.is_none());
+    assert!(active.release_reason.is_none());
+    let claims = s.read(None, |c| c.claims(&id)).unwrap();
+    assert_eq!(claims.len(), 2);
+    assert_eq!(claims[0], history[0]);
+    let issue = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(issue.state, State::Claimed);
+    assert!(issue.waiting_reason.is_none());
+    assert!(issue.waiting_check.is_none());
+    assert!(issue.check_interval.is_none());
+    assert!(issue.next_check_at.is_none());
+    assert!(issue.last_check_at.is_none());
+    assert!(issue.last_check_exit.is_none());
+    assert!(issue.wait_cwd.is_none());
+
+    let events = s.read(None, |c| c.events(&id)).unwrap();
+    let recent = &events[events.len() - 3..];
+    assert_eq!(recent[0].op, "note");
+    let body = recent[0].payload["body"].as_str().unwrap();
+    assert!(body.contains("waiting session has been resumed"), "{body}");
+    assert!(!body.contains("open again"), "{body}");
+    assert!(body.contains("merge conflict"), "{body}");
+    assert!(body.contains("land the branch"), "{body}");
+    assert!(body.contains("/tmp/session-worktree"), "{body}");
+    assert_eq!(recent[1].op, "check");
+    assert_eq!(recent[1].payload["result"], "failed");
+    assert_eq!(recent[1].payload["exit"], 1);
+    assert_eq!(recent[2].op, "claim");
+    assert_eq!(recent[2].actor, HUMAN);
+    assert_eq!(recent[2].payload["claimant"], AGENT);
+    assert_eq!(recent[2].payload["claim"], claim);
+    assert_eq!(recent[2].payload["resumed_from"], original.id);
+    assert_eq!(recent[2].payload["from"], "waiting");
+    assert_eq!(recent[2].payload["by_check"], true);
+    assert!(!events.iter().any(|e| e.op == "reopen"));
+    // The original actor can immediately work on the issue again.
+    s.write(AGENT, false, |c| c.note(&id, "resolving", None, false))
+        .unwrap();
+}
+
+#[test]
+fn stale_or_foreign_resume_candidates_reopen_instead() {
+    let (_d, mut s) = setup();
+    let foreign = create(&mut s, "Other");
+    claim(&mut s, AGENT, &foreign);
+    let foreign_claim = s.read(None, |c| c.active_claim(&foreign)).unwrap().unwrap();
+    wait(&mut s, AGENT, &foreign, Some("merge"), None);
+
+    for candidate in [None, Some(foreign_claim.id), Some(i64::MAX)] {
+        let id = create(&mut s, "Work");
+        claim(&mut s, AGENT, &id);
+        let stale = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+        wait(&mut s, AGENT, &id, Some("merge"), None);
+        s.write(HUMAN, false, |c| c.reopen(&id, None)).unwrap();
+        claim(&mut s, AGENT2, &id);
+        wait(&mut s, AGENT2, &id, Some("merge"), None);
+        let history = s.read(None, |c| c.claims(&id)).unwrap();
+        let candidate = candidate.or(Some(stale.id));
+        assert_eq!(
+            s.write(HUMAN, false, |c| {
+                c.check_record(&id, "merge", &run(1, "failed"), candidate)
+            })
+            .unwrap(),
+            CheckResult::Failed
+        );
+        assert_eq!(state(&s, &id), State::Open);
+        assert!(s.read(None, |c| c.active_claim(&id)).unwrap().is_none());
+        assert_eq!(s.read(None, |c| c.claims(&id)).unwrap(), history);
+        let notes = s.read(None, |c| c.notes(&id)).unwrap();
+        let body = notes.last().unwrap()["body"].as_str().unwrap();
+        assert!(body.contains("open again"), "{body}");
+        assert!(!body.contains("has been resumed"), "{body}");
+    }
+}
+
+#[test]
+fn passing_retrying_and_stale_checks_ignore_resume_candidates() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    let original = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    wait(&mut s, AGENT, &id, Some("merge"), None);
+    let events = s.read(None, |c| c.events(&id)).unwrap();
+    for (check, exit, expected) in [
+        ("other command", 1, CheckResult::Skipped),
+        ("merge", 75, CheckResult::Retry),
+        ("merge", 0, CheckResult::Passed),
+    ] {
+        assert_eq!(
+            s.write(HUMAN, false, |c| {
+                c.check_record(&id, check, &run(exit, ""), Some(original.id))
+            })
+            .unwrap(),
+            expected
+        );
+        assert!(s.read(None, |c| c.active_claim(&id)).unwrap().is_none());
+        assert_eq!(s.read(None, |c| c.claims(&id)).unwrap().len(), 1);
+        if expected != CheckResult::Passed {
+            assert_eq!(
+                serde_json::to_value(s.read(None, |c| c.events(&id)).unwrap()).unwrap(),
+                serde_json::to_value(&events).unwrap()
+            );
+        }
+    }
+    assert_eq!(state(&s, &id), State::Closed);
+}
+
+#[test]
+fn timed_out_and_killed_checks_can_restore_the_waiting_session() {
+    let (_d, mut s) = setup();
+    for (exit, timed_out) in [
+        (None, true),
+        (Some(75), true),
+        (Some(0), true),
+        (None, false),
+    ] {
+        let id = create(&mut s, "Work");
+        claim(&mut s, AGENT, &id);
+        let original = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+        wait(&mut s, AGENT, &id, Some("slow"), None);
+        let result = s
+            .write(HUMAN, false, |c| {
+                c.check_record(
+                    &id,
+                    "slow",
+                    &CheckRun {
+                        exit,
+                        timed_out,
+                        output: "partial output".into(),
+                    },
+                    Some(original.id),
+                )
+            })
+            .unwrap();
+        assert!(matches!(result, CheckResult::Woken { .. }));
+        assert_eq!(state(&s, &id), State::Claimed);
+    }
+}
+
+#[test]
+fn failed_wake_delivery_only_releases_the_exact_still_active_claim() {
+    let (_d, mut s) = setup();
+    for transition in ["active", "open", "closed", "waiting", "replacement"] {
+        let id = create(&mut s, "Work");
+        claim(&mut s, AGENT, &id);
+        let original = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+        wait(&mut s, AGENT, &id, Some("merge"), None);
+        let result = s
+            .write(HUMAN, false, |c| {
+                c.check_record(&id, "merge", &run(1, "conflict"), Some(original.id))
+            })
+            .unwrap();
+        let CheckResult::Woken { claim } = result else {
+            panic!("expected a restored claim, got {result:?}");
+        };
+        // Even while claimed, a mismatched id must be a no-op.
+        assert!(
+            !s.write(HUMAN, false, |c| c.check_wake_failed(&id, original.id))
+                .unwrap()
+        );
+        match transition {
+            "open" => s
+                .write(AGENT, false, |c| c.unclaim(&id, false, None))
+                .unwrap(),
+            "closed" => s
+                .write(AGENT, false, |c| c.close(&id, "done", None, false))
+                .unwrap(),
+            "waiting" => wait(&mut s, AGENT, &id, Some("retry"), None),
+            "replacement" => {
+                s.write(AGENT2, false, |c| {
+                    c.claim(
+                        &id,
+                        ClaimOpts {
+                            steal: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .unwrap();
+            }
+            _ => {}
+        }
+        let issue = s.read(None, |c| c.issue(&id)).unwrap();
+        let claims = s.read(None, |c| c.claims(&id)).unwrap();
+        let events = s.read(None, |c| c.events(&id)).unwrap();
+        let changed = s
+            .write(HUMAN, false, |c| c.check_wake_failed(&id, claim))
+            .unwrap();
+        assert_eq!(changed, transition == "active");
+        if changed {
+            assert_eq!(state(&s, &id), State::Open);
+            assert!(s.read(None, |c| c.active_claim(&id)).unwrap().is_none());
+            let history = s.read(None, |c| c.claims(&id)).unwrap();
+            assert_eq!(history[1].release_reason.as_deref(), Some("unclaimed"));
+            let events = s.read(None, |c| c.events(&id)).unwrap();
+            let recent = &events[events.len() - 2..];
+            assert_eq!(recent[0].op, "note");
+            assert!(
+                recent[0].payload["body"]
+                    .as_str()
+                    .unwrap()
+                    .contains("could not be delivered")
+            );
+            assert_eq!(recent[1].op, "release");
+            assert_eq!(recent[1].payload["claim"], claim);
+            assert_eq!(recent[1].payload["check_wake_failed"], true);
+            assert!(
+                !s.write(HUMAN, false, |c| c.check_wake_failed(&id, claim))
+                    .unwrap()
+            );
+        } else {
+            assert_eq!(s.read(None, |c| c.issue(&id)).unwrap(), issue);
+            assert_eq!(s.read(None, |c| c.claims(&id)).unwrap(), claims);
+            assert_eq!(
+                serde_json::to_value(s.read(None, |c| c.events(&id)).unwrap()).unwrap(),
+                serde_json::to_value(&events).unwrap()
+            );
+        }
     }
 }
 

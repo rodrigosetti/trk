@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use trk_agent::harness::{self, LaunchInput, subst};
 use trk_core::error::{Code, Error, Result};
+use trk_core::model::Claim;
 use trk_core::ops::ClaimOpts;
 use trk_core::view::With;
 
@@ -531,42 +532,88 @@ pub fn send(env: &Env, id: &str, text: &str) -> Result<Out> {
         json!({"issue": id, "terminal": name, "output": out}),
     ))
 }
+/// A live original waiting session, selected before restoring its claim.
+pub struct WaitingSession {
+    pub claim: i64,
+    terminal: String,
+    send: Vec<String>,
+}
+
+impl WaitingSession {
+    pub fn send(&self, text: &str) -> Result<()> {
+        let mut vars = BTreeMap::new();
+        vars.insert("name", self.terminal.clone());
+        vars.insert("text", text.to_string());
+        let (ok, out) = send_with_retry(&self.send, &vars)?;
+        if !ok {
+            return Err(Error::new(
+                Code::Internal,
+                format!("send to {} failed: {out}", self.terminal),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn waiting_claim(env: &Env, issue: &str) -> Result<Option<Claim>> {
+    env.store()?.read(None, |c| {
+        Ok(c.claims(issue)?
+            .into_iter()
+            .rev()
+            .find(|claim| claim.release_reason.as_deref() == Some("waiting")))
+    })
+}
+
+fn live_waiting_session(
+    env: &Env,
+    claim: &Claim,
+    launcher: Launcher,
+) -> Result<Option<WaitingSession>> {
+    let Some(name) = &claim.terminal else {
+        return Ok(None);
+    };
+    if mcp_alive(&env.store()?.read(None, |c| c.actor_meta(&claim.actor))?) != Some(true) {
+        return Ok(None);
+    }
+    let Some(send) = launcher.send else {
+        return Ok(None);
+    };
+    if launcher.herdr && !crate::herdr::has_terminal(name).unwrap_or(false) {
+        return Ok(None);
+    }
+    Ok(Some(WaitingSession {
+        claim: claim.id,
+        terminal: name.clone(),
+        send,
+    }))
+}
+
+pub fn waiting_session(env: &Env, issue: &str) -> Result<Option<WaitingSession>> {
+    let Some(claim) = waiting_claim(env, issue)? else {
+        return Ok(None);
+    };
+    live_waiting_session(env, &claim, launcher(env)?)
+}
+
 /// Best-effort UI update and notification to the session that left an issue waiting.
 ///
 /// The waiting claim is historical by design: resolving the issue releases it,
 /// so looking up the active claim could steer a replacement session instead.
 pub fn notify_waiting_session(env: &Env, issue: &str, text: &str, closed: bool) -> Result<()> {
-    let store = env.store()?;
-    let claim = store.read(None, |c| {
-        Ok(c.claims(issue)?
-            .into_iter()
-            .rev()
-            .find(|claim| claim.release_reason.as_deref() == Some("waiting")))
-    })?;
-    let Some(claim) = claim else {
+    let Some(claim) = waiting_claim(env, issue)? else {
         return Ok(());
     };
-    let Some(name) = claim.terminal else {
+    let Some(name) = &claim.terminal else {
         return Ok(());
     };
     let launcher = launcher(env)?;
     // Renaming is independent of agent liveness and message delivery.
     if closed && launcher.herdr {
-        let _ = crate::herdr::mark_closed(&name);
+        let _ = crate::herdr::mark_closed(name);
     }
-    if mcp_alive(&store.read(None, |c| c.actor_meta(&claim.actor))?) != Some(true) {
-        return Ok(());
+    if let Some(session) = live_waiting_session(env, &claim, launcher)? {
+        session.send(text)?;
     }
-    let Some(send) = launcher.send else {
-        return Ok(());
-    };
-    if launcher.herdr && !crate::herdr::has_terminal(&name).unwrap_or(false) {
-        return Ok(());
-    }
-    let mut vars = BTreeMap::new();
-    vars.insert("name", name);
-    vars.insert("text", text.to_string());
-    let _ = send_with_retry(&send, &vars)?;
     Ok(())
 }
 

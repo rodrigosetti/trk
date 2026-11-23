@@ -17,7 +17,7 @@ Issues have routing-only types and share one state machine. An agent session end
 - First-class claims by humans (`human:<email>`) and agent sessions (`agent:<harness>:<id>`), with leases.
 - A complete, append-only history: every change and every note is an attributed, timestamped event.
 - "Done" means landed. Work that is finished but not merged, reviewed or decided is waiting, not closed, and still blocks what depends on it.
-- Failures return as work: a failed check reopens its issue with the evidence in a note.
+- Failures return as work: a failed check wakes its live waiting session, or reopens its issue, with the evidence in a note.
 - Agents reach trk only through MCP, never through CLI skills.
 - `trk run` starts a focused session for one issue, with minimal coupling to `hc`: three command templates.
 
@@ -53,7 +53,7 @@ Everything else on an issue is state the tool owns: `state`, `close_reason`, the
    │    lease expiry  ▼                      │ or a human closes
    │               waiting ──────────────────┘
    └──────────────────┘
-     check exits other than 0 or 75,
+     failed check with no deliverable wake,
      or a human reopens
 ```
 
@@ -65,7 +65,8 @@ Everything else on an issue is state the tool owns: `state`, `close_reason`, the
 | claimed | waiting | `wait` with a check, a reason, or both |
 | waiting | closed | the check exits 0 (reason `done`), or a human closes |
 | waiting | waiting | the check exits 75: checked again one interval later |
-| waiting | open | the check exits otherwise or times out, or a human reopens |
+| waiting | claimed | the check fails or times out and its original session is alive; restore that session's claim and send a repair prompt |
+| waiting | open | the check fails or times out with no live original session, or a human reopens; an undelivered wake also releases the restored claim to open |
 | open | closed | a human closes without claiming (cancel) |
 | closed | open | a human reopens |
 
@@ -104,7 +105,7 @@ The check's exit code is the whole protocol:
 | --- | --- | --- |
 | 0 | pass | closed with reason `done` |
 | 75 (`EX_TEMPFAIL`) | not yet | still waiting; due again after the interval |
-| anything else | error | back to open; a note records the command, its directory and the last 4 KB of its output |
+| anything else | error | resume the live waiting session, otherwise reopen; a note records the command, its directory and the last 4 KB of its output |
 | killed by the timeout | error | the same, saying it timed out |
 
 Error is the default. A command that is misspelled, whose credentials expired, or whose branch conflicts fails loudly and returns as work, instead of waiting forever. Only the one reserved code keeps an issue waiting, so "not yet" is always a deliberate answer.
@@ -112,6 +113,10 @@ Error is the default. A command that is misspelled, whose credentials expired, o
 A check may do the remaining work (merge the branch) or only look (is the PR merged?). It must be safe to run more than once: `trk check` may die between running a command and recording its result, and the next pass runs it again.
 
 Entering waiting releases the claim with reason `waiting`; nobody holds the issue. The session and terminal may stay open as the waiting session (see Claims). Running `wait` on an issue that is already waiting replaces its check, interval and reason, which is how a human repairs a bad check without reopening.
+
+On failure, the CLI checks the latest claim released as `waiting`: its MCP server must still be alive on this host, its terminal must be recorded (and present in Herdr when enabled), and `[launcher] send` must be configured. Unknown liveness is not alive. In the same transaction that records the failed check, trk restores that session's actor, worktree, host, agent and terminal in a new claim with a fresh lease. The original MCP server can renew and use its tools again. The CLI then sends a prompt with the check output asking the session to address the failure and end again, normally with `wait`.
+
+With no live session the issue reopens as before. If sending the prompt fails after restoration, trk releases that exact claim and reopens with an explanatory note; it never releases a replacement claim or overrides a subsequent session action. Exit 0 and 75 do not restore claims. trk interprets only exit codes, not PRs, CI or other external state.
 
 ### Actors
 
@@ -139,7 +144,7 @@ The kind ends at the first colon, and for agents the harness ends at the second.
 
 Every mutation appends one or more rows to `event`, attributed to the actor, with a UTC timestamp. Notes are events with `op = 'note'`. A correction is a new note with `amends` pointing at the earlier one. Database triggers reject `UPDATE` and `DELETE` on `event`, and `DELETE` on `issue`.
 
-A check that says "not yet" writes no event and does not touch `updated_at`: an issue that waits a week on a five-minute interval would otherwise bury its history under two thousand identical lines. A pass or a failure writes a `check` event followed by the `close` or `reopen` it caused.
+A check that says "not yet" writes no event and does not touch `updated_at`: an issue that waits a week on a five-minute interval would otherwise bury its history under two thousand identical lines. A pass or a failure writes a `check` event followed by the `close`, resumed `claim` or `reopen` it caused.
 
 ## `trk check`
 
@@ -168,11 +173,13 @@ One pass:
 
 `TRK_ACTOR` is removed. Stdin is `/dev/null`; stdout and stderr are captured together. The command runs in its own process group, and after `[check] timeout` (default 10m) the group gets `SIGTERM`, then `SIGKILL` two seconds later.
 
-**Recording.** The result is written in one transaction that first re-reads the issue. If it is no longer waiting on exactly the command that ran (a human closed it, reopened it, or changed the check meanwhile), the result is dropped.
+**Recording.** The result is written in one transaction that first re-reads the issue. If it is no longer waiting on exactly the command that ran (a human closed it, reopened it, or changed the check meanwhile), the result is dropped. A requested resumption must still match the latest historical waiting claim. Failed checks restore the claim in this transaction, before sending the repair prompt; failed delivery conditionally releases only that restored claim.
+
+**Results.** `trk check --json` reports `passed` (closed), `retry` (waiting), `woken` (failed check, original session resumed), `failed` (failed check, reopened, including failed wake delivery), or `skipped` (changed meanwhile). Both `woken` and `failed` include the output. A failed check is a recorded outcome, not a CLI error. If wake delivery fails but the issue has already moved on, the guarded release does nothing and the result is `skipped`.
 
 **The lock.** A single-row table holds the pid, host and start time of the running pass. It is taken in a write transaction, so two passes cannot both take it. A holder whose process no longer exists on this host is replaced. A holder on another host is never replaced automatically.
 
-**Why serial.** Checks commonly merge a branch into the main checkout. Running them one at a time makes `trk check` a merge queue: the second merge sees the first, and a conflict fails that one issue and reopens it.
+**Why serial.** Checks commonly merge a branch into the main checkout. Running them one at a time makes `trk check` a merge queue: the second merge sees the first, and a conflict returns that one issue as work to its live session or the open queue.
 
 ### Trust
 
