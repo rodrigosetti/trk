@@ -369,6 +369,14 @@ export default class Trk extends View {
     }
   }
 
+  hideDetail(cx) {
+    this.open = false;
+    this.prompt = null;
+    this.confirm = null;
+    this.handle.focus();
+    cx.notify();
+  }
+
   runnable(issue) {
     return issue.state === "open" && issue.blocked_by.every((b) => b.state === "closed");
   }
@@ -382,14 +390,14 @@ export default class Trk extends View {
     const order = this.order ?? [];
     const at = order.indexOf(this.selected);
     const issue = this.data?.issues.find((i) => i.id === this.selected);
-    const move = (to) => { if (order.length) this.select(order[Math.max(0, Math.min(order.length - 1, to))], cx, this.wide || this.open); };
+    const move = (to) => { if (order.length) this.select(order[Math.max(0, Math.min(order.length - 1, to))], cx, this.open); };
     const k = e.key_char ?? e.key;
     if (k === "j" || e.key === "down") move(at + 1);
     else if (k === "k" || e.key === "up") move(at < 0 ? 0 : at - 1);
     else if (k === "g") move(0);
     else if (k === "G") move(order.length - 1);
     else if (e.key === "enter" && issue) this.select(issue.id, cx);
-    else if (e.key === "escape") { this.confirm = null; this.status = null; if (!this.wide) this.open = false; cx.notify(); }
+    else if (e.key === "escape") { this.status = null; this.hideDetail(cx); }
     else if (k === "c") { this.ask({ kind: "create" }); cx.notify(); }
     else if (!issue) return;
     else if (k === "a") { this.go(issue); cx.notify(); }
@@ -501,7 +509,9 @@ export default class Trk extends View {
     const notes = (d?.notes ?? []).slice(-6);
     const events = (d?.events ?? []).slice(-8).reverse();
     return v_flex().id(`detail-${issue.id}`).gap(9).p(10).rounded(8).bg(t.background).border_1().border_color(t.border)
-      .child(div().text_size(13.5).font_semibold().text_color(t.foreground).child(issue.title))
+      .child(h_flex().gap(8).items_start()
+        .child(div().flex_1().min_w(0).text_size(13.5).font_semibold().text_color(t.foreground).child(issue.title))
+        .child(this.button(t, "hide-detail", "Hide details", (cx) => this.hideDetail(cx), { tip: "Hide details and expand the issue list (Esc)" })))
       .child(h_flex().gap(6).items_center().flex_wrap()
         .child(div().text_size(11).text_color(t.dim).child(`${issue.id} · ${issue.type} · ${issue.state} · updated ${ago(issue.updated_at, now)} ago`))
         .child(div().flex_1())
@@ -607,11 +617,11 @@ export default class Trk extends View {
         .child(div().flex_1().min_w(0).truncate().text_color(this.status?.level === "error" ? t.blocked : t.muted).child(this.busy ? `${this.busy}…` : this.status.text))
       : null;
 
-    const body = this.wide
+    const body = this.wide && this.open && selected
       ? h_flex().flex_1().min_h(0).items_start()
         .child(v_flex().w(380).flex_none().h_full().min_h(0).border_r(1).border_color(t.border).child(list))
         .child(v_flex().id("trk-detail").flex_1().min_w(0).h_full().min_h(0).p(10).overflow_y_scrollbar()
-          .child(selected ? this.detailView(t, selected, now) : div().p(10).text_size(12).text_color(t.dim).child("Select an issue.")))
+          .child(this.detailView(t, selected, now)))
       : list;
 
     return root.child(this.header(t, name)).child(body).when(Boolean(footer), (el) => el.child(footer));

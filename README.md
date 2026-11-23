@@ -392,6 +392,8 @@ trk herdr uninstall              # remove the mod, and the layout unless you edi
 - Select an issue for its description, notes and timeline, and to go to or peek at its session,
   run it, send text, resume, check now, add notes, change priority, unclaim, reopen or close.
   Destructive buttons ask for a second click. Edit opens `trk edit` in a pane below.
+  **Hide details** (or `Esc`) closes the details pane so the issue list fills the panel.
+  Click an issue or press `Enter` to reopen details; `j`/`k` keep them hidden while browsing.
 - With the panel focused: `j`/`k` move, `Enter` opens, `a` goes to the session, `p` peeks,
   `s` sends, `m`/`M` note (to the agent), `v` resumes, `x` closes, `c` creates.
 - `trk.new` and `trk.refresh` are mod commands for `keys.json`, for example
