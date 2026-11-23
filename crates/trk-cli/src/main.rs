@@ -4,6 +4,7 @@ mod check;
 mod dashboard;
 mod editor;
 mod env;
+mod gc;
 mod herdr;
 mod herdr_ui;
 mod render;
@@ -304,6 +305,20 @@ enum Cmd {
     Send { id: String, text: String },
     /// Release claims whose session has ended, with a note
     Reap,
+    /// Remove safe leftovers of closed issues (done by default)
+    Gc {
+        /// Issues to inspect (default: all closed issues)
+        ids: Vec<String>,
+        /// Report what would be removed without changing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Also clean up issues closed as abandoned
+        #[arg(long)]
+        abandoned: bool,
+        /// Keep issues closed more recently than this duration, e.g. 1d
+        #[arg(long, value_name = "DURATION")]
+        older_than: Option<String>,
+    },
     /// The per-issue MCP server (started by the harness)
     Mcp {
         #[arg(long)]
@@ -810,6 +825,12 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
                     .collect(),
             })
         }
+        Cmd::Gc {
+            ids,
+            dry_run,
+            abandoned,
+            older_than,
+        } => gc::run(&env, ids, dry_run, abandoned, older_than.as_deref()),
         Cmd::Run {
             id,
             agent,

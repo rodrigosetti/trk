@@ -14,6 +14,9 @@ mod restart;
 #[path = "cli/resume.rs"]
 mod resume;
 
+#[path = "cli/gc.rs"]
+mod gc;
+
 struct Env {
     dir: tempfile::TempDir,
 }

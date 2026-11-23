@@ -183,6 +183,28 @@ Without an ID, `trk run` selects by priority, then oldest creation time, then ID
 or `trk run --dry-run`. Types, agents and prompts live in the project's `.trk/` directory
 (`types/*.toml`, `agents/*.toml`, `prompts/`), shared by all its worktrees.
 
+## Clean up closed issues
+
+```bash
+trk gc --dry-run --json                   # preview closed-as-done resources
+trk gc <ID> --json                        # collect one closed issue's resources
+trk gc --older-than 7d --abandoned --json # also include abandoned issues older than a week
+```
+
+Closing retains resources until explicit GC. Only closed-as-done issues are eligible by default;
+`--abandoned` also includes abandoned issues. Open, claimed and waiting issues are never collected.
+GC considers all historical claims but only local-host resources. It protects the current worktree,
+the caller's terminal space and other issues' active/waiting sessions; worktree paths must be under
+the configured directory. Herdr sessions are matched by exact terminal, not title. Git removals
+are not forced, and only the issue-ID branch is deleted with `-d` after its recorded worktrees
+are removed or absent. Do not bypass skipped safety checks.
+
+Read each issue's `session`, `worktree` and `branch` status and reason; session/worktree `items`
+identify individual resources. `removed`, `absent` and `skipped` are outcomes, not lifecycle changes.
+With `--dry-run`, `data.dry_run` is true and `removed` with a `would remove ...` reason means
+planned, not deleted. Dry runs write no notes; real removals append caller-attributed notes,
+and an unchanged second run adds none. See the reference for the full output shape.
+
 ## More
 
 See [references/reference.md](references/reference.md) for the query language, every command, and the error codes.

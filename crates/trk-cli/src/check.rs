@@ -158,6 +158,43 @@ pub(crate) fn with_queue_lock<T>(env: &Env, f: impl FnOnce() -> Result<T>) -> Re
     Ok(result)
 }
 
+/// GC holds a write transaction during removal, preventing any claim or reopen
+/// between its safety checks and external effects. Real removals also retain
+/// durable queue ownership; a preview rolls back even the lock and lease sweep.
+pub(crate) fn with_gc_lock<T>(
+    env: &Env,
+    dry_run: bool,
+    f: impl FnOnce(&mut trk_core::store::Ctx<'_>) -> Result<T>,
+) -> Result<T> {
+    let actor = env.actor()?.to_string();
+    let busy = |holder| {
+        Error::new(Code::InvalidState, "check queue is busy; gc refused")
+            .with_detail("holder", holder)
+            .with_hint("wait for the in-flight check and retry `trk gc`")
+    };
+    if dry_run {
+        let host = hostname();
+        return env.store()?.write(&actor, true, |c| {
+            if let Some((pid, holder_host, started, pgid)) = c.check_lock()?
+                && (host.is_none()
+                    || holder_host != host
+                    || runner_alive(pid)
+                    || pgid.is_some_and(group_alive))
+            {
+                return Err(busy(json!({
+                    "pid": pid, "host": holder_host, "started_at": started, "pgid": pgid,
+                })));
+            }
+            c.check_lock_take(i64::from(std::process::id()), host.as_deref())?;
+            f(c)
+        });
+    }
+    let mut lock = lock(env, &actor)?.map_err(busy)?;
+    let result = env.store()?.write(&actor, false, f)?;
+    lock.release()?;
+    Ok(result)
+}
+
 /// Where a check runs and what it sees.
 struct Place {
     cwd: PathBuf,

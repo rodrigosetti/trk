@@ -69,6 +69,7 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk log <ID>` | Timeline |
 | `trk run [ID] [--agent A] [--harness H] [--dry-run or --print]` | Start an agent session; without ID, first ready issue by priority then age; agent override is one-off |
 | `trk runs`, `trk send <ID> TEXT`, `trk reap` | List active/waiting sessions by state, steer the active or waiting terminal, release only ended active claims |
+| `trk gc [ID...] [--dry-run] [--abandoned] [--older-than DURATION]` | Collect closed issues' local sessions, worktrees and safely deletable issue-ID branches |
 | `trk agent list`, `trk agent preview <agent> [--issue ID]`, `trk agent check` | Inspect agents |
 | `trk install [--force] [--prefix P]` | Set trk up in a project: `.trk/` (database, config) and this skill; safe to repeat |
 | `trk whoami`, `trk backup <PATH>` | Environment and backup |
@@ -90,6 +91,14 @@ The original MCP server must be alive on this host, its terminal recorded (and p
 Success `data` is `{issue, actor, terminal, claim, resumed_from, message, delivered: true}`. Delivery confirms only that the launcher accepted the send, not that the agent read, acted on or finished it. `trk send` never restores a waiting claim.
 
 An in-flight check rejects resume with `invalid_state`; retry after it finishes, without clearing the queue lock. A dead, remote or unavailable session, missing terminal or missing send configuration also yields `invalid_state` with recovery guidance: the human runs `trk reopen <ID> -m "Restart with the decision" --json`, then `trk run <ID> --json`. A failed delivery after restoration returns nonzero `internal` (exit 1), releases only that exact restored claim to open and records a failure note, without releasing a replacement claim or overriding a later session action. Inspect `trk show <ID> --json` before recovery.
+
+### Garbage collection
+
+`trk gc [ID...] --json` considers all historical claims of closed-as-done issues in this project. Optional IDs limit the selection; `--abandoned` also includes abandoned issues, and `--older-than 7d` limits it to issues closed over a week ago. Open, claimed and waiting issues are never collected. GC serializes with the check queue and uses an immediate transaction for lifecycle safety.
+
+Only local-host resources are eligible. Herdr discovery matches the exact recorded terminal and closes its containing space, never a title match. The caller's current terminal's space and spaces used by other issues' active or waiting sessions are protected. Worktrees must be descendants of the configured worktree directory and cannot be the current worktree. `git worktree remove` is never forced. Only the issue-ID branch is deleted, with `git branch -d` in the primary checkout after every recorded worktree is removed or absent. Unsafe targets, unavailable session discovery and Git refusals are skipped rather than forced.
+
+Preview with `trk gc [ID...] --dry-run --json`; it removes nothing and writes no notes. The standard envelope contains `data: {dry_run: bool, issues: [{id, session: {status, reason, items: [...]}, worktree: {status, reason, items: [...]}, branch: {status, reason}}]}`. Status is `removed`, `absent` or `skipped`. Session items identify `terminal` and `space`; worktree items identify `path`; each item also has `status` and `reason`. A dry-run planned removal uses `removed` and a `would remove ...` reason, distinguished by `dry_run: true`. Real removals append caller-attributed notes; already-absent resources and skipped outcomes do not, so an unchanged second run adds no cleanup note.
 
 ## Errors
 

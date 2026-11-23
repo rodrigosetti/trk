@@ -288,6 +288,37 @@ verify none remain, then clear only that legacy lock with
 A check is written by an agent and runs later, unattended, as you. `trk show` always prints it in
 full, and `trk check --dry-run` shows the queue before anything runs.
 
+## Cleaning up closed issues
+
+Closing retains the session, worktree and branch; use explicit garbage collection after work has landed:
+
+```sh
+trk gc --dry-run --json                   # preview all closed-as-done issues
+trk gc orch-4kq --json                    # clean up one issue
+trk gc --older-than 7d --abandoned --json # include abandoned issues closed over a week ago
+```
+
+`trk gc [ID...] [--dry-run] [--abandoned] [--older-than DURATION] [--json]` defaults to
+closed-as-done issues; `--abandoned` also includes abandoned issues. It never collects open,
+claimed or waiting issues, and serializes cleanup with the check queue and lifecycle writes.
+All historical claims are considered, but only resources on this host are eligible.
+
+Sessions are found by their exact recorded terminal through Herdr, not by title. GC closes
+their containing spaces, protecting your current terminal's space and other issues' active
+or waiting sessions. Only descendants of the configured worktree directory are removed,
+never the current worktree. Git worktree removal is not forced; branch deletion uses
+`git branch -d` in the primary checkout, only for the issue-ID branch and only after all
+recorded worktrees are removed or absent. Dirty worktrees, unmerged branches and other
+unsafe or refused targets are reported as skipped.
+
+JSON uses the normal envelope with `data: {dry_run, issues}`. Each issue has `id` and
+`session`, `worktree`, `branch` outcomes with `status` (`removed`, `absent`, `skipped`) and
+`reason`. Session and worktree outcomes also have `items`, identifying each `terminal` /
+`space` or `path` with its own status and reason. Dry runs write no notes and remove
+nothing: planned removals use `removed` with a `would remove ...` reason and
+`dry_run: true`. Real removals append caller-attributed notes; rerunning when resources
+are already absent adds no cleanup notes.
+
 ## Agent sessions
 
 ```sh

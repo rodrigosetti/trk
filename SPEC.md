@@ -338,7 +338,25 @@ trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]
 
 Related commands: `trk attach <ID>` and `trk send <ID>` (only when their launcher templates are set) target the active claim's terminal, or the waiting session's terminal when there is no active claim. An active claim takes precedence even if it has no terminal; historical terminals are never a fallback once the issue leaves waiting. `trk runs` lists active and waiting agent sessions with `state` (`claimed` or `waiting`), agent, harness, terminal and claim metadata. A waiting row's lease is historical, not active. `trk reap` releases active claims whose MCP server has gone, recording the exit as a note; it leaves waiting sessions alone.
 
-The worktree outlives the claim: a waiting issue's check runs in it. trk never removes worktrees.
+The worktree outlives the claim: a waiting issue's check runs in it. Closing an issue retains its resources until an explicit `trk gc` removes them.
+
+### `trk gc`
+
+```
+trk gc [ID...] [--dry-run] [--abandoned] [--older-than DURATION] [--json]
+```
+
+Collect resources of closed issues in this project, optionally limited to the given IDs and to issues closed longer ago than `DURATION` (for example `7d`). By default only reason `done` is eligible; `--abandoned` also includes abandoned issues. Open, claimed and waiting issues are never collected. Closing an issue does not itself remove resources.
+
+GC takes the check queue lock and uses an immediate database transaction to serialize eligibility and cleanup with lifecycle changes. It examines all historical claims, not only the latest, and removes only resources recorded on the local host:
+
+- **Sessions:** discover the recorded exact terminal with `herdr-app ls`, then close its containing space with `herdr-app do space.close`. Never infer a session from a title. Protect the caller's current terminal's space and spaces used by other issues' active or waiting sessions; unavailable discovery or unsafe targets are skipped.
+- **Worktrees:** only descendants of the configured worktree directory are eligible, never the current worktree. Use `git worktree remove` without force; dirty worktrees and other Git refusals are skipped, not overridden.
+- **Branches:** only the branch named exactly after the issue ID, from the primary checkout, after every recorded worktree is removed or absent. Use `git branch -d`, never `-D`; unmerged, checked-out or otherwise refused branches are skipped.
+
+`--dry-run` reports the same selection and safety decisions without removing resources or appending notes. Each real removal appends a note attributed to the caller; absent or skipped resources do not, so a second run adds no cleanup note when nothing remains.
+
+Pretty output reports each issue's session, worktree and branch outcome and reason. The standard JSON envelope's `data` is `{dry_run: bool, issues: [{id, session: {status, reason, items: [...]}, worktree: {status, reason, items: [...]}, branch: {status, reason}}]}`. Status is `removed`, `absent` or `skipped`. Session items include `terminal`, `space`, `status` and `reason`; worktree items include `path`, `status` and `reason`. In a dry run, a would-be removal has status `removed` with a `would remove ...` reason and top-level `dry_run: true`; it does not mean deletion occurred. Refusals remain visible as skipped outcomes.
 
 ### Launcher
 
@@ -544,6 +562,7 @@ Every command builds one typed result, then renders it in the requested format. 
 | `trk dashboard` (`dash`) | Live full-screen overview; without a terminal or with `--json`, the snapshot once |
 | `trk attach <ID>` / `trk send <ID> TEXT` | Attach to or type into the active session, or the waiting session when no claim is active |
 | `trk reap` | Release claims whose session has ended, with a note |
+| `trk gc [ID...] [--dry-run] [--abandoned] [--older-than DURATION]` | Collect closed issues' local sessions, worktrees and safely deletable issue branches |
 | `trk mcp --issue ID --actor A --agent N` | The per-issue MCP server (started by the harness, not by hand) |
 | `trk agent list` / `preview <agent> [--issue ID]` / `check` | Inspect and validate agent definitions |
 | **Setup** |  |
@@ -703,7 +722,7 @@ Git, `sh` and `kill` are invoked as executables through `std::process`. Tests us
 ### Open questions
 
 - [ ] **Maximum wait.** Nothing ends a wait whose check answers "not yet" forever (an abandoned PR). `trk list state=waiting --sort next-check` shows them; an optional deadline that turns into a failure would make it automatic.
-- [ ] **Worktree cleanup.** Worktrees are never removed, because a waiting check runs in them and a reopened issue reuses them. Removing them when an issue closes as done is probably safe.
+- [x] **Worktree cleanup.** Explicit `trk gc` collects closed issues' local resources with dry-run support and conservative session, path and Git safety checks; waiting and active issues remain protected.
 - [ ] **Check lock across hosts.** A lock held from another host is never replaced. With one machine this cannot happen; with a shared database it would need a timeout.
 - [ ] **Running agents automatically.** `trk check` reopens failed issues but does not start a session on them. A loop that runs `trk check` and then `trk run` on what is ready would close the cycle; it needs a limit on concurrent sessions first.
 - [ ] **Lease length.** 30 minutes for agent claims is a guess. It should exceed the longest silent stretch of a typical agent session.
