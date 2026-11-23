@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 
 use crate::error::{Code, Error, Result, bad_args, not_found};
 use crate::model::*;
-use crate::store::{CLAIM_COLS, Ctx, ISSUE_COLS, row_to_claim, row_to_issue};
+use crate::store::{Ctx, ISSUE_COLS, row_to_issue};
 
 const ID_ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
