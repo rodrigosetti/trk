@@ -9,7 +9,8 @@ An issue has a title, a description, notes, a priority, a required type (default
 ```
 open → claimed → closed
                 → waiting → closed   its check passed, or a human closed it
-                          → open     its check failed, or a human reopened it
+                          → claimed  its check failed and its session was woken
+                          → open     no live session, wake delivery failed, or a human reopened it
 ```
 
 A session ends by closing the issue or leaving it **waiting**: the work is done once something
@@ -140,14 +141,18 @@ The check runs with `sh -c` in the worktree the issue was claimed in, with `TRK_
 | --- | --- | --- |
 | 0 | pass | the issue closes as done |
 | 75 | not yet | still waiting; checked again after `--every` (default `[check] interval`, 5m) |
-| anything else, or a timeout | error | the issue returns to open with the command's output in a note |
+| anything else, or a timeout | error | wake the original live session, otherwise reopen; record the command's output in a note |
 
+A failed check restores the original session's claim with a fresh lease when its MCP
+server is alive on this host, its terminal is recorded (and present when using Herdr),
+and `[launcher] send` is configured. The session receives the output and a prompt to
+fix the failure and end again, normally with `wait`. Its MCP tools work again.
+If the session is gone or sending fails, the issue is open for another session.
+`trk check --json` distinguishes `woken` from `failed` (reopened); both include output.
+trk interprets only the check's exit code, not PRs or CI.
 
-After a check passes or fails, trk best-effort sends an informational message to the
-original agent session if its MCP server and terminal are still present. A pass says
-the issue is closed; a failure includes its result and says the issue reopened. Exit 75
-does not notify. The agent is not resumed automatically, and the session remains for
-the user to inspect and close.
+A passing check still best-effort sends an informational message that the issue is
+closed. Exit 75 does not notify or restore a claim.
 
 With `[launcher] herdr = true`, a passing check also best-effort prepends `[closed] `
 to the current name of the space containing the original waiting session's exact
@@ -168,9 +173,9 @@ Three properties follow from that:
   when the session stopped.
 - **Checks are a merge queue.** Only one `trk check` runs at a time and it runs checks one after
   another, so two sessions never merge into main at once.
-- **Failures come back as work.** A failed check reopens the issue; the next session reads the
-  output in the notes. A command that is missing or times out (`[check] timeout`, 10m) fails
-  rather than waiting forever.
+- **Failures come back as work.** A failed check wakes its live session to fix it; otherwise
+  the issue reopens and the next session reads the output in the notes. A command that
+  is missing or times out (`[check] timeout`, 10m) fails rather than waiting forever.
 
 `trk check` owns each check's process group as well as the queue lock. On shell exit,
 timeout, SIGINT, SIGTERM or SIGHUP, it stops remaining group members (SIGTERM, then

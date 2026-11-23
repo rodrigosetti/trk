@@ -113,7 +113,9 @@ pub fn catalogue() -> Vec<ToolDef> {
                 "End your session with the issue not yet done: it waits for something outside this session. \
                  With `check`, a shell command that trk runs later, on a schedule, in your worktree: \
                  exit 0 closes the issue as done; exit {CHECK_RETRY_EXIT} means not yet, check again after `interval`; \
-                 any other exit returns the issue to open for a new session, with the command's output as a note. \
+                 any other exit or timeout records the output as a note and wakes you to fix the failure if your session is still alive. \
+                 Your claim and tools are restored; address the failure and end again, normally with wait. \
+                 If your session is gone or wake delivery fails, the issue returns to open for a new session. \
                  The command may do the remaining work itself (merge the branch) or only look (is the PR merged?). \
                  It runs unattended and may run more than once: make it non-interactive and safe to repeat. \
                  Without `check`, the issue waits for a human to close or reopen it."

@@ -191,7 +191,8 @@ enum Cmd {
     #[command(
         after_help = "The check runs later, by `trk check`, with `sh -c` in the claim's worktree.\n\
         Exit 0 closes the issue as done; exit 75 means not yet, check again after --every;\n\
-        any other exit returns the issue to open with the output as a note.\n\
+        any other exit or timeout wakes the original live session, otherwise reopens the issue;\n\
+        the output is kept in a note. Failed wake delivery also reopens the issue.\n\
         Without --check the issue waits for `trk close` or `trk reopen`.\n\
         On an issue that is already waiting, this replaces its check, interval and reason."
     )]

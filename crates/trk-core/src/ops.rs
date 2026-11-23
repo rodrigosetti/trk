@@ -5,7 +5,7 @@
 //! open    → claimed            claim
 //! claimed → open               unclaim, reap, lease expiry
 //! claimed → closed | waiting   close, wait
-//! waiting → closed | open      check passes | check fails, or a human
+//! waiting → closed | claimed | open  check passes | wakes session | reopens
 //! open    → closed             close
 //! closed  → open               reopen
 //! ```
@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 
 use crate::error::{Code, Error, Result, bad_args, not_found};
 use crate::model::*;
-use crate::store::{Ctx, ISSUE_COLS, row_to_issue};
+use crate::store::{CLAIM_COLS, Ctx, ISSUE_COLS, row_to_claim, row_to_issue};
 
 const ID_ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
@@ -87,6 +87,8 @@ pub enum CheckResult {
     Retry,
     /// Anything else: back to open with the output as a note.
     Failed,
+    /// A failed check restored its waiting session's claim.
+    Woken { claim: i64 },
     /// The issue changed while the check ran; nothing was recorded.
     Skipped,
 }
@@ -97,6 +99,7 @@ impl CheckResult {
             CheckResult::Passed => "passed",
             CheckResult::Retry => "retry",
             CheckResult::Failed => "failed",
+            CheckResult::Woken { .. } => "woken",
             CheckResult::Skipped => "skipped",
         }
     }
@@ -802,8 +805,16 @@ impl Ctx<'_> {
 
     /// Record one run of an issue's check. `check` is the command that ran:
     /// if the issue is no longer waiting on exactly that command, a human
-    /// changed it meanwhile and the run is dropped.
-    pub fn check_record(&self, id: &str, check: &str, run: &CheckRun) -> Result<CheckResult> {
+    /// changed it meanwhile and the run is dropped. On failure, `resume_claim`
+    /// restores only the latest claim, released for waiting, after the caller
+    /// has established that its session is still alive.
+    pub fn check_record(
+        &self,
+        id: &str,
+        check: &str,
+        run: &CheckRun,
+        resume_claim: Option<i64>,
+    ) -> Result<CheckResult> {
         let mut issue = self.issue(id)?;
         if issue.state != State::Waiting || issue.waiting_check.as_deref() != Some(check) {
             return Ok(CheckResult::Skipped);
@@ -848,6 +859,22 @@ impl Ctx<'_> {
             )?;
             return Ok(CheckResult::Passed);
         }
+        let resume = if let Some(claim) = resume_claim {
+            self.conn
+                .query_row(
+                    &format!(
+                        "SELECT {CLAIM_COLS} FROM claim c LEFT JOIN actor a ON a.id = c.actor
+                         WHERE c.issue_id = ?1 AND c.id = ?2 AND c.release_reason = 'waiting'
+                           AND c.released_at IS NOT NULL
+                           AND c.id = (SELECT max(id) FROM claim WHERE issue_id = ?1)"
+                    ),
+                    params![id, claim],
+                    row_to_claim,
+                )
+                .optional()?
+        } else {
+            None
+        };
         let what = if run.timed_out {
             "timed out".to_string()
         } else {
@@ -857,7 +884,12 @@ impl Ctx<'_> {
             }
         };
         let out = tail(run.output.trim_end(), CHECK_OUTPUT_TAIL);
-        let mut body = format!("The waiting check {what}; the issue is open again.\n");
+        let outcome = if resume.is_some() {
+            "the waiting session has been resumed"
+        } else {
+            "the issue is open again"
+        };
+        let mut body = format!("The waiting check {what}; {outcome}.\n");
         if let Some(r) = &reason {
             body.push_str(&format!("\nIt was waiting for: {r}\n"));
         }
@@ -871,7 +903,11 @@ impl Ctx<'_> {
             body.push_str(&format!("\nOutput:\n\n```\n{out}\n```\n"));
         }
         self.note(id, &body, None, false)?;
-        issue.state = State::Open;
+        issue.state = if resume.is_some() {
+            State::Claimed
+        } else {
+            State::Open
+        };
         Self::clear_waiting(&mut issue);
         self.save_issue(&issue)?;
         self.event(
@@ -882,12 +918,63 @@ impl Ctx<'_> {
                 "check": check, "reason": reason,
             }),
         )?;
+        if let Some(previous) = resume {
+            let lease_until = fmt_ts(self.now + self.opts.agent_lease);
+            self.conn.execute(
+                "INSERT INTO claim
+                 (issue_id, actor, claimed_at, lease_until, worktree, host, agent, terminal)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    id,
+                    previous.actor,
+                    self.ts(),
+                    lease_until,
+                    previous.worktree,
+                    previous.host,
+                    previous.agent,
+                    previous.terminal,
+                ],
+            )?;
+            let claim = self.conn.last_insert_rowid();
+            self.event(
+                Some(id),
+                "claim",
+                json!({
+                    "claim": claim, "claimant": previous.actor, "lease_until": lease_until,
+                    "worktree": previous.worktree, "host": previous.host, "agent": previous.agent,
+                    "terminal": previous.terminal, "from": "waiting", "by_check": true,
+                    "resumed_from": previous.id,
+                }),
+            )?;
+            return Ok(CheckResult::Woken { claim });
+        }
         self.event(
             Some(id),
             "reopen",
             json!({"from": "waiting", "by_check": true}),
         )?;
         Ok(CheckResult::Failed)
+    }
+
+    /// Reopen after delivery to a restored session failed, but only while that
+    /// exact claim is still active. A session that moved on must not be changed.
+    pub fn check_wake_failed(&self, id: &str, claim_id: i64) -> Result<bool> {
+        let mut issue = self.issue(id)?;
+        if issue.state != State::Claimed {
+            return Ok(false);
+        }
+        let Some(claim) = self.active_claim(id)?.filter(|c| c.id == claim_id) else {
+            return Ok(false);
+        };
+        self.note(
+            id,
+            "The failed waiting check could not be delivered to the resumed session; \
+             the issue is open again.",
+            None,
+            false,
+        )?;
+        self.to_open(&mut issue, &claim, json!({"check_wake_failed": true}))?;
+        Ok(true)
     }
 
     // ------------------------------------------------------------------

@@ -1,9 +1,9 @@
 //! `trk check`: run the checks of waiting issues, one at a time.
 //!
 //! A check is a shell command an agent left behind. Exit 0 closes the issue,
-//! 75 leaves it waiting, anything else returns it to open with the output as
-//! a note. Only one `trk check` runs at a time, so checks that merge never
-//! race each other.
+//! 75 leaves it waiting, anything else wakes its live session or returns it
+//! to open with the output as a note. Only one `trk check` runs at a time,
+//! so checks that merge never race each other.
 
 use std::io::Write;
 use std::os::unix::process::CommandExt;
@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use trk_core::config::parse_duration;
 use trk_core::error::{Code, Error, Result};
 use trk_core::model::{CHECK_RETRY_EXIT, Issue, State};
-use trk_core::ops::{CheckResult, CheckRun};
+use trk_core::ops::{CHECK_OUTPUT_TAIL, CheckResult, CheckRun};
 
 use crate::env::{Env, git, hostname};
 use crate::render::{Out, until};
@@ -397,41 +397,55 @@ fn pass(
             },
         };
         interrupt.check()?;
-        let result = store.write(&actor, false, |c| c.check_record(&i.id, &check, &run))?;
-        if matches!(result, CheckResult::Passed | CheckResult::Failed) {
-            let message = if result == CheckResult::Passed {
-                format!(
-                    "Informational update: the waiting check passed for {}. The issue is closed; no further action is required.",
-                    i.id
-                )
+        let session = if run.timed_out || !matches!(run.exit, Some(0 | CHECK_RETRY_EXIT)) {
+            // Unknown liveness is not enough to restore a claim.
+            crate::run::waiting_session(env, &i.id).unwrap_or(None)
+        } else {
+            None
+        };
+        let mut result = store.write(&actor, false, |c| {
+            c.check_record(&i.id, &check, &run, session.as_ref().map(|s| s.claim))
+        })?;
+        if let CheckResult::Woken { claim } = result {
+            let reason = if run.timed_out {
+                "timed out".to_string()
             } else {
-                let reason = if run.timed_out {
-                    "timed out".to_string()
-                } else {
-                    run.exit
-                        .map(|code| format!("exited with status {code}"))
-                        .unwrap_or_else(|| "could not run".to_string())
-                };
-                let output = run.output.trim_end();
-                let context = if output.is_empty() {
-                    String::new()
-                } else {
-                    let excerpt: String = output.chars().take(500).collect();
-                    format!(" Check output: {excerpt}")
-                };
-                format!(
-                    "Informational update: the waiting check failed for {} ({reason}); the issue was reopened. No work was resumed automatically.{context}",
-                    i.id
-                )
+                run.exit
+                    .map(|code| format!("exited with status {code}"))
+                    .unwrap_or_else(|| "could not run".to_string())
             };
-            // State and outcome are already committed. UI updates are advisory:
-            // an exited session or a launcher failure must not affect the check.
-            let _ = crate::run::notify_waiting_session(
-                env,
-                &i.id,
-                &message,
-                result == CheckResult::Passed,
+            let output = run.output.trim_end();
+            let mut start = output.len().saturating_sub(CHECK_OUTPUT_TAIL);
+            while !output.is_char_boundary(start) {
+                start += 1;
+            }
+            let message = format!(
+                "The waiting check failed for {} ({reason}). Your claim has been restored. \
+                 Address the failure using the check output below and the issue's notes. \
+                 Then end the session again, normally by calling wait with a corrected check.\
+                 \n\nCheck:\n{check}\n\nOutput:\n{}",
+                i.id,
+                if output.is_empty() {
+                    "(no output)"
+                } else {
+                    &output[start..]
+                },
             );
+            let delivered = session.as_ref().is_some_and(|s| s.send(&message).is_ok());
+            if !delivered {
+                result = if store.write(&actor, false, |c| c.check_wake_failed(&i.id, claim))? {
+                    CheckResult::Failed
+                } else {
+                    CheckResult::Skipped
+                };
+            }
+        } else if result == CheckResult::Passed {
+            // Passing UI updates remain advisory, including the Herdr marker.
+            let message = format!(
+                "Informational update: the waiting check passed for {}. The issue is closed; no further action is required.",
+                i.id
+            );
+            let _ = crate::run::notify_waiting_session(env, &i.id, &message, true);
         }
         let now = store.read(None, |c| c.issue(&i.id))?;
         let mut v = json!({
@@ -440,7 +454,7 @@ fn pass(
             "duration_ms": started.elapsed().as_millis() as u64,
             "state": now.state, "next_check_at": now.next_check_at,
         });
-        if result == CheckResult::Failed {
+        if matches!(result, CheckResult::Failed | CheckResult::Woken { .. }) {
             v["output"] = json!(run.output.trim_end());
         }
         out.push(v);
@@ -457,8 +471,8 @@ fn line(r: &Value) -> String {
             "◷ {id}  not yet (exit {CHECK_RETRY_EXIT}), next {}  {title}",
             r["next_check_at"].as_str().map(until).unwrap_or_default()
         ),
-        "failed" => format!(
-            "✗ {id}  {} → open, output in a note  {title}",
+        "failed" | "woken" => format!(
+            "✗ {id}  {} → {}, output in a note  {title}",
             if r["timed_out"].as_bool() == Some(true) {
                 "timed out".to_string()
             } else {
@@ -466,9 +480,14 @@ fn line(r: &Value) -> String {
                     Some(c) => format!("failed (exit {c})"),
                     None => "could not run".to_string(),
                 }
+            },
+            if r["result"] == "woken" {
+                "claimed, session woken"
+            } else {
+                "open"
             }
         ),
-        "skipped" => format!("- {id}  changed while its check ran; nothing recorded  {title}"),
+        "skipped" => format!("- {id}  changed while checking or delivering its wake  {title}"),
         "would_run" => {
             let mut s = format!(
                 "{id}  {title}\n    check  {}",

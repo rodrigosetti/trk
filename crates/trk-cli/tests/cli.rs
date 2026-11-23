@@ -1838,9 +1838,9 @@ fn waiting_check_normalizes_edge_markers_and_preserves_embedded_literal_text() {
 
 #[test]
 fn failed_and_retrying_waiting_checks_do_not_mark_spaces_closed() {
-    for (exit, result, state) in [(1, "failed", "open"), (75, "retry", "waiting")] {
+    for (exit, result, state) in [(1, "woken", "claimed"), (75, "retry", "waiting")] {
         let ui = WaitingUi::new();
-        let id = ui.waiting(&format!("exit {exit}"), true);
+        let id = ui.waiting(&format!("echo failure evidence; exit {exit}"), true);
         let out = ui.check(&id, "");
         assert_eq!(out["result"], result);
         assert_eq!(out["state"], state);
@@ -1850,10 +1850,96 @@ fn failed_and_retrying_waiting_checks_do_not_mark_spaces_closed() {
         if exit == 1 {
             assert!(messages.starts_with("exact-origin\n"), "{messages}");
             assert!(messages.contains("waiting check failed"), "{messages}");
+            assert!(messages.contains("failure evidence"), "{messages}");
+            assert!(messages.contains("Address the failure"), "{messages}");
+            assert!(messages.contains("calling wait"), "{messages}");
+            let issue = ui.e.ok(&["show", &id, "--with", "events,claims,notes"]);
+            assert_eq!(issue["claim"]["terminal"], "exact-origin");
+            let claims = issue["claims"].as_array().unwrap();
+            assert_eq!(claims[0]["actor"], claims[1]["actor"]);
+            let events = issue["events"].as_array().unwrap();
+            assert!(
+                events
+                    .iter()
+                    .any(|e| e["op"] == "check" && e["payload"]["result"] == "failed")
+            );
+            assert_eq!(events.last().unwrap()["op"], "claim");
         } else {
             assert_eq!(messages, "");
         }
     }
+}
+
+#[test]
+fn failed_waiting_checks_reopen_when_session_is_gone_or_wake_cannot_be_sent() {
+    for mode in [
+        "dead",
+        "no-send",
+        "missing",
+        "unavailable",
+        "send-error",
+        "send-rejected",
+    ] {
+        let ui = WaitingUi::new();
+        match mode {
+            "no-send" => ui.e.set_config(
+                "send       = [\"hc\", \"send\", \"{name}\", \"{text}\"]",
+                "",
+            ),
+            "send-error" => ui.e.set_config(
+                "send       = [\"hc\",",
+                "send       = [\"missing-send-program\",",
+            ),
+            "send-rejected" => ui.e.set_config(
+                "send       = [\"hc\", \"send\", \"{name}\", \"{text}\"]",
+                "send       = [\"sh\", \"-c\", \"exit 1\"]",
+            ),
+            _ => {}
+        }
+        let id = ui.waiting("echo failure evidence; exit 2", mode != "dead");
+        let result = ui.check(&id, mode);
+        assert_eq!(result["result"], "failed", "{mode}: {result}");
+        assert_eq!(result["state"], "open", "{mode}: {result}");
+        assert!(
+            result["output"]
+                .as_str()
+                .unwrap()
+                .contains("failure evidence")
+        );
+        let issue = ui.e.ok(&["show", &id, "--with", "events,claims,notes"]);
+        assert_eq!(issue["claim"], Value::Null, "{mode}: {issue}");
+        assert_eq!(issue["derived"]["ready"], true, "{mode}: {issue}");
+        assert!(
+            issue["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| { n["body"].as_str().unwrap().contains("failure evidence") })
+        );
+        let claims = issue["claims"].as_array().unwrap();
+        if mode.starts_with("send-") {
+            assert_eq!(claims.len(), 2, "{mode}: {claims:?}");
+            assert!(claims[1]["released_at"].is_string(), "{mode}: {claims:?}");
+        } else {
+            assert_eq!(claims.len(), 1, "{mode}: {claims:?}");
+        }
+        assert_eq!(ui.text("messages"), "", "{mode}");
+        assert_eq!(ui.text("renames"), "", "{mode}");
+    }
+}
+
+#[test]
+fn timed_out_waiting_check_wakes_its_live_session() {
+    let ui = WaitingUi::new();
+    ui.e.set_config("timeout  = \"10m\"", "timeout  = \"1s\"");
+    let id = ui.waiting("echo timeout evidence; sleep 30", true);
+    let result = ui.check(&id, "");
+    assert_eq!(result["result"], "woken");
+    assert_eq!(result["state"], "claimed");
+    assert_eq!(result["timed_out"], true);
+    let message = ui.text("messages");
+    assert!(message.contains("timed out"), "{message}");
+    assert!(message.contains("timeout evidence"), "{message}");
 }
 
 #[test]
