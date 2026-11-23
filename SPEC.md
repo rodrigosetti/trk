@@ -335,7 +335,32 @@ With `inbox = true`, `trk note <ID> --to-agent` messages are attached once to th
 
 Notes are in the briefing because they are the issue's memory across sessions. An issue reopened by a failed check carries the check's output as its latest note, so the next session starts from the failure.
 
-Instruction and briefing templates can use `{{ base }}` for the resolved `[run] base` branch.
+Both templates receive this MiniJinja context in `trk run`, the MCP server and
+`trk agent preview`; existing variables retain their meanings:
+
+| Variable | Contract |
+| --- | --- |
+| `issue` | Issue JSON with dependencies and derived fields; briefing includes all notes |
+| `project.name` | Name of the project root directory |
+| `project.root` | Project root path, not the session worktree |
+| `project.prefix` | `[issues] prefix` |
+| `type.name`, `type.description` | Resolved type name and description from `types/<type>.toml`, unaffected by an agent override |
+| `config.check.interval`, `config.check.timeout` | Configured duration strings |
+| `config.check.max_wakes` | Numeric configured automatic wake cap |
+| `config.claims.agent_lease` | Configured lease duration string |
+| `config.run.worktrees` | Configured directory string, without tilde expansion or root resolution |
+| `agent.name`, `agent.description` | Selected agent metadata |
+| `tools` | Available tools as `{name, description}` objects |
+| `worktree` | Session worktree path or null |
+| `base` | Resolved `[run] base` branch |
+| `actor` | Session actor |
+| `harness` | Harness name or null |
+| `fold_instructions` | Whether instructions are supplied for folding into the briefing |
+| `instructions` | Rendered instructions when folding, otherwise null |
+
+`trk agent check` uses the same context with a sample project root `/tmp/project`,
+the configured issue prefix and settings, and sample type `code-change` with description
+`Sample type description`. It does not require a project type to be mapped to every agent.
 
 ### `trk run`
 

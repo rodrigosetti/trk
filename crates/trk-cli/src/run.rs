@@ -288,6 +288,10 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     // 5. Render the launch spec.
     let input = trk_agent::prompt::PromptInput {
         issue: &issue_now,
+        project_root: &env.root,
+        config: &env.user,
+        issue_type: &routing.issue_type,
+        type_description: &routing.description,
         agent: &agent,
         tools: &tools,
         worktree: wt_str.as_deref(),

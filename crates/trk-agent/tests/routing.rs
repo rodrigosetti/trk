@@ -21,11 +21,15 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
         "agents/custom reviewer.toml",
         "name = 'custom reviewer'\ninstructions = 'prompts/rules.j2'\n",
     );
-    put(&cfg_dir, "agents/other.toml", "name = 'other'\n");
+    put(
+        &cfg_dir,
+        "agents/other.toml",
+        "name = 'other'\ninstructions = 'prompts/rules.j2'\n",
+    );
     put(
         &cfg_dir,
         "prompts/rules.j2",
-        "{% include 'prompts/fragment.j2' %}: {{ issue.type }} targeting {{ base }}",
+        "{% include 'prompts/fragment.j2' %}: {{ issue.type }} / {{ type.name }} ({{ type.description }}) / {{ agent.name }} targeting {{ base }}",
     );
     put(&cfg_dir, "prompts/fragment.j2", "Project policy");
     let cfg = RoutingConfig::new(&ConfigDir::new(&cfg_dir));
@@ -42,6 +46,10 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     let issue = trk_agent::check::sample_issue();
     let input = trk_agent::prompt::PromptInput {
         issue: &issue,
+        project_root: dir.path(),
+        config: &trk_core::config::UserConfig::default(),
+        issue_type: &route.issue_type,
+        type_description: &route.description,
         agent: &resolved.agent,
         tools: &[],
         worktree: None,
@@ -51,14 +59,25 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     };
     assert_eq!(
         trk_agent::prompt::instructions(&resolved.config, &input).unwrap(),
-        "Project policy: code-change targeting release/stable"
+        "Project policy: code-change / code-change (Change code) / custom reviewer targeting release/stable"
     );
 
     // An explicit agent overrides the type's mapping.
     let route = cfg.resolve("code-change", Some("other")).unwrap();
     assert!(route.override_agent);
     assert!(!route.worktree);
-    assert_eq!(cfg.load(&route).unwrap().agent.name, "other");
+    let resolved = cfg.load(&route).unwrap();
+    assert_eq!(resolved.agent.name, "other");
+    let input = trk_agent::prompt::PromptInput {
+        agent: &resolved.agent,
+        issue_type: &route.issue_type,
+        type_description: &route.description,
+        ..input
+    };
+    assert_eq!(
+        trk_agent::prompt::instructions(&resolved.config, &input).unwrap(),
+        "Project policy: code-change / code-change (Change code) / other targeting release/stable"
+    );
 }
 
 #[test]

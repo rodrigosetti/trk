@@ -1451,6 +1451,10 @@ fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
     let server = trk_mcp::TrkServer::new(trk_mcp::McpArgs {
         db: path.clone(),
         config: trk_core::config::ConfigDir { path: e.trk_dir() },
+        project_root: e.repo(),
+        user: trk_core::config::ConfigDir::new(e.trk_dir())
+            .user_config()
+            .unwrap(),
         opts: opts.clone(),
         issue: id.clone(),
         actor: spec["actor"].as_str().unwrap().into(),

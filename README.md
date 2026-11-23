@@ -530,6 +530,28 @@ one dependency kind (`blocks`) are fixed. Agents and prompts are read when a ses
 `trk agent check` validates them. `trk show` and `trk run --dry-run` print which type and agent
 files a run would use.
 
+Agent instructions and briefings are MiniJinja templates with the same context in `trk run`,
+the MCP server and `trk agent preview`:
+
+| Variable | Value |
+| --- | --- |
+| `issue` | Issue object, including dependencies and derived fields; briefings also include notes |
+| `project.name`, `project.root`, `project.prefix` | Project root directory name, root path (not the session worktree), and configured issue ID prefix |
+| `type.name`, `type.description` | Resolved `types/<type>.toml` metadata, even with an agent override |
+| `config.check.interval`, `config.check.timeout`, `config.check.max_wakes` | Configured check durations and numeric wake cap |
+| `config.claims.agent_lease`, `config.run.worktrees` | Configured lease duration and worktree directory |
+| `agent.name`, `agent.description` | Selected agent metadata |
+| `tools` | List of available tools, each with `name` and `description` |
+| `worktree`, `actor`, `harness` | Session worktree path, actor and harness name; worktree/harness may be null |
+| `base` | Resolved `[run] base` branch |
+| `fold_instructions`, `instructions` | Whether instructions are folded into the briefing, and their rendered text (otherwise null) |
+
+Durations and `config.run.worktrees` retain their configured strings (for example `5m`
+and `.trk/worktrees`), without path expansion. Example: `{{ project.name }}:
+{{ type.description }}; wake cap {{ config.check.max_wakes }}`.
+`trk agent check` renders with sample issue/type/project values (project root `/tmp/project`,
+type `code-change` with description `Sample type description`) and the project's configured settings.
+
 There is no global configuration and no cross-project view: `trk list`, `trk runs` and
 `trk check --watch` act on the project of the working directory, so each project needs its own
 `trk check --watch`.
