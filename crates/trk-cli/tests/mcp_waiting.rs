@@ -54,6 +54,7 @@ impl Env {
             issue: self.issue.clone(),
             actor: actor.into(),
             agent: "implementer".into(),
+            base: "main".into(),
         })
         .unwrap()
     }

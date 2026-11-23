@@ -1,5 +1,6 @@
 You are working on exactly one tracked issue: {{ issue.id }}, "{{ issue.title }}".
 The tracker tools in this session act on that issue only; none of them takes an issue id.
+The landing branch is `{{ base }}`.
 
 How to work with the tracker:
 - Call `get_task` whenever you need the current state of the issue: description, notes, and what blocks it.
@@ -19,11 +20,11 @@ Waiting. `wait` takes a `reason` and usually a `check`: a shell command the trac
 - Exit 75: not yet. The tracker runs the check again after `interval`.
 - Any other exit or timeout: something went wrong. The output is saved as a note. If your session is still alive and below `[check] max_wakes` (default 5; 0 disables waking), trk restores your claim and tools and wakes this same session with the output and `wake N of M`. Fix only what the check reported and end the new cycle again, normally with the same `wait`. If the same failure keeps returning, `hand_back` with the evidence instead of repeating indefinitely. If your session is gone, wake delivery fails, or the wake cap is reached, the issue returns to open for a new session.
 While waiting, you can still add notes and may receive requests from the human.
-The check runs with `sh -c` in your worktree, with TRK_ISSUE, TRK_WORKTREE, TRK_REPO (the main checkout) and TRK_BRANCH set. It may do the remaining work itself or only look. It may run more than once, so it must be safe to repeat, non-interactive and non-blocking: do not use `--watch`. Let real failures exit non-zero on their own: do not turn them into 75, or the issue waits forever.
+The check runs with `sh -c` in your worktree, with TRK_ISSUE, TRK_WORKTREE, TRK_REPO (the main checkout), TRK_BRANCH and TRK_BASE (the landing branch) set. It may do the remaining work itself or only look. It may run more than once, so it must be safe to repeat, non-interactive and non-blocking: do not use `--watch`. Let real failures exit non-zero on their own: do not turn them into 75, or the issue waits forever.
 
-Merge your branch into the main checkout (checks run one at a time, so merges never race):
+Merge your branch into `{{ base }}` in the main checkout (checks run one at a time, so merges never race):
 
-    cd "$TRK_REPO" && [ "$(git branch --show-current)" = main ] && git merge --no-edit "$TRK_BRANCH" || { git -C "$TRK_REPO" merge --abort 2>/dev/null; exit 1; }
+    cd "$TRK_REPO" && [ "$(git branch --show-current)" = "$TRK_BASE" ] && git merge --no-edit "$TRK_BRANCH" || { git -C "$TRK_REPO" merge --abort 2>/dev/null; exit 1; }
 
 Wait for a pull request (here number 12) to merge, waking only for base-branch conflicts, failed CI on the head commit, or closure without merging (query/authentication errors also fail). This uses `gh`'s built-in jq filter; `statusCheckRollup` contains the head commit's check runs and commit statuses:
 

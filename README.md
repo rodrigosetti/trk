@@ -120,9 +120,9 @@ contain ANSI styling.
 ## Waiting and `trk check`
 
 ```sh
-# Done once the branch is in main: the check does the merge.
-trk wait orch-4kq -r "merge into main" \
-  -c 'cd "$TRK_REPO" && [ "$(git branch --show-current)" = main ] && git merge --no-edit "$TRK_BRANCH"'
+# Done once the branch is in the configured base: the check does the merge.
+trk wait orch-4kq -r "merge into base branch" \
+  -c 'cd "$TRK_REPO" && [ "$(git branch --show-current)" = "$TRK_BASE" ] && git merge --no-edit "$TRK_BRANCH"'
 
 # Done once the PR is merged; wake for conflicts or failed head-commit CI.
 # gh's built-in jq filter reads the head commit's check runs and statuses.
@@ -215,7 +215,8 @@ trk ready type=research --sort type
 
 The check runs with `sh -c` in the worktree the issue was claimed in, or the primary
 project root when the claim has no worktree, with `TRK_ISSUE`, `TRK_WORKTREE`,
-`TRK_REPO` (the main checkout) and `TRK_BRANCH` set. Its exit code decides:
+`TRK_REPO` (the primary checkout), `TRK_BRANCH` and `TRK_BASE` (the resolved base
+branch) set. Its exit code decides:
 
 | Exit | Meaning | Result |
 | --- | --- | --- |
@@ -279,7 +280,7 @@ Three properties follow from that:
 - **A waiting issue still blocks.** What depends on it becomes ready when the work has landed, not
   when the session stopped.
 - **Checks are a merge queue.** Only one `trk check` runs at a time and it runs checks one after
-  another, so two sessions never merge into main at once.
+  another, so two sessions never merge into the base branch at once.
 - **Failures come back as work.** A failed check wakes its live session to fix it; otherwise
   the issue reopens and the next session reads the output in the notes. A command that
   is missing or times out (`[check] timeout`, 10m) fails rather than waiting forever.
@@ -374,9 +375,10 @@ Each `.trk/types/<name>.toml` may set `worktree = true` (the default when omitte
 or `worktree = false`. This is a type-only setting, not an agent or harness setting;
 `--agent` does not override it. `code-change` keeps the default, while the research
 and review seeds set it to `false`. With `true`, the worktree is
-`.trk/worktrees/<ID>` on a branch named after the issue, so a later session on the same
-issue finds the earlier work. With `false`, the session runs in the primary project root,
-creates neither branch nor worktree, and records no worktree path in its claim.
+`.trk/worktrees/<ID>` on a branch named after the issue. New issue branches start at
+the resolved `[run] base`; existing issue branches are reused, so a later session
+on the same issue finds the earlier work. With `false`, the session runs in the primary
+project root, creates neither branch nor worktree, and records no worktree path in its claim.
 `trk show --json` routing and `trk run --dry-run --json` expose the resolved `worktree` boolean.
 
 The harness is `--harness`, else the first installed harness the agent prefers (see Configuration).
@@ -500,9 +502,23 @@ Everything trk keeps for a project is in `.trk/` at its root, written by `trk in
 ```
 
 `config.toml` is explicit: `trk install` writes every setting. Missing settings are errors
-except for compatibility defaults such as `[check] max_wakes`, `gc` and `gc_grace`.
+except for compatibility defaults such as `[check] max_wakes`, `gc`, `gc_grace`, and
+the detected `[run] base`.
 `[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory name,
 or `trk install --prefix NAME`. Changing it later only affects new issues.
+
+`[run] base` selects the base branch, for example:
+
+```toml
+[run]
+base = "develop"
+```
+
+When writing a new config, `trk install` detects the branch named by `origin/HEAD`,
+then the current branch of the primary checkout, and finally falls back to `main`.
+Older configs that omit `base` use the same detection at runtime. An explicit `base`
+takes precedence. Waiting checks receive the resolved branch as `TRK_BASE`; instruction
+and briefing prompt templates can use `{{ base }}`.
 
 | Check setting | Default, also when omitted | Meaning |
 | --- | --- | --- |

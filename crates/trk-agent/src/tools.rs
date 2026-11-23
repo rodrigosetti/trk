@@ -130,7 +130,7 @@ pub fn catalogue() -> Vec<ToolDef> {
                 ("reason", text("What the issue is waiting for, for a human reading the queue"), true),
                 (
                     "check",
-                    text("Shell command, run with `sh -c` in your worktree. Environment: TRK_ISSUE, TRK_WORKTREE, TRK_REPO, TRK_BRANCH."),
+                    text("Shell command, run with `sh -c` in your worktree. Environment: TRK_ISSUE, TRK_WORKTREE, TRK_REPO, TRK_BRANCH, TRK_BASE (landing branch)."),
                     false,
                 ),
                 (

@@ -31,6 +31,9 @@ gc_grace = "1h"
 # Where `trk run` creates git worktrees: absolute, ~/…, or relative to the
 # project root.
 worktrees = ".trk/worktrees"
+# Branch new issue branches start from and checks land on.
+# Detected at install: origin/HEAD, then the primary checkout's branch, then main.
+base = {{BASE}}
 
 # Launcher templates. Placeholders: {name} (terminal name), {cwd},
 # {shell_command} (cd + env + harness argv), {text}.

@@ -104,9 +104,9 @@ CHECK
 )
 trk wait <ID> --json -r "PR 12 merged" --every 10m -c "$pr_check"
 
-# Done once the branch is merged into the main checkout: the check does the merge.
-trk wait <ID> --json -r "merge into main" \
-  -c 'cd "$TRK_REPO" && [ "$(git branch --show-current)" = main ] && git merge --no-edit "$TRK_BRANCH"'
+# Done once the branch is merged into the base branch: the check does the merge.
+trk wait <ID> --json -r "merge into base branch" \
+  -c 'cd "$TRK_REPO" && [ "$(git branch --show-current)" = "$TRK_BASE" ] && git merge --no-edit "$TRK_BRANCH"'
 
 # Waiting on a person: no check.
 trk wait <ID> --json -r "Which store: SQLite or Dolt?"
@@ -122,7 +122,7 @@ The check is a shell command that `trk check` runs later, unattended, with `sh -
 
 The PR states describe the example, not built-in PR handling. By default the agent opens the PR and waits; trk closes the issue when it merges. The agent fixes reported base-branch conflicts and failed head-commit CI unattended. Review threads and merging belong to the human unless they ask the agent to handle them. The check names the conflicting base or prints failed jobs and their URLs.
 
-It may do the remaining work or only look. It may run more than once, so it must be safe to repeat, non-interactive and non-blocking (no `--watch`). Let real failures exit non-zero on their own; do not turn them into 75. It sees `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` (the main checkout) and `TRK_BRANCH`.
+It may do the remaining work or only look. It may run more than once, so it must be safe to repeat, non-interactive and non-blocking (no `--watch`). Let real failures exit non-zero on their own; do not turn them into 75. It sees `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` (the primary checkout), `TRK_BRANCH` and `TRK_BASE` (the resolved base branch). Use quoted `"$TRK_BASE"` in landing checks rather than assuming a branch name.
 
 A failed check restores the original claim with a fresh lease if the session's MCP server is alive on this host, its terminal is recorded (and present with Herdr), `[launcher] send` is configured, and its wake count is below `[check] max_wakes` (default `5`, also when omitted; `0` disables waking). Each restoration increments the persistent count, even if delivery fails. Entering or updating `wait` preserves it; a fresh explicit claim, including `--steal`, resets it to zero, but an idempotent claim by the current owner does not. The prompt includes `wake N of M` and the output to fix the failure and end again, normally with `wait`; the session's MCP tools work again. At the cap, the issue reopens with a note saying `wake cap of M reached` and retaining the output. A gone session or failed send also leaves it open. trk only interprets exit codes, never PRs or CI.
 

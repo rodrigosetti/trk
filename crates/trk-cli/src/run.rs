@@ -108,7 +108,7 @@ fn terminal_name(id: &str) -> String {
     s.chars().take(32).collect()
 }
 
-fn ensure_worktree(checkout: &Path, path: &Path, branch: &str) -> Result<()> {
+fn ensure_worktree(checkout: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
     if path.join(".git").exists() {
         return Ok(());
     }
@@ -129,7 +129,7 @@ fn ensure_worktree(checkout: &Path, path: &Path, branch: &str) -> Result<()> {
     let args: Vec<&str> = if exists {
         vec!["worktree", "add", &p, branch]
     } else {
-        vec!["worktree", "add", &p, "-b", branch]
+        vec!["worktree", "add", &p, "-b", branch, base]
     };
     let out = Command::new("git")
         .arg("-C")
@@ -222,6 +222,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
 
     // 2. Worktree.
     let checkout = env.checkout();
+    let base = env.base();
     let worktree = checkout
         .as_ref()
         .filter(|_| routing.worktree)
@@ -242,7 +243,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     if !a.dry_run {
         if let (Some(co), Some(wt)) = (&checkout, &worktree) {
             // The branch is always the issue id: a later session finds the same one.
-            ensure_worktree(co, wt, &id)?;
+            ensure_worktree(co, wt, &id, &base)?;
             // Agents reach trk through MCP only; a committed skill would reach them anyway.
             for rel in [".agents/skills/trk", ".claude/skills/trk"] {
                 if wt.join(rel).exists() {
@@ -292,6 +293,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         worktree: wt_str.as_deref(),
         actor: &actor,
         harness: Some(&hname),
+        base: &base,
     };
     let instructions = trk_agent::prompt::instructions(&resolved.config, &input)?;
     let fold = if profile.server_instructions {

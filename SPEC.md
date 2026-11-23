@@ -110,7 +110,7 @@ The check's exit code is the whole protocol:
 
 Error is the default. A command that is misspelled, whose credentials expired, or whose branch conflicts fails loudly and returns as work, instead of waiting forever. Only the one reserved code keeps an issue waiting, so "not yet" is always a deliberate answer.
 
-A check may do the remaining work (merge the branch) or only look (is the PR merged?). It runs under `sh -c` in the claim's worktree, falling back to the primary project root when the claim has no worktree, with `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` and `TRK_BRANCH`. It must be non-interactive, non-blocking (no `--watch`) and safe to run more than once: `trk check` may die between running a command and recording its result, and the next pass runs it again.
+A check may do the remaining work (merge the branch) or only look (is the PR merged?). It runs under `sh -c` in the claim's worktree, falling back to the primary project root when the claim has no worktree, with `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO`, `TRK_BRANCH` and `TRK_BASE` (the resolved base branch). It must be non-interactive, non-blocking (no `--watch`) and safe to run more than once: `trk check` may die between running a command and recording its result, and the next pass runs it again.
 
 Default PR scope: the agent opens the PR and waits; trk closes the issue when it merges. The agent fixes reported base-branch conflicts and failed CI on the head commit unattended. Review threads and merging belong to the human unless they ask the agent to handle them. The following example uses `gh`'s built-in jq filter and the head commit's `statusCheckRollup` (check runs and commit statuses); it names a conflicting base, prints failed jobs and their URLs, and fails if the PR closes without merging. Other open states keep waiting:
 
@@ -229,7 +229,7 @@ waiting for its configured pause. A missing path during installation is tolerate
 until it reappears; exec errors fail the runner but leave recorded outcomes intact.
 If cleanup or lock release fails, retain ownership rather than exec unsafely.
 
-**Running a check.** The command runs in `wait_cwd`; when the issue was claimed outside a checkout, in the repository's main checkout. A directory that no longer exists is a failure. The environment adds:
+**Running a check.** The command runs in `wait_cwd`; when the issue was claimed outside a checkout, in the repository's primary checkout. A directory that no longer exists is a failure. The environment adds:
 
 | Variable | Value |
 | --- | --- |
@@ -237,6 +237,7 @@ If cleanup or lock release fails, retain ownership rather than exec unsafely.
 | `TRK_WORKTREE` | the directory the check runs in |
 | `TRK_REPO` | the project root, when it is a git checkout |
 | `TRK_BRANCH` | the current branch of the worktree (`trk run` names it after the issue) |
+| `TRK_BASE` | the resolved `[run] base` branch |
 | `TRK_DIR` | the project's `.trk/`, so a check that calls `trk` reaches the same database |
 
 `TRK_ACTOR` is removed. Stdin is `/dev/null`; stdout and stderr are captured together. The command runs in its own process group, and after `[check] timeout` (default 10m) the group gets `SIGTERM`, then `SIGKILL` two seconds later.
@@ -247,7 +248,7 @@ If cleanup or lock release fails, retain ownership rather than exec unsafely.
 
 **The lock.** A single-row table holds the pid, host and start time of the running pass. It is taken in a write transaction, so two passes cannot both take it. A holder whose process no longer exists on this host is replaced. A holder on another host is never replaced automatically.
 
-**Why serial.** Checks commonly merge a branch into the main checkout. Running them one at a time makes `trk check` a merge queue: the second merge sees the first, and a conflict returns that one issue as work to its live session or the open queue.
+**Why serial.** Checks commonly merge a branch into the base branch in the primary checkout. Running them one at a time makes `trk check` a merge queue: the second merge sees the first, and a conflict returns that one issue as work to its live session or the open queue.
 
 ### Trust
 
@@ -334,6 +335,8 @@ With `inbox = true`, `trk note <ID> --to-agent` messages are attached once to th
 
 Notes are in the briefing because they are the issue's memory across sessions. An issue reopened by a failed check carries the check's output as its latest note, so the next session starts from the failure.
 
+Instruction and briefing templates can use `{{ base }}` for the resolved `[run] base` branch.
+
 ### `trk run`
 
 ```
@@ -341,7 +344,7 @@ trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]
 ```
 
 1. Check the issue is ready, and resolve its agent and harness.
-2. If the type's `worktree` is true, create or reuse the worktree: `git worktree add <worktrees>/<ID> -b <ID>`. The branch is always named after the issue, so a later session finds earlier work. Otherwise use the primary project root without creating a branch or worktree.
+2. If the type's `worktree` is true, create or reuse the worktree. New issue branches start at the resolved base: `git worktree add <worktrees>/<ID> -b <ID> <base>`. Existing issue branches are reused rather than reset to the base. The branch is always named after the issue, so a later session finds earlier work. Otherwise use the primary project root without creating a branch or worktree.
 3. Mint the actor `agent:<harness>:<uuid>`; the harness's own session id, once known, goes in `actor.meta`.
 4. Claim the issue with the actor, agent, optional worktree path and terminal name (Herdr binds its returned address after launch). A type with `worktree = false` records no claim worktree path.
 5. Render the launch spec: briefing, MCP server list (trk plus the agent's others), environment (`TRK_ACTOR`, for attribution only), files, argv.
@@ -459,8 +462,15 @@ Everything is in `<project root>/.trk/`, created by `trk install`:
 ```
 
 `config.toml` is explicit: `trk install` writes every setting. Missing settings are errors except
-for compatibility defaults such as `[check] max_wakes`, `gc` and `gc_grace`.
-Types, agents and prompts are read when routing is resolved.
+for compatibility defaults such as `[check] max_wakes`, `gc`, `gc_grace`, and the detected
+`[run] base`. Types, agents and prompts are read when routing is resolved.
+
+`[run] base` configures the base branch (for example, `base = "develop"`). When writing
+a new config, `trk install` detects the branch named by `origin/HEAD`, then the current
+branch of the primary checkout, then falls back to `main`. At runtime an explicit
+`base` wins; older configs that omit it use the same detection order. The resolved
+branch is used for new issue branches, prompt-template `{{ base }}` and waiting-check
+`TRK_BASE`.
 
 | Check setting | Default, also when omitted | Meaning |
 | --- | --- | --- |
@@ -649,8 +659,8 @@ Queries cover the project's whole database; there is no cross-project scope.
     "type": "code-change",
     "close_reason": null,
     "waiting": {
-      "reason": "merge into main",
-      "check": "cd \"$TRK_REPO\" && git merge --no-edit \"$TRK_BRANCH\"",
+      "reason": "merge into base",
+      "check": "cd \"$TRK_REPO\" && [ \"$(git branch --show-current)\" = \"$TRK_BASE\" ] && git merge --no-edit \"$TRK_BRANCH\"",
       "interval": 300,
       "next_check_at": "2026-11-21T18:07:11Z",
       "last_check_at": "2026-11-21T18:02:11Z",
@@ -711,7 +721,7 @@ In JSON mode, errors are written to stdout in the same envelope:
 ```
 $ trk list 'state!=closed'
  ID         PRIORITY  STATE      DETAIL                            TITLE
- orch-4kq   P1        ◷ waiting  merge into main · check in 4m     Add claim leases
+ orch-4kq   P1        ◷ waiting  merge into base · check in 4m     Add claim leases
  orch-9xa   P2        ● claimed  claude-code:1293… 12m             Rate-limit the API
  orch-2pp   P2        ◷ waiting  SQLite or Dolt? · needs a human   Pick a store
  orch-m1    P2        ○ open     ⛔ blocked (3/5 done)              MVP

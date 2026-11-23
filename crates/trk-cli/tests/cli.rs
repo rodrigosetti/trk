@@ -20,6 +20,9 @@ mod gc;
 #[path = "cli/type_install.rs"]
 mod type_install;
 
+#[path = "cli/base.rs"]
+mod base;
+
 struct Env {
     dir: tempfile::TempDir,
 }
@@ -1452,6 +1455,7 @@ fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
         issue: id.clone(),
         actor: spec["actor"].as_str().unwrap().into(),
         agent: "implementer".into(),
+        base: "main".into(),
     })
     .unwrap();
     let (ok, before) = server.call_sync("get_task", json!({}));
@@ -1545,6 +1549,15 @@ fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
 #[test]
 fn mcp_server_over_stdio() {
     let e = Env::new();
+    assert!(
+        StdCommand::new("git")
+            .current_dir(e.repo())
+            .args(["branch", "-m", "develop"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    e.set_config("base = \"main\"", "base = \"develop\"");
     let id = e.create(&["Add a file", "-d", "Add hello.txt."]);
     let spec = e.ok(&["run", &id, "--harness", "omp", "--print"]);
     let actor = spec["actor"].as_str().unwrap().to_string();
@@ -1599,6 +1612,7 @@ fn mcp_server_over_stdio() {
     );
     assert_eq!(init["result"]["serverInfo"]["name"], "trk");
     let rules = init["result"]["instructions"].as_str().unwrap();
+    assert!(rules.contains("landing branch is `develop`"), "{rules}");
     assert!(
         rules.contains(&id) && rules.contains("Exit 75: not yet"),
         "{rules}"
@@ -1686,9 +1700,9 @@ fn mcp_server_over_stdio() {
         &mut req,
         "wait",
         json!({
-            "reason": "merge into main",
+            "reason": "merge into the base branch",
             "interval": "1m",
-            "check": "cd \"$TRK_REPO\" && [ \"$(git branch --show-current)\" = main ] && git -c user.email=t@e.st -c user.name=t merge --no-edit \"$TRK_BRANCH\"",
+            "check": "cd \"$TRK_REPO\" && [ \"$(git branch --show-current)\" = \"$TRK_BASE\" ] && git -c user.email=t@e.st -c user.name=t merge --no-edit \"$TRK_BRANCH\"",
         }),
     );
     assert!(!err, "{v}");
@@ -2318,6 +2332,7 @@ fn types_without_worktrees_run_and_check_in_the_project_root() {
             .unwrap()
             .success()
     );
+    e.set_config("base = \"main\"", "base = \"side\"");
     let config = e.trk_dir().join("config.toml");
     let text = std::fs::read_to_string(&config).unwrap();
     std::fs::write(
@@ -2379,7 +2394,7 @@ fn types_without_worktrees_run_and_check_in_the_project_root() {
             "--reason",
             "verify current checkout",
             "--check",
-            "test \"$(pwd)\" = \"$TRK_REPO\" && test \"$TRK_WORKTREE\" = \"$TRK_REPO\" && test \"$TRK_BRANCH\" = main",
+            "test \"$(pwd)\" = \"$TRK_REPO\" && test \"$TRK_WORKTREE\" = \"$TRK_REPO\" && test \"$TRK_BRANCH\" = main && test \"$TRK_BASE\" = side",
         ]);
         let check = e.ok(&["check", &id]);
         assert_eq!(check["results"][0]["result"], "passed", "{check:#}");

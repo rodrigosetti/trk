@@ -117,6 +117,7 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
             agent: a,
             tools: &tools,
             worktree: Some("/tmp/wt"),
+            base: user.run.base.as_deref().unwrap_or("main"),
             actor: "agent:x:1",
             harness: None,
         };
