@@ -8,7 +8,7 @@
 //! stays in the space until it is closed.
 //!
 //! The mod folder (`mods/trk/`) is trk's and is rewritten on install. The
-//! layout (`layouts/trk.json`) is opt-in and the person's once written.
+//! layouts are opt-in and the person's once written.
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +26,10 @@ const MOD_FILES: &[(&str, &str)] = &[
     ("main.js", include_str!("../../../herdr/mods/trk/main.js")),
     ("mod.json", include_str!("../../../herdr/mods/trk/mod.json")),
     (
+        "dashboard.svg",
+        include_str!("../../../herdr/mods/trk/dashboard.svg"),
+    ),
+    (
         "spinner.svg",
         include_str!("../../../herdr/mods/trk/spinner.svg"),
     ),
@@ -35,6 +39,10 @@ const MOD_FILES: &[(&str, &str)] = &[
 const LAYOUT_FILES: &[(&str, &str)] = &[
     ("trk.json", include_str!("../../../herdr/layouts/trk.json")),
     ("trk.svg", include_str!("../../../herdr/layouts/trk.svg")),
+    (
+        "main-trk.json",
+        include_str!("../../../herdr/layouts/main-trk.json"),
+    ),
 ];
 
 /// The panels `trk herdr open` made, by space, in the project's `.trk/`.
@@ -103,7 +111,7 @@ fn write_mod(app: &Path) -> Result<String> {
 }
 
 pub struct InstallOpts {
-    /// Also write the `trk` layout.
+    /// Also write the split-view and sidebar-launcher layouts.
     pub layout: bool,
     /// Overwrite a layout that differs.
     pub force: bool,
@@ -127,23 +135,24 @@ pub fn install(app: &Path, opts: InstallOpts) -> Result<Out> {
     let layout = app.join("layouts/trk.json");
     let mut layout_state = "skipped";
     if opts.layout {
-        if layout.exists() && !opts.force && !same(&layout, LAYOUT_FILES[0].1) {
-            lines.push(format!(
-                "layout kept at {} (differs from this trk's; --force to overwrite)",
-                layout.display()
-            ));
-            layout_state = "kept";
-        } else {
-            std::fs::create_dir_all(app.join("layouts"))?;
-            for (rel, content) in LAYOUT_FILES {
-                std::fs::write(app.join("layouts").join(rel), content)?;
+        std::fs::create_dir_all(app.join("layouts"))?;
+        layout_state = "written";
+        for (rel, content) in LAYOUT_FILES {
+            let path = app.join("layouts").join(rel);
+            if path.exists() && !opts.force && !same(&path, content) {
+                lines.push(format!(
+                    "layout kept at {} (differs from this trk's; --force to overwrite)",
+                    path.display()
+                ));
+                layout_state = "kept";
+            } else {
+                std::fs::write(&path, content)?;
             }
-            lines.push(format!(
-                "layout written at {} (herdr-app do layout.switch --name trk)",
-                layout.display()
-            ));
-            layout_state = "written";
         }
+        lines.push(
+            "layouts available: herdr-app do layout.switch --name main-trk (sidebar button), or --name trk (split view)"
+                .into(),
+        );
     }
     let mut text = format!("herdr     {}", lines.join("\n          "));
     if !opts.if_installed {
@@ -189,19 +198,21 @@ pub fn uninstall(app: &Path, force: bool) -> Result<Out> {
         lines.push("mod was not installed".into());
         false
     };
-    let layout = app.join("layouts/trk.json");
     let mut layout_state = "absent";
-    if layout.exists() {
-        if force || same(&layout, LAYOUT_FILES[0].1) {
-            for (rel, _) in LAYOUT_FILES {
-                let _ = std::fs::remove_file(app.join("layouts").join(rel));
+    for (rel, content) in LAYOUT_FILES {
+        let path = app.join("layouts").join(rel);
+        if !path.exists() {
+            continue;
+        }
+        if force || same(&path, content) {
+            std::fs::remove_file(&path)?;
+            if layout_state != "kept" {
+                layout_state = "removed";
             }
-            lines.push(format!("layout removed from {}", layout.display()));
-            layout_state = "removed";
         } else {
             lines.push(format!(
                 "layout kept at {} (you edited it; --force to remove)",
-                layout.display()
+                path.display()
             ));
             layout_state = "kept";
         }
@@ -482,6 +493,24 @@ mod tests {
         assert_eq!(v["removed"], false);
         assert_eq!(v["layout_state"], "removed");
         assert!(!layout.exists() && !app.join("layouts/trk.svg").exists());
+    }
+
+    #[test]
+    fn an_edited_sidebar_layout_survives_install_and_uninstall() {
+        let tmp = herdr_home();
+        let app = tmp.path();
+        let sidebar = app.join("layouts/main-trk.json");
+        data(install(app, opts(true, false, false)).unwrap());
+        assert!(sidebar.exists());
+        std::fs::write(&sidebar, "{\"mine\": true}").unwrap();
+        let v = data(install(app, opts(true, false, false)).unwrap());
+        assert_eq!(v["layout_state"], "kept");
+        assert!(same(&sidebar, "{\"mine\": true}"));
+        let v = data(uninstall(app, false).unwrap());
+        assert_eq!(v["layout_state"], "kept");
+        assert!(same(&sidebar, "{\"mine\": true}"));
+        data(uninstall(app, true).unwrap());
+        assert!(!sidebar.exists());
     }
 
     fn ui() -> Value {
