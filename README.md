@@ -9,13 +9,13 @@ An issue has a title, a description, notes, a priority, a required type (default
 ```
 open → claimed → closed
                 → waiting → closed   its check passed, or a human closed it
-                          → claimed  its check failed and its session was woken
+                          → claimed  its check failed, or a human resumed its live session
                           → open     no live session, wake delivery failed, or a human reopened it
 ```
 
 A session ends by closing the issue or leaving it **waiting**: the work is done once something
-outside the session happens (a merge, a review, a decision). A waiting issue carries a shell
-command, and `trk check` runs those commands until each one passes, fails, or says "not yet".
+outside the session happens (a merge, a review, a decision). A waiting issue may carry a shell
+command; `trk check` runs those commands until each one passes, fails, or says "not yet".
 
 ## Install and upgrade
 
@@ -69,11 +69,12 @@ upgrade. Otherwise:
    incompatible database, so do not assume a long-interrupted session still owns its issue.
 4. If this is the waiting session (the latest claim was released with reason `waiting`,
    and the issue is still waiting), notes and follow-ups still work; lifecycle changes do
-   not. Otherwise stop agent writes. The human can record preserved handoff text with
-   their own identity (`trk note <ID> ...`). If further work is needed, they can end the
-   stale session and use `trk run <ID>` once the issue is open and ready. If blocked,
-   resolve its blockers first; do not steal a claim, remove dependencies, impersonate
-   another actor or edit the database merely to recover a handoff.
+   not. After reconnecting, a human can authorize more work in that live session with
+   `trk resume <ID> -m "Continue with the preserved handoff" --json`. Otherwise stop agent
+   writes. The human can preserve handoff text with `trk note <ID> ...`; if the waiting
+   session is gone, use `trk reopen <ID> -m "Recover the handoff"` then `trk run <ID>`.
+   Resolve blockers first; do not steal claims, impersonate another actor or edit the
+   database to recover a handoff.
 
 Restarting an MCP server does not claim an issue or bypass dependency/ownership checks.
 
@@ -143,7 +144,7 @@ CHECK
 )
 trk wait orch-4kq -r "PR 12 merged" --every 10m -c "$pr_check"
 
-# Waiting on a person: no check. Resolve it with `trk close` or `trk reopen -m "the answer"`.
+# Waiting on a person: no check. A human can close, resume the live session, or reopen.
 trk wait orch-4kq -r "SQLite or Dolt?"
 
 trk check                 # run the checks that are due, one at a time
@@ -152,6 +153,34 @@ trk check orch-4kq        # run one now
 trk check --dry-run       # show what would run, and where
 trk list state=waiting    # what is waiting, on what, and when it is checked next
 ```
+
+### Human-authorized resume
+
+A human can continue the original live waiting session, with or without a check:
+
+```sh
+trk resume orch-4kq -m "Use SQLite; continue the implementation" --json
+```
+
+`-m` is required and must contain non-whitespace text. Resume restores the latest waiting
+session's actor, worktree, host, agent and terminal in a fresh claim with a new lease **before**
+sending the message, so its MCP lifecycle tools work again. It never launches a replacement.
+Human resume neither consumes nor resets the automatic `wake_count` or `[check] max_wakes`
+budget. The timeline records the human's authorization, message and delivery outcome.
+
+Success data contains `issue`, `actor`, `terminal`, `claim`, `resumed_from`, `message` and
+`delivered: true`: this confirms launcher delivery, not that the agent read, acted on or
+completed the request. `trk send` only delivers text; it does not restore a waiting claim.
+
+Agent actors receive `not_permitted`; agents must ask a human to authorize resume, never
+self-resume or impersonate a human. Empty messages return `bad_args`. A busy check queue
+returns `invalid_state`: retry after the running check finishes; do not clear its lock.
+A dead, remote or unavailable original session, missing terminal or missing send configuration
+also returns `invalid_state`. A human can instead run
+`trk reopen orch-4kq -m "Restart with the decision"` then `trk run orch-4kq`.
+If delivery fails after restoration, resume returns
+nonzero `internal`, releases only that exact restored claim to open and records a failure
+note without overriding subsequent session actions. Inspect `trk show` before recovery.
 
 List and ready tables show each issue's type after priority. Filter either command with
 `type=review` (or `type=research` / `type=code-change`); use `--sort type` to order by type:

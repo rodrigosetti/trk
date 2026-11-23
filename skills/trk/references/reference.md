@@ -41,7 +41,7 @@ Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `cl
 | `state`, `close_reason` | where it is |
 | `claim` | the active claim: `actor`, `claimed_at`, `lease_until`, `worktree`, `agent`, `terminal` |
 | `waiting` | while waiting: `reason`, `check`, `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit`, `cwd` |
-| `wake_count` | top-level session restoration count; included only when nonzero and the issue is claimed or waiting |
+| `wake_count` | top-level automatic check-wake restoration count; included only when nonzero and the issue is claimed or waiting; human resume preserves it |
 | `deps` | `blocked_by` and `blocks`, each a list of `{id, title, state, priority}` |
 | `derived` | `ready`, `blocked_by` (open blockers), `due`, `progress` (`{total, closed}` blockers), `unblocks_higher_priority` |
 | `notes`, `events`, `claims` | with `--with notes,events,claims` (notes are included by default) |
@@ -62,6 +62,7 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk close <ID> [-r done or abandoned] [-m NOTE] [--force] [--dry-run]` | Close from open, claimed or waiting |
 | `trk wait <ID> [-c CHECK] [--every 5m] [-r REASON] [--force] [--dry-run]` | claimed → waiting; on a waiting issue, replace its check |
 | `trk reopen <ID> [-m NOTE]` | waiting or closed → open |
+| `trk resume <ID> -m MESSAGE` | Human-authorized waiting → claimed for the original live session, then deliver the required message |
 | `trk check [ID] [--all] [--watch [PAUSE]] [--dry-run]` | Run waiting checks, one at a time |
 | `trk note <ID> [TEXT or -] [--amends SEQ] [--to-agent]` | Append a note |
 | `trk dep add or rm <BLOCKER> <BLOCKED>` | Blocker edges |
@@ -78,7 +79,17 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 
 `trk check --json` results: `passed` closes, `retry` keeps waiting, `woken` restores the live waiting session's claim and sends a repair prompt, `failed` reopens (no live session, wake cap reached or failed delivery), and `skipped` means the issue changed during the check or wake delivery. `woken` and `failed` include output, also saved in a note. Liveness requires the original MCP server on this host, a terminal (present in Herdr when enabled), and `[launcher] send`. trk only interprets exit codes; timeout is failure, exit 75 is retry.
 
-`[check] max_wakes` caps claim restorations per session: default `5`, including when omitted from older configs; `0` disables waking. The cap check and persistent `wake_count` increment happen transactionally with claim restoration, before delivery, so a failed send still consumes a wake. Passes, retries and failures without restoration do not increment it. Entering or updating waiting preserves it. A fresh explicit claim, including `--steal`, resets it to zero; an idempotent claim by the current owner does not. Wake prompts include `wake N of M`. At the cap, a failed check reopens the issue with `wake cap of M reached` and the command's output in its note.
+`[check] max_wakes` caps automatic failed-check claim restorations per session: default `5`, including when omitted from older configs; `0` disables automatic waking. The cap check and persistent `wake_count` increment happen transactionally with automatic claim restoration, before delivery, so a failed send still consumes a wake. Passes, retries and failures without restoration do not increment it. Entering or updating waiting and human resume preserve it. A fresh explicit claim, including `--steal`, resets it to zero; an idempotent claim by the current owner does not. Wake prompts include `wake N of M`. At the cap, a failed check reopens the issue with `wake cap of M reached` and the command's output in its note.
+
+### Human-authorized resume
+
+Only a human may authorize `trk resume <ID> -m "Continue with this decision" --json`. It works for waits with or without a check. `-m` is required; an empty or whitespace-only message returns `bad_args`. An agent actor receives `not_permitted` and must ask a human to authorize continuation, never self-resume or impersonate a human.
+
+The original MCP server must be alive on this host, its terminal recorded (and present with Herdr), and `[launcher] send` configured. Resume restores the latest waiting claim's actor, worktree, host, agent and terminal in a new claim with a fresh lease before sending the message. It never launches a replacement. The timeline records human authorization, the message and delivery outcome. Human resume preserves `wake_count` unchanged: it neither consumes nor resets the automatic wake budget and does not require remaining `[check] max_wakes`.
+
+Success `data` is `{issue, actor, terminal, claim, resumed_from, message, delivered: true}`. Delivery confirms only that the launcher accepted the send, not that the agent read, acted on or finished it. `trk send` never restores a waiting claim.
+
+An in-flight check rejects resume with `invalid_state`; retry after it finishes, without clearing the queue lock. A dead, remote or unavailable session, missing terminal or missing send configuration also yields `invalid_state` with recovery guidance: the human runs `trk reopen <ID> -m "Restart with the decision" --json`, then `trk run <ID> --json`. A failed delivery after restoration returns nonzero `internal` (exit 1), releases only that exact restored claim to open and records a failure note, without releasing a replacement claim or overriding a later session action. Inspect `trk show <ID> --json` before recovery.
 
 ## Errors
 

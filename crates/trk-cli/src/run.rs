@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use trk_agent::harness::{self, LaunchInput, subst};
 use trk_core::error::{Code, Error, Result};
-use trk_core::model::Claim;
+use trk_core::model::{ActorId, Claim, State};
 use trk_core::ops::ClaimOpts;
 use trk_core::view::With;
 
@@ -532,6 +532,80 @@ pub fn send(env: &Env, id: &str, text: &str) -> Result<Out> {
         json!({"issue": id, "terminal": name, "output": out}),
     ))
 }
+
+pub fn resume(env: &Env, id: &str, message: &str) -> Result<Out> {
+    let actor = env.actor()?.to_string();
+    if ActorId::parse(&actor)?.is_agent() {
+        return Err(Error::new(Code::NotPermitted, "only a human may authorize trk resume")
+            .with_issue(id)
+            .with_hint("ask the human to run `trk resume <ID> -m \"continuation instructions\"`; chat or restored access alone does not restore a claim"));
+    }
+    let message = message.trim();
+    if message.is_empty() {
+        return Err(trk_core::error::bad_args(
+            "resume needs a nonempty continuation message",
+        ));
+    }
+    crate::check::with_queue_lock(env, || {
+        let mut store = env.store()?;
+        let (id, revision, previous) = store.read(None, |c| {
+            let id = c.resolve_id(id)?;
+            let issue = c.issue(&id)?;
+            if issue.state != State::Waiting || c.active_claim(&id)?.is_some() {
+                return Err(Error::new(
+                    Code::InvalidState,
+                    format!(
+                        "{id} is {}; only an unclaimed waiting issue can resume",
+                        issue.state
+                    ),
+                )
+                .with_issue(&id));
+            }
+            let previous = c.session_claim(&id)?;
+            Ok((id.clone(), c.issue_revision(&id)?, previous))
+        })?;
+        let unavailable = || {
+            Error::new(Code::InvalidState, format!("{id}: original waiting session is absent, not live locally, or cannot receive instructions"))
+                .with_issue(&id)
+                .with_hint(format!("if the original session is gone, a human must run `trk reopen {id} -m \"start a replacement\"` then `trk run {id}`; otherwise restore local session/terminal/send access and retry resume"))
+        };
+        let previous = previous.ok_or_else(unavailable)?;
+        if !ActorId::parse(&previous.actor)?.is_agent() {
+            return Err(unavailable());
+        }
+        let session =
+            live_waiting_session(env, &previous, launcher(env)?)?.ok_or_else(unavailable)?;
+        let claim = store.write(&actor, false, |c| {
+            c.resume(&id, previous.id, revision, message)
+        })?;
+        let instructions = format!(
+            "Human-authorized continuation for {id}. Your original session's claim and MCP tools have been restored with a fresh lease. \
+             Continue using the issue's notes and these human instructions. End this new cycle with close, wait, or hand_back as appropriate. \
+             This manual resume does not consume or reset the automatic failed-check wake budget.\n\n{message}"
+        );
+        if let Err(error) = session.send(&instructions) {
+            let reopened = store.write(&actor, false, |c| {
+                c.resume_failed(&id, claim.id, &error.to_string())
+            })?;
+            return Err(Error::new(Code::Internal, format!("resume delivery failed: {error}"))
+                .with_issue(&id)
+                .with_detail("claim", claim.id)
+                .with_detail("reopened", reopened)
+                .with_hint(if reopened {
+                    format!("the restored claim was released; a human may run `trk run {id}`")
+                } else {
+                    format!("the restored claim changed; inspect `trk show {id}` before further action")
+                }));
+        }
+        store.write(&actor, false, |c| c.resume_delivered(&id, claim.id))?;
+        Ok(Out::Text(
+            format!("resumed {id} in {}", session.terminal),
+            json!({"issue": id, "actor": claim.actor, "terminal": claim.terminal,
+                   "claim": claim.id, "resumed_from": previous.id, "message": message,
+                   "delivered": true}),
+        ))
+    })
+}
 /// A live original waiting session, selected before restoring its claim.
 pub struct WaitingSession {
     pub claim: i64,
@@ -557,10 +631,8 @@ impl WaitingSession {
 
 fn waiting_claim(env: &Env, issue: &str) -> Result<Option<Claim>> {
     env.store()?.read(None, |c| {
-        Ok(c.claims(issue)?
-            .into_iter()
-            .rev()
-            .find(|claim| claim.release_reason.as_deref() == Some("waiting")))
+        Ok(c.latest_claim(issue)?
+            .filter(|claim| claim.release_reason.as_deref() == Some("waiting")))
     })
 }
 
@@ -572,12 +644,18 @@ fn live_waiting_session(
     let Some(name) = &claim.terminal else {
         return Ok(None);
     };
+    if name.trim().is_empty() || (claim.host.is_some() && claim.host != hostname()) {
+        return Ok(None);
+    }
     if mcp_alive(&env.store()?.read(None, |c| c.actor_meta(&claim.actor))?) != Some(true) {
         return Ok(None);
     }
     let Some(send) = launcher.send else {
         return Ok(None);
     };
+    if send.is_empty() {
+        return Ok(None);
+    }
     if launcher.herdr && !crate::herdr::has_terminal(name).unwrap_or(false) {
         return Ok(None);
     }

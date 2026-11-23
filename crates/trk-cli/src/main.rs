@@ -196,7 +196,7 @@ enum Cmd {
         the output is kept in a note. Failed wake delivery also reopens the issue.\n\
         [check] max_wakes caps wakes per session (default 5; 0 disables waking).\n\
         At the cap, failures reopen with an output note. A fresh claim resets the count.\n\
-        Without --check the issue waits for `trk close` or `trk reopen`.\n\
+        Without --check the issue waits for a human to close, reopen, or explicitly resume it.\n\
         On an issue that is already waiting, this replaces its check, interval and reason."
     )]
     Wait {
@@ -220,6 +220,20 @@ enum Cmd {
         id: String,
         /// Note recorded with the reopen
         #[arg(short = 'm', long)]
+        message: Option<String>,
+    },
+    /// Human-authorized continuation of the original live waiting session
+    #[command(
+        after_help = "Requires a human actor and a nonempty continuation message. Restores the original\n\
+        live session's claim with a fresh lease before sending instructions; never starts a replacement.\n\
+        Works with or without a waiting check and does not consume or reset automatic check wakes.\n\
+        If the session is gone, a human must reopen the issue and use `trk run`.\n\
+        `trk send` only delivers text; it never restores tracker ownership."
+    )]
+    Resume {
+        id: String,
+        /// Human authorization and instructions for the next work cycle (required)
+        #[arg(short = 'm', long, num_args = 0..=1, default_missing_value = "")]
         message: Option<String>,
     },
     /// Run the checks of waiting issues that are due, one at a time
@@ -627,6 +641,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
                 show_one(&env, s, &id)
             })
         }
+        Cmd::Resume { id, message } => run::resume(&env, &id, message.as_deref().unwrap_or("")),
         Cmd::Check {
             id,
             all,

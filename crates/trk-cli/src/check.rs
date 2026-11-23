@@ -145,6 +145,19 @@ fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, V
     })
 }
 
+/// Human resume serializes restoration and delivery with check subprocesses.
+pub(crate) fn with_queue_lock<T>(env: &Env, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let actor = env.actor()?.to_string();
+    let mut lock = lock(env, &actor)?.map_err(|holder| {
+        Error::new(Code::InvalidState, "check queue is busy; resume refused")
+            .with_detail("holder", holder)
+            .with_hint("wait for the in-flight check and retry `trk resume`")
+    })?;
+    let result = f()?;
+    lock.release()?;
+    Ok(result)
+}
+
 /// Where a check runs and what it sees.
 struct Place {
     cwd: PathBuf,
@@ -342,6 +355,17 @@ fn pass(
     let actor = env.actor()?.to_string();
     let timeout = env.check_timeout()?;
     let mut store = env.store()?;
+    // Snapshot the queue only after ownership: a resume may have completed
+    // between an earlier snapshot and lock acquisition.
+    let mut queue_lock = if a.dry_run {
+        None
+    } else {
+        interrupt.check()?;
+        match lock(env, &actor)? {
+            Ok(l) => Some(l),
+            Err(holder) => return Ok(Err(holder)),
+        }
+    };
     let queue: Vec<Issue> = match &a.id {
         Some(id) => {
             let issue = store.read(None, |c| {
@@ -392,20 +416,23 @@ fn pass(
         return Ok(Ok(vec![]));
     }
     interrupt.check()?;
-    let mut lock = match lock(env, &actor)? {
-        Ok(l) => l,
-        Err(holder) => return Ok(Err(holder)),
-    };
+    let lock = queue_lock.as_mut().unwrap();
     let mut out = vec![];
     for i in &queue {
         interrupt.check()?;
         if executable.changed()? {
             break;
         }
+        let (current, revision) =
+            store.read(None, |c| Ok((c.issue(&i.id)?, c.issue_revision(&i.id)?)))?;
+        if current.state != State::Waiting || current.waiting_check.is_none() {
+            continue;
+        }
+        let i = &current;
         let check = i.waiting_check.clone().unwrap_or_default();
         let started = Instant::now();
         let run = match place(env, i) {
-            Ok(p) => match run_check(env, i, &check, &p, timeout, &mut lock, interrupt) {
+            Ok(p) => match run_check(env, i, &check, &p, timeout, lock, interrupt) {
                 Ok(run) => run,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted || lock.child.is_some() => {
                     return Err(e.into());
@@ -432,7 +459,13 @@ fn pass(
             None
         };
         let mut result = store.write(&actor, false, |c| {
-            c.check_record(&i.id, &check, &run, session.as_ref().map(|s| s.claim))
+            c.check_record(
+                &i.id,
+                &check,
+                revision,
+                &run,
+                session.as_ref().map(|s| s.claim),
+            )
         })?;
         if let CheckResult::Woken { claim } = result {
             let wake_count = store.read(None, |c| Ok(c.issue(&i.id)?.wake_count))?;

@@ -79,8 +79,10 @@ fn run(exit: i32, output: &str) -> CheckRun {
 }
 
 fn record(s: &mut Store, id: &str, check: &str, r: &CheckRun) -> CheckResult {
-    s.write(HUMAN, false, |c| c.check_record(id, check, r, None))
-        .unwrap()
+    s.write(HUMAN, false, |c| {
+        c.check_record(id, check, c.issue_revision(id)?, r, None)
+    })
+    .unwrap()
 }
 
 fn ids(s: &Store, q: &str) -> Vec<String> {
@@ -603,7 +605,13 @@ fn a_failed_check_restores_the_waiting_session_with_a_fresh_claim() {
 
     let result = s
         .write(HUMAN, false, |c| {
-            c.check_record(&id, "merge", &run(1, "merge conflict\n"), Some(original.id))
+            c.check_record(
+                &id,
+                "merge",
+                c.issue_revision(&id)?,
+                &run(1, "merge conflict\n"),
+                Some(original.id),
+            )
         })
         .unwrap();
     let CheckResult::Woken { claim } = result else {
@@ -670,10 +678,19 @@ fn wake_cap_persists_across_waits_and_store_reopens() {
     for count in 1..=2 {
         let active = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
         wait(&mut s, AGENT, &id, Some("merge"), None);
-        assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().wake_count, count - 1);
+        assert_eq!(
+            s.read(None, |c| c.issue(&id)).unwrap().wake_count,
+            count - 1
+        );
         let result = s
             .write(HUMAN, false, |c| {
-                c.check_record(&id, "merge", &run(1, "conflict"), Some(active.id))
+                c.check_record(
+                    &id,
+                    "merge",
+                    c.issue_revision(&id)?,
+                    &run(1, "conflict"),
+                    Some(active.id),
+                )
             })
             .unwrap();
         assert!(matches!(result, CheckResult::Woken { .. }));
@@ -692,7 +709,13 @@ fn wake_cap_persists_across_waits_and_store_reopens() {
     assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().wake_count, 2);
     assert_eq!(
         s.write(HUMAN, false, |c| {
-            c.check_record(&id, "merge", &run(1, "final conflict"), Some(active.id))
+            c.check_record(
+                &id,
+                "merge",
+                c.issue_revision(&id)?,
+                &run(1, "final conflict"),
+                Some(active.id),
+            )
         })
         .unwrap(),
         CheckResult::Failed
@@ -718,7 +741,13 @@ fn stealing_a_resumed_claim_starts_a_fresh_wake_budget() {
     wait(&mut s, AGENT, &id, Some("merge"), None);
     assert!(matches!(
         s.write(HUMAN, false, |c| {
-            c.check_record(&id, "merge", &run(1, "conflict"), Some(active.id))
+            c.check_record(
+                &id,
+                "merge",
+                c.issue_revision(&id)?,
+                &run(1, "conflict"),
+                Some(active.id),
+            )
         })
         .unwrap(),
         CheckResult::Woken { .. }
@@ -747,7 +776,13 @@ fn zero_wake_cap_reopens_without_restoring_a_live_candidate() {
     wait(&mut s, AGENT, &id, Some("merge"), None);
     assert_eq!(
         s.write(HUMAN, false, |c| {
-            c.check_record(&id, "merge", &run(1, "conflict"), Some(active.id))
+            c.check_record(
+                &id,
+                "merge",
+                c.issue_revision(&id)?,
+                &run(1, "conflict"),
+                Some(active.id),
+            )
         })
         .unwrap(),
         CheckResult::Failed
@@ -777,7 +812,13 @@ fn stale_or_foreign_resume_candidates_reopen_instead() {
         let candidate = candidate.or(Some(stale.id));
         assert_eq!(
             s.write(HUMAN, false, |c| {
-                c.check_record(&id, "merge", &run(1, "failed"), candidate)
+                c.check_record(
+                    &id,
+                    "merge",
+                    c.issue_revision(&id)?,
+                    &run(1, "failed"),
+                    candidate,
+                )
             })
             .unwrap(),
             CheckResult::Failed
@@ -807,7 +848,13 @@ fn passing_retrying_and_stale_checks_ignore_resume_candidates() {
     ] {
         assert_eq!(
             s.write(HUMAN, false, |c| {
-                c.check_record(&id, check, &run(exit, ""), Some(original.id))
+                c.check_record(
+                    &id,
+                    check,
+                    c.issue_revision(&id)?,
+                    &run(exit, ""),
+                    Some(original.id),
+                )
             })
             .unwrap(),
             expected
@@ -842,6 +889,7 @@ fn timed_out_and_killed_checks_can_restore_the_waiting_session() {
                 c.check_record(
                     &id,
                     "slow",
+                    c.issue_revision(&id)?,
                     &CheckRun {
                         exit,
                         timed_out,
@@ -866,7 +914,13 @@ fn failed_wake_delivery_only_releases_the_exact_still_active_claim() {
         wait(&mut s, AGENT, &id, Some("merge"), None);
         let result = s
             .write(HUMAN, false, |c| {
-                c.check_record(&id, "merge", &run(1, "conflict"), Some(original.id))
+                c.check_record(
+                    &id,
+                    "merge",
+                    c.issue_revision(&id)?,
+                    &run(1, "conflict"),
+                    Some(original.id),
+                )
             })
             .unwrap();
         let CheckResult::Woken { claim } = result else {

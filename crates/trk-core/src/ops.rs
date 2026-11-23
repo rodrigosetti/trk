@@ -224,11 +224,19 @@ impl Ctx<'_> {
     /// Require the supplied claim or session to belong to the acting agent.
     fn agent_gate(&self, issue_id: &str, claim: &Option<Claim>) -> Result<()> {
         if self.actor().is_agent() && claim.as_ref().is_none_or(|c| c.actor != self.actor_str()) {
-            return Err(Error::new(
+            let mut error = Error::new(
                 Code::NotPermitted,
                 "agent actors may only write with an active claim or, for notes and follow-ups, their waiting session",
             )
-            .with_issue(issue_id));
+            .with_issue(issue_id);
+            if self.session_claim(issue_id)?.is_some_and(|c| {
+                c.actor == self.actor_str() && c.release_reason.as_deref() == Some("waiting")
+            }) {
+                error = error.with_hint(format!(
+                    "waiting released your claim; ask a human to run `trk resume {issue_id} -m \"continuation instructions\"`; chat, restored access, and `trk send` do not restore ownership"
+                ));
+            }
+            return Err(error);
         }
         Ok(())
     }
@@ -749,6 +757,137 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// Human authorization to continue the original waiting session. The caller
+    /// must hold the check queue lock and establish liveness before calling.
+    pub fn resume(
+        &self,
+        id: &str,
+        previous_claim: i64,
+        revision: i64,
+        message: &str,
+    ) -> Result<Claim> {
+        self.resume_human_gate(id)?;
+        if message.trim().is_empty() {
+            return Err(bad_args("resume needs a nonempty continuation message"));
+        }
+        let mut issue = self.issue(id)?;
+        if issue.state != State::Waiting
+            || self.active_claim(id)?.is_some()
+            || self.issue_revision(id)? != revision
+        {
+            return Err(self.invalid_state(&issue, "waiting session changed; resume refused"));
+        }
+        let previous = self
+            .session_claim(id)?
+            .filter(|c| {
+                c.id == previous_claim
+                    && c.release_reason.as_deref() == Some("waiting")
+                    && c.released_at.is_some()
+                    && c.terminal.as_ref().is_some_and(|t| !t.trim().is_empty())
+                    && ActorId::parse(&c.actor).is_ok_and(|a| a.is_agent())
+            })
+            .ok_or_else(|| {
+                self.invalid_state(&issue, "original waiting session changed or is absent")
+            })?;
+        self.note(
+            id,
+            &format!(
+                "Human authorized resuming the original waiting session:\n\n{}",
+                message.trim()
+            ),
+            None,
+            false,
+        )?;
+        issue.state = State::Claimed;
+        Self::clear_waiting(&mut issue);
+        self.save_issue(&issue)?;
+        self.restore_waiting_claim(id, &previous, false)?;
+        self.active_claim(id)?
+            .ok_or_else(|| Error::new(Code::Internal, "restored claim vanished"))
+    }
+
+    fn resume_human_gate(&self, id: &str) -> Result<()> {
+        if self.actor().is_agent() {
+            return Err(Error::new(Code::NotPermitted, "only a human may authorize trk resume")
+                .with_issue(id)
+                .with_hint("ask the human to run `trk resume <ID> -m \"continuation instructions\"`; chat or restored access alone does not restore a claim"));
+        }
+        Ok(())
+    }
+
+    /// Record delivery even if the session has already ended its new cycle.
+    pub fn resume_delivered(&self, id: &str, claim: i64) -> Result<()> {
+        self.resume_human_gate(id)?;
+        self.event(
+            Some(id),
+            "note",
+            json!({"body": format!("Human-authorized resume delivered to the original session (claim {claim})."),
+                   "resume": {"result": "delivered", "claim": claim}}),
+        )?;
+        Ok(())
+    }
+
+    /// Compensate only the exact claim restored by this authorization.
+    pub fn resume_failed(&self, id: &str, claim: i64, error: &str) -> Result<bool> {
+        self.resume_human_gate(id)?;
+        let reopened =
+            self.restoration_failed(id, claim, None, json!({"resume_delivery_failed": true}))?;
+        self.event(
+            Some(id),
+            "note",
+            json!({
+                "body": format!("Human-authorized resume delivery failed for claim {claim}: {error}. {}",
+                    if reopened { "The restored claim was released; the issue is open again." }
+                    else { "The restored claim already changed; no replacement state was modified." }),
+                "resume": {"result": "delivery_failed", "claim": claim, "error": error, "reopened": reopened}
+            }),
+        )?;
+        Ok(reopened)
+    }
+
+    /// A lifecycle revision avoids ABA races, including a new wait on the same
+    /// command within one clock tick. Notes do not invalidate a running check.
+    pub fn issue_revision(&self, id: &str) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT coalesce(max(seq), 0) FROM event WHERE issue_id = ?1
+             AND op IN ('wait', 'claim', 'release', 'close', 'reopen', 'set')",
+            [id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Shared restoration for automatic check wakes and human continuation.
+    fn restore_waiting_claim(&self, id: &str, previous: &Claim, by_check: bool) -> Result<i64> {
+        let lease_until = fmt_ts(self.now + self.opts.agent_lease);
+        self.conn.execute(
+            "INSERT INTO claim
+             (issue_id, actor, claimed_at, lease_until, worktree, host, agent, terminal)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                previous.actor,
+                self.ts(),
+                lease_until,
+                previous.worktree,
+                previous.host,
+                previous.agent,
+                previous.terminal
+            ],
+        )?;
+        let claim = self.conn.last_insert_rowid();
+        self.event(
+            Some(id),
+            "claim",
+            json!({
+                "claim": claim, "claimant": previous.actor, "lease_until": lease_until,
+                "worktree": previous.worktree, "host": previous.host, "agent": previous.agent,
+                "terminal": previous.terminal, "from": "waiting", "by_check": by_check,
+                "resumed_from": previous.id,
+            }),
+        )?;
+        Ok(claim)
+    }
+
     // ------------------------------------------------------------------
     // The waiting queue
     // ------------------------------------------------------------------
@@ -807,20 +946,24 @@ impl Ctx<'_> {
         Ok(())
     }
 
-    /// Record one run of an issue's check. `check` is the command that ran:
-    /// if the issue is no longer waiting on exactly that command, a human
-    /// changed it meanwhile and the run is dropped. On failure, `resume_claim`
-    /// restores only the latest claim, released for waiting, after the caller
-    /// has established that its session is still alive.
+    /// Record one run of an issue's check. The command and lifecycle revision
+    /// must still match the snapshot taken before execution, even if a new
+    /// waiting cycle reused the same command. A failed check may restore only
+    /// the latest waiting claim after the caller establishes session liveness.
     pub fn check_record(
         &self,
         id: &str,
         check: &str,
+        revision: i64,
         run: &CheckRun,
         resume_claim: Option<i64>,
     ) -> Result<CheckResult> {
         let mut issue = self.issue(id)?;
-        if issue.state != State::Waiting || issue.waiting_check.as_deref() != Some(check) {
+        if issue.state != State::Waiting
+            || issue.waiting_check.as_deref() != Some(check)
+            || self.issue_revision(id)? != revision
+            || self.active_claim(id)?.is_some()
+        {
             return Ok(CheckResult::Skipped);
         }
         if run.exit == Some(CHECK_RETRY_EXIT) && !run.timed_out {
@@ -865,18 +1008,11 @@ impl Ctx<'_> {
         }
         let capped = issue.wake_count >= self.opts.max_wakes;
         let resume = if let Some(claim) = resume_claim.filter(|_| !capped) {
-            self.conn
-                .query_row(
-                    &format!(
-                        "SELECT {CLAIM_COLS} FROM claim c LEFT JOIN actor a ON a.id = c.actor
-                         WHERE c.issue_id = ?1 AND c.id = ?2 AND c.release_reason = 'waiting'
-                           AND c.released_at IS NOT NULL
-                           AND c.id = (SELECT max(id) FROM claim WHERE issue_id = ?1)"
-                    ),
-                    params![id, claim],
-                    row_to_claim,
-                )
-                .optional()?
+            self.session_claim(id)?.filter(|c| {
+                c.id == claim
+                    && c.released_at.is_some()
+                    && c.release_reason.as_deref() == Some("waiting")
+            })
         } else {
             None
         };
@@ -933,33 +1069,7 @@ impl Ctx<'_> {
             }),
         )?;
         if let Some(previous) = resume {
-            let lease_until = fmt_ts(self.now + self.opts.agent_lease);
-            self.conn.execute(
-                "INSERT INTO claim
-                 (issue_id, actor, claimed_at, lease_until, worktree, host, agent, terminal)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    id,
-                    previous.actor,
-                    self.ts(),
-                    lease_until,
-                    previous.worktree,
-                    previous.host,
-                    previous.agent,
-                    previous.terminal,
-                ],
-            )?;
-            let claim = self.conn.last_insert_rowid();
-            self.event(
-                Some(id),
-                "claim",
-                json!({
-                    "claim": claim, "claimant": previous.actor, "lease_until": lease_until,
-                    "worktree": previous.worktree, "host": previous.host, "agent": previous.agent,
-                    "terminal": previous.terminal, "from": "waiting", "by_check": true,
-                    "resumed_from": previous.id,
-                }),
-            )?;
+            let claim = self.restore_waiting_claim(id, &previous, true)?;
             return Ok(CheckResult::Woken { claim });
         }
         self.event(
@@ -973,6 +1083,21 @@ impl Ctx<'_> {
     /// Reopen after delivery to a restored session failed, but only while that
     /// exact claim is still active. A session that moved on must not be changed.
     pub fn check_wake_failed(&self, id: &str, claim_id: i64) -> Result<bool> {
+        self.restoration_failed(
+            id,
+            claim_id,
+            Some("The failed waiting check could not be delivered to the resumed session; the issue is open again."),
+            json!({"check_wake_failed": true}),
+        )
+    }
+
+    fn restoration_failed(
+        &self,
+        id: &str,
+        claim_id: i64,
+        note: Option<&str>,
+        extra: Value,
+    ) -> Result<bool> {
         let mut issue = self.issue(id)?;
         if issue.state != State::Claimed {
             return Ok(false);
@@ -980,14 +1105,10 @@ impl Ctx<'_> {
         let Some(claim) = self.active_claim(id)?.filter(|c| c.id == claim_id) else {
             return Ok(false);
         };
-        self.note(
-            id,
-            "The failed waiting check could not be delivered to the resumed session; \
-             the issue is open again.",
-            None,
-            false,
-        )?;
-        self.to_open(&mut issue, &claim, json!({"check_wake_failed": true}))?;
+        if let Some(note) = note {
+            self.note(id, note, None, false)?;
+        }
+        self.to_open(&mut issue, &claim, extra)?;
         Ok(true)
     }
 

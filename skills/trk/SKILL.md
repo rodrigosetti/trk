@@ -10,7 +10,7 @@ trk keeps a project's work in a local database inside the project, in `.trk/`. A
 ```
 open → claimed → closed
                 → waiting → closed   (its check passed, or a human closed it)
-                          → claimed  (its check failed and its session was woken)
+                          → claimed  (its check failed, or a human resumed its live session)
                           → open     (no live session, wake delivery failed, or a human reopened it)
 ```
 
@@ -22,8 +22,8 @@ If you have trk MCP tools (`get_task`, `hand_back`, `wait`) or `TRK_ACTOR` start
 
 - Pass `--json` on every command and read the envelope: `{"ok": true, "data": …}` or `{"ok": false, "error": {"code", "message", "hint"}}`. On an error, do what `hint` says and retry. Do not guess around it.
 - Never rely on the interactive editor: give the title and description on the command line. Long text goes through stdin: `-d @-`.
-- You act as the user, with their default actor. Do not pass `--as` unless they ask.
-- State changes only through `claim`, `unclaim`, `close`, `wait`, `reopen` and `trk check`. `edit` changes title, description, priority and type.
+- Normally you act as the user, with their default actor. Do not pass `--as` unless they ask. Never change identity to evade permissions; `resume` requires the human's authorization, not an agent impersonating them.
+- State changes only through `claim`, `unclaim`, `close`, `wait`, human-authorized `resume`, `reopen` and `trk check`. `edit` changes title, description, priority and type.
 - Do not use `--force`, `--steal` or close someone else's claim unless the user asks.
 - Issue ids look like `orch-4kq`; a unique suffix such as `4kq` also works.
 
@@ -130,7 +130,17 @@ On each wake, fix only what the check reported and end the new work cycle, norma
 
 While claimed or waiting with a nonzero count, issue JSON includes top-level `wake_count` and pretty `trk show` displays a `wakes` line. Otherwise the count is omitted.
 
-Without a check, the issue waits until a human runs `trk close <ID>` or `trk reopen <ID> -m "the answer"`. Running `trk wait` on an issue that is already waiting replaces its check, interval and reason.
+Without a check, the issue waits until a human closes it, resumes its live waiting session with a decision, or reopens it. Running `trk wait` on an issue that is already waiting replaces its check, interval and reason.
+
+### Human-authorized continuation
+
+Have the human run `trk resume <ID> -m "Use SQLite; continue implementation" --json` to resume the original live waiting session, whether or not it has a check. The message is required and must not be empty after trimming. Do not autonomously resume yourself or another session, impersonate a human, or change actor settings to bypass `not_permitted`; ask the human to authorize the continuation.
+
+Resume restores the latest waiting session's original actor, worktree, host, agent and terminal with a fresh claim and lease before delivering the message. Its MCP lifecycle tools then work again. It never starts a replacement, and it preserves `wake_count` without consuming or resetting the automatic wake budget. The timeline records human authorization, the message and delivery outcome.
+
+Success data contains `issue`, `actor`, `terminal`, `claim`, `resumed_from`, `message` and `delivered: true`. This means launcher delivery only, not that the agent read or completed the request. `trk send` delivers text only and does not restore a waiting claim.
+
+An empty message is `bad_args`; an agent actor is `not_permitted`. `invalid_state` for an in-flight check means retry after it finishes, never delete the queue lock. A dead, remote or unavailable session, missing terminal or missing send configuration is also `invalid_state`: ask the human to run `trk reopen <ID> -m "Restart with the decision" --json`, then `trk run <ID> --json`. A failed send after restoration returns nonzero `internal`, releases only that exact restored claim to open and records a failure note without overriding later session actions; inspect `trk show <ID> --json` before recovery.
 
 ## Run the waiting queue
 

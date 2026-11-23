@@ -65,7 +65,7 @@ Everything else on an issue is state the tool owns: `state`, `close_reason`, the
 | claimed | waiting | `wait` with a check, a reason, or both |
 | waiting | closed | the check exits 0 (reason `done`), or a human closes |
 | waiting | waiting | the check exits 75: checked again one interval later |
-| waiting | claimed | the check fails or times out, its original session is alive, and its wake count is below `[check] max_wakes`; restore that session's claim and send a repair prompt |
+| waiting | claimed | a failed or timed-out check wakes its live original session below `[check] max_wakes`, or a human authorizes `resume` of that live session; restore its claim before sending |
 | waiting | open | the check fails or times out with no live original session or its wake cap reached, or a human reopens; an undelivered wake also releases the restored claim to open |
 | open | closed | a human closes without claiming (cancel) |
 | closed | open | a human reopens |
@@ -150,9 +150,21 @@ On failure, the CLI checks the latest claim released as `waiting`: its MCP serve
 
 The woken session fixes only what the check reported, then ends the new cycle, normally with the same `wait`. It should use `hand_back` with evidence when the same failure keeps returning rather than repeat indefinitely. While waiting, it can still add notes and receive requests from the human.
 
-Entering or updating waiting preserves `wake_count`. A fresh explicit claim, including a stolen claim, resets it to zero; an idempotent claim by the current owner does not. Only restoring a claim increments it, not a retry, pass, or failed check that reopens without restoration. While claimed or waiting with a nonzero count, issue JSON includes top-level `wake_count` and pretty `trk show` displays a `wakes` line; otherwise the count is omitted from these displays.
+Entering or updating waiting preserves `wake_count`. A fresh explicit claim, including a stolen claim, resets it to zero; an idempotent claim by the current owner does not. Only automatic failed-check claim restoration increments it, not human resume, a retry, pass, or failed check that reopens without restoration. While claimed or waiting with a nonzero count, issue JSON includes top-level `wake_count` and pretty `trk show` displays a `wakes` line; otherwise the count is omitted from these displays.
 
 With no live session or the wake cap reached, the issue reopens. A capped failure records `wake cap of M reached` together with the check output in its note. If sending the prompt fails after restoration, trk releases that exact claim and reopens with an explanatory note; it never releases a replacement claim or overrides a subsequent session action, and the restoration still counts. Exit 0 and 75 do not restore claims. trk interprets only exit codes, not PRs, CI or other external state.
+
+#### Human-authorized resume
+
+`trk resume <ID> -m MESSAGE --json` lets a human continue the original live waiting session, with or without a check. The message is required and must be nonempty after trimming (`bad_args` otherwise). Agent actors are refused with `not_permitted` and a hint to request human authorization. Agents must not self-resume, impersonate a human or change actor settings to bypass this boundary. `resume` is not an MCP tool.
+
+The CLI requires the latest waiting session's MCP server to be alive on this host, a recorded terminal (present in Herdr when enabled), and configured `[launcher] send`. It takes the waiting queue lock; an in-flight check yields `invalid_state` with retry guidance, not concurrent delivery. Do not clear the lock to force resume. Restoration transactionally verifies the issue is still waiting, its latest waiting claim still matches and its event revision has not changed. It restores the original actor, worktree, host, agent and terminal in a new claim with a fresh lease before delivering the human's message. The original session can then renew its lease and use lifecycle tools again. No replacement is launched.
+
+Human resume preserves `wake_count` unchanged: it neither consumes nor resets the automatic `[check] max_wakes` budget and does not require remaining automatic wakes. The timeline records the human authorization and message, the restored claim and the delivery outcome, making this distinct from an automatic failed-check wake.
+
+Success uses the normal JSON envelope with `data` containing `issue`, `actor`, `terminal`, `claim`, `resumed_from`, `message` and `delivered: true`. This confirms launcher delivery only, not agent acknowledgement, execution or completion. `trk send` only delivers text and cannot restore a waiting claim.
+
+A dead, remote or unavailable original session, missing terminal or missing send configuration returns `invalid_state` with guidance for the human to run `trk reopen <ID> -m "Restart with the decision"` then `trk run <ID>`. A send failure after restoration returns nonzero `internal`; compensation releases only that exact restored claim to open and records a failure note, never releasing a replacement claim or overriding subsequent session actions. Inspect current issue state before recovery.
 
 ### Actors
 
@@ -174,7 +186,7 @@ The kind ends at the first colon, and for agents the harness ends at the second.
 - For agent actors, a claim also records the agent definition (`agent`) and the launcher terminal (`terminal`), both set by `trk run`.
 - The **waiting session** is the actor of the latest claim, if that claim was released with reason `waiting` and the issue is still waiting. It holds no claim or lease. Closing or reopening the issue ends this access; a later claim replaces the old session.
 
-**Enforcement.** Agent actors write only to issues they currently claim, plus creating follow-ups of such an issue. A waiting session may still append notes and create follow-ups, but may not close, wait, hand back or otherwise mutate the issue. The rule is in `trk-core` and applies to the CLI as well. An agent with a shell can still run `trk` as a human, so hard isolation requires running the harness where the database is not reachable.
+**Enforcement.** Agent actors write only to issues they currently claim, plus creating follow-ups of such an issue. A waiting session may still append notes and create follow-ups, but may not close, wait, hand back, resume or otherwise mutate the issue. The rule is in `trk-core` and applies to the CLI as well. Human authorization is required for `resume`; agents must not evade refusal by impersonating a human. Actor identity is not a security sandbox, so hard isolation requires running the harness where the database is not reachable.
 
 ### Notes and history
 

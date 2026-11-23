@@ -369,111 +369,131 @@ mod tests {
     }
 
     #[test]
-    fn failed_check_restores_the_same_mcp_sessions_tools_and_lease_renewal() {
-        for (ending, args, expected_state) in [
-            (
-                "wait",
-                json!({"reason": "waiting again", "check": "exit 75"}),
-                State::Waiting,
-            ),
-            (
-                "close",
-                json!({"reason": "done", "note": "fixed the failed check"}),
-                State::Closed,
-            ),
-            (
-                "hand_back",
-                json!({"note": "need a different implementer"}),
-                State::Open,
-            ),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let db = dir.path().join("trk.db");
-            let opts = StoreOpts {
-                now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
-                ..Default::default()
-            };
-            let mut store = Store::install(&db, opts.clone()).unwrap();
-            let issue = store
-                .write(HUMAN, false, |c| {
-                    c.create(NewIssue {
-                        title: "Recover the waiting session".into(),
-                        description: "A failed check needs its implementer again.".into(),
-                        ..Default::default()
-                    })
-                })
-                .unwrap();
-            let original = store
-                .write(ACTOR, false, |c| c.claim(&issue, ClaimOpts::default()))
-                .unwrap();
-            let mut server = TrkServer::new(McpArgs {
-                db,
-                config: ConfigDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed")),
-                opts,
-                issue: issue.clone(),
-                actor: ACTOR.into(),
-                agent: "implementer".into(),
-            })
-            .unwrap();
-            let (ok, out) = server.call_sync(
-                "wait",
-                json!({"reason": "waiting for the check", "check": "exit 1"}),
-            );
-            assert!(ok, "{out}");
-            assert_eq!(out["waiting"], issue);
-            assert_released(&server, State::Waiting);
-            server.renew_lease();
-            assert!(active_claim(&store, &issue).is_none());
-            let historical = store.read(None, |c| c.claims(&issue)).unwrap();
-            assert_eq!(historical.len(), 1);
-            assert_eq!(historical[0].id, original.id);
-            assert_eq!(historical[0].release_reason.as_deref(), Some("waiting"));
-            assert_eq!(historical[0].lease_until, original.lease_until);
-
-            store.opts.now = Some("2026-11-20T10:05:00Z".parse().unwrap());
-            let result = store
-                .write(HUMAN, false, |c| {
-                    c.check_record(
-                        &issue,
-                        "exit 1",
-                        &CheckRun {
-                            exit: Some(1),
-                            output: "merge failed".into(),
+    fn restoration_restores_the_same_mcp_sessions_tools_and_lease_renewal() {
+        for manual in [false, true] {
+            for (ending, args, expected_state) in [
+                (
+                    "wait",
+                    json!({"reason": "waiting again", "check": "exit 75"}),
+                    State::Waiting,
+                ),
+                (
+                    "close",
+                    json!({"reason": "done", "note": "fixed the failed check"}),
+                    State::Closed,
+                ),
+                (
+                    "hand_back",
+                    json!({"note": "need a different implementer"}),
+                    State::Open,
+                ),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let db = dir.path().join("trk.db");
+                let opts = StoreOpts {
+                    now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
+                    ..Default::default()
+                };
+                let mut store = Store::install(&db, opts.clone()).unwrap();
+                let issue = store
+                    .write(HUMAN, false, |c| {
+                        c.create(NewIssue {
+                            title: "Recover the waiting session".into(),
+                            description: "A failed check needs its implementer again.".into(),
                             ..Default::default()
-                        },
-                        Some(original.id),
-                    )
+                        })
+                    })
+                    .unwrap();
+                let original = store
+                    .write(ACTOR, false, |c| {
+                        c.claim(
+                            &issue,
+                            ClaimOpts {
+                                terminal: Some("original-terminal".into()),
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .unwrap();
+                let mut server = TrkServer::new(McpArgs {
+                    db,
+                    config: ConfigDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed")),
+                    opts,
+                    issue: issue.clone(),
+                    actor: ACTOR.into(),
+                    agent: "implementer".into(),
                 })
                 .unwrap();
-            let restored = active_claim(&store, &issue).unwrap();
-            assert_eq!(result, CheckResult::Woken { claim: restored.id });
-            assert_ne!(restored.id, original.id);
-            assert_eq!(restored.actor, ACTOR);
-            assert!(restored.lease_until.is_some());
+                let (ok, out) = server.call_sync(
+                    "wait",
+                    json!({"reason": "waiting for the check", "check": "exit 1"}),
+                );
+                assert!(ok, "{out}");
+                assert_eq!(out["waiting"], issue);
+                assert_released(&server, State::Waiting);
+                server.renew_lease();
+                assert!(active_claim(&store, &issue).is_none());
+                let historical = store.read(None, |c| c.claims(&issue)).unwrap();
+                assert_eq!(historical.len(), 1);
+                assert_eq!(historical[0].id, original.id);
+                assert_eq!(historical[0].release_reason.as_deref(), Some("waiting"));
+                assert_eq!(historical[0].lease_until, original.lease_until);
 
-            // Advance only the existing server's clock: do not recreate its Session.
-            let now = "2026-11-20T10:10:00Z".parse().unwrap();
-            Arc::get_mut(&mut server.inner).unwrap().opts.now = Some(now);
-            server.renew_lease();
-            let renewed = active_claim(&store, &issue).unwrap();
-            assert_eq!(renewed.id, restored.id);
-            assert_eq!(
-                renewed.lease_until,
-                Some(trk_core::model::fmt_ts(now + store.opts.agent_lease))
-            );
-            assert!(renewed.lease_until > restored.lease_until);
+                store.opts.now = Some("2026-11-20T10:05:00Z".parse().unwrap());
+                let result = store
+                    .write(HUMAN, false, |c| {
+                        if manual {
+                            let claim = c.resume(
+                                &issue,
+                                original.id,
+                                c.issue_revision(&issue)?,
+                                "SSH unlocked; continue",
+                            )?;
+                            return Ok(CheckResult::Woken { claim: claim.id });
+                        }
+                        c.check_record(
+                            &issue,
+                            "exit 1",
+                            c.issue_revision(&issue)?,
+                            &CheckRun {
+                                exit: Some(1),
+                                output: "merge failed".into(),
+                                ..Default::default()
+                            },
+                            Some(original.id),
+                        )
+                    })
+                    .unwrap();
+                let restored = active_claim(&store, &issue).unwrap();
+                assert_eq!(result, CheckResult::Woken { claim: restored.id });
+                assert_ne!(restored.id, original.id);
+                assert_eq!(restored.actor, ACTOR);
+                assert!(restored.lease_until.is_some());
 
-            let (ok, out) = server.call_sync("add_note", json!({"body": "session resumed"}));
-            assert!(ok, "{out}");
-            assert_eq!(out["ok"], true);
-            let (ok, out) = server.call_sync(ending, args);
-            assert!(ok, "{ending}: {out}");
-            assert_eq!(
-                store.read(None, |c| c.issue(&issue)).unwrap().state,
-                expected_state
-            );
-            assert!(active_claim(&store, &issue).is_none());
-            assert_released(&server, expected_state);
+                // Advance only the existing server's clock: do not recreate its Session.
+                let now = "2026-11-20T10:10:00Z".parse().unwrap();
+                Arc::get_mut(&mut server.inner).unwrap().opts.now = Some(now);
+                server.renew_lease();
+                let renewed = active_claim(&store, &issue).unwrap();
+                assert_eq!(renewed.id, restored.id);
+                assert_eq!(
+                    renewed.lease_until,
+                    Some(trk_core::model::fmt_ts(now + store.opts.agent_lease))
+                );
+                assert!(renewed.lease_until > restored.lease_until);
+
+                let (ok, out) = server.call_sync("add_note", json!({"body": "session resumed"}));
+                assert!(ok, "{out}");
+                assert_eq!(out["ok"], true);
+                let (ok, out) = server.call_sync(ending, args);
+                assert!(ok, "{ending}: {out}");
+                assert_eq!(
+                    store.read(None, |c| c.issue(&issue)).unwrap().state,
+                    expected_state
+                );
+                assert!(active_claim(&store, &issue).is_none());
+                assert_released(&server, expected_state);
+            }
         }
     }
 }

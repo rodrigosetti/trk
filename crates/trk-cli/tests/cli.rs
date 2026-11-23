@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 #[path = "cli/restart.rs"]
 mod restart;
 
+#[path = "cli/resume.rs"]
+mod resume;
+
 struct Env {
     dir: tempfile::TempDir,
 }

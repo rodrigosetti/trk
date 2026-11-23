@@ -394,6 +394,20 @@ impl<'a> Ctx<'a> {
             .optional()?)
     }
 
+    pub fn latest_claim(&self, issue_id: &str) -> Result<Option<Claim>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {CLAIM_COLS} FROM claim c LEFT JOIN actor a ON a.id = c.actor
+                      WHERE c.issue_id = ?1 ORDER BY c.id DESC LIMIT 1"
+                ),
+                [issue_id],
+                row_to_claim,
+            )
+            .optional()?)
+    }
+
     pub fn claims(&self, issue_id: &str) -> Result<Vec<Claim>> {
         let mut st = self.conn.prepare(&format!(
             "SELECT {CLAIM_COLS} FROM claim c LEFT JOIN actor a ON a.id = c.actor WHERE c.issue_id = ?1 ORDER BY c.id"

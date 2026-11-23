@@ -117,12 +117,14 @@ pub fn catalogue() -> Vec<ToolDef> {
                  Your claim and tools are restored; fix only what the check reported and end the new cycle again, normally with the same wait. \
                  If your session is gone, wake delivery fails, or [check] max_wakes is reached, the issue returns to open for a new session. \
                  The wake cap defaults to 5 per session; 0 disables waking. Each wake includes its count; hand_back with evidence if the same failure keeps returning. \
-                 While waiting you can still add notes and may receive requests from the human. \
+                 While waiting you can still add notes and may receive requests from the human, but chat or restored access does not authorize lifecycle changes. \
+                 Ask the human to run `trk resume <ID> -m \"continuation instructions\"` to restore your live waiting session's claim and tools. \
+                 Never self-resume, impersonate a human, or use `trk send` as tracker authorization. \
                  The command may do the remaining work itself (merge the branch) or only look (is the PR merged?). \
                  For a PR, pass when merged; fail with actionable output for base-branch conflicts, failed head-commit CI, or closure without merging; otherwise return {CHECK_RETRY_EXIT}. \
                  Pending CI, review threads, approval and unknown mergeability are not failures. Do not resolve review threads or merge the PR unless a person asks. \
                  It runs unattended under sh -c and may run more than once: make it non-interactive, non-blocking (no --watch) and safe to repeat. \
-                 Without `check`, the issue waits for a human to close or reopen it."
+                 Without `check`, the issue waits for a human to close, reopen, or explicitly resume it."
             ),
             object_schema(vec![
                 ("reason", text("What the issue is waiting for, for a human reading the queue"), true),
