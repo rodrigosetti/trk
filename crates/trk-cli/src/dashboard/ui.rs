@@ -566,12 +566,14 @@ fn list(frame: &mut Frame, area: Rect, ui: &mut Ui) {
     ui.list_top = ui.list_top.min(rows.len().saturating_sub(height));
 
     let width = inner.width as usize;
-    let id_width = ui
-        .rows
-        .iter()
-        .map(|i| ui.snap.issues[*i].id.width())
-        .max()
-        .unwrap_or(0);
+    let (id_width, type_width) = ui.rows.iter().fold((0, 0), |(id_width, type_width), idx| {
+        let i = &ui.snap.issues[*idx];
+        (
+            id_width.max(i.id.width()),
+            type_width.max(i.issue_type.width()),
+        )
+    });
+    let title_indent = 2 + 2 + 1 + id_width + 2 + type_width + 2;
     let lines: Vec<Line> = rows
         .iter()
         .skip(ui.list_top)
@@ -592,8 +594,7 @@ fn list(frame: &mut Frame, area: Rect, ui: &mut Ui) {
                 // A reversed row carries no colours of its own.
                 let st = |s: Style| if selected { Style::new() } else { s };
                 let info = fit(&row_info(i, ui.now), (width * 2 / 5).min(36));
-                let left = 2 + 2 + 1 + id_width + 2;
-                let room = width.saturating_sub(left + info.width() + 1);
+                let room = width.saturating_sub(title_indent + info.width() + 1);
                 let title = fit(&i.title, room);
                 let pad = room.saturating_sub(title.width()) + 1;
                 let info_style = if i.group == Group::Attention {
@@ -607,6 +608,8 @@ fn list(frame: &mut Frame, area: Rect, ui: &mut Ui) {
                     Span::raw(" "),
                     Span::styled(format!("{:<id_width$}", i.id), st(dim())),
                     Span::raw("  "),
+                    Span::styled(format!("{:<type_width$}", i.issue_type), st(dim())),
+                    Span::raw("  "),
                     Span::raw(title),
                     Span::raw(" ".repeat(pad)),
                     Span::styled(info, st(info_style)),
@@ -619,7 +622,7 @@ fn list(frame: &mut Frame, area: Rect, ui: &mut Ui) {
             }
             Row::More(more) => {
                 // Under the title.
-                let indent = 2 + 2 + 1 + id_width + 2;
+                let indent = title_indent;
                 Line::from(vec![
                     Span::raw(" ".repeat(indent)),
                     Span::styled(fit(more, width.saturating_sub(indent)), dim()),
