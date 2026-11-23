@@ -1,4 +1,7 @@
-//! The default configuration written by `trk install` (seed data, not code).
+//! Default configuration embedded for `trk install` and checkout-independent tests.
+//!
+//! Consumers needing files on disk must materialize these contents in their own
+//! directory, never read the compile-time checkout at runtime.
 
 pub const FILES: &[(&str, &str)] = &[
     (

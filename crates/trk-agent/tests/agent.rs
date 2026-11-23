@@ -4,14 +4,20 @@ use trk_agent::harness::{self, LaunchInput};
 use trk_agent::{agent_tools, load_agent};
 use trk_core::config::{ConfigDir, Level, UserConfig};
 
-fn seed() -> ConfigDir {
-    ConfigDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed"))
+fn seed() -> (tempfile::TempDir, ConfigDir) {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, content) in trk_core::seed::FILES {
+        let path = dir.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+    let config = ConfigDir::new(dir.path());
+    (dir, config)
 }
 
 fn user_config() -> UserConfig {
-    let text = std::fs::read_to_string(seed().path.join("config.toml")).unwrap();
     toml::from_str(
-        &text
+        &trk_core::seed::CONFIG_TOML
             .replace("{{EMAIL_LINE}}", "email = \"a@b.c\"")
             .replace("{{PREFIX}}", "proj")
             .replace("{{BASE}}", "\"main\""),
@@ -25,7 +31,8 @@ fn names(tools: &[trk_agent::ToolDef]) -> Vec<&str> {
 
 #[test]
 fn every_agent_gets_the_six_tools_unless_it_narrows_them() {
-    let a = load_agent(&seed(), "implementer").unwrap();
+    let (_dir, seed) = seed();
+    let a = load_agent(&seed, "implementer").unwrap();
     let tools = agent_tools(&a);
     assert_eq!(
         names(&tools),
@@ -75,14 +82,16 @@ fn a_broken_agent_file_does_not_stop_the_others() {
 
 #[test]
 fn seed_agents_check_clean() {
-    let d = trk_agent::check::check_agents(&seed(), &user_config());
+    let (_dir, seed) = seed();
+    let d = trk_agent::check::check_agents(&seed, &user_config());
     let errors: Vec<_> = d.iter().filter(|x| x.level == Level::Error).collect();
     assert!(errors.is_empty(), "{errors:#?}");
 }
 
 #[test]
 fn the_briefing_carries_description_notes_and_blockers() {
-    let a = load_agent(&seed(), "implementer").unwrap();
+    let (_dir, seed) = seed();
+    let a = load_agent(&seed, "implementer").unwrap();
     let tools = agent_tools(&a);
     let issue = serde_json::json!({
         "id": "orch-abc", "project": "orch", "title": "Add leases", "priority": "P1",
@@ -104,7 +113,7 @@ fn the_briefing_carries_description_notes_and_blockers() {
         actor: "agent:omp:u1",
         harness: Some("omp"),
     };
-    let rules = trk_agent::prompt::instructions(&seed(), &input).unwrap();
+    let rules = trk_agent::prompt::instructions(&seed, &input).unwrap();
     assert!(rules.contains("Exit 75: not yet"), "{rules}");
     assert!(rules.contains("/wt/orch-abc"));
     assert!(rules.contains("landing branch is `develop`"), "{rules}");
@@ -113,13 +122,13 @@ fn the_briefing_carries_description_notes_and_blockers() {
         rules.contains(r#"[ "$(git branch --show-current)" = "$TRK_BASE" ]"#),
         "{rules}"
     );
-    let b = trk_agent::prompt::briefing(&seed(), &input, None).unwrap();
+    let b = trk_agent::prompt::briefing(&seed, &input, None).unwrap();
     assert!(b.contains("Claims need leases."), "{b}");
     assert!(b.contains("The waiting check exited with 1"), "{b}");
     assert!(b.contains("blocks orch-m1 (open): MVP"), "{b}");
     assert!(b.contains("priority P1"), "{b}");
     assert!(!b.contains("## Instructions"));
-    let folded = trk_agent::prompt::briefing(&seed(), &input, Some(&rules)).unwrap();
+    let folded = trk_agent::prompt::briefing(&seed, &input, Some(&rules)).unwrap();
     assert!(folded.contains("## Instructions"));
 }
 
@@ -127,7 +136,8 @@ fn the_briefing_carries_description_notes_and_blockers() {
 fn launch_spec_for_omp() {
     let user = user_config();
     let profiles = harness::profiles(&user).unwrap();
-    let a = load_agent(&seed(), "reviewer").unwrap();
+    let (_dir, seed) = seed();
+    let a = load_agent(&seed, "reviewer").unwrap();
     let mut env = BTreeMap::new();
     env.insert("TRK_DIR".to_string(), "/proj/.trk".to_string());
     let spec = harness::build(LaunchInput {
@@ -209,7 +219,8 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
     let profiles = harness::profiles(&user).unwrap();
     let mut profile = profiles["claude-code"].clone();
     profile.command = fake_claude.to_string_lossy().into_owned();
-    let agent = load_agent(&seed(), "implementer").unwrap();
+    let (_dir, seed) = seed();
+    let agent = load_agent(&seed, "implementer").unwrap();
     let briefing = "# issue: test\n\nQuotes: ' \" ` $HOME $(echo nope) ; & | < >\n\
                     Long detail: one two three four five six seven eight nine ten.\n";
     let spec = harness::build(LaunchInput {

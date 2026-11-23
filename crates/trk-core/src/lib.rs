@@ -7,6 +7,7 @@ pub mod error;
 pub mod model;
 pub mod ops;
 pub mod query;
+pub mod seed;
 pub mod store;
 pub mod view;
 

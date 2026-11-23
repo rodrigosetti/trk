@@ -20,6 +20,11 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
+        for (path, content) in trk_core::seed::FILES {
+            let path = dir.path().join("seed").join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
         let opts = StoreOpts {
             now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
             prefix: "orch".into(),
@@ -49,7 +54,7 @@ impl Env {
     fn server(&self, actor: &str) -> TrkServer {
         TrkServer::new(McpArgs {
             db: self.dir.path().join("trk.db"),
-            config: ConfigDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed")),
+            config: ConfigDir::new(self.dir.path().join("seed")),
             project_root: self.dir.path().to_path_buf(),
             user: trk_core::config::UserConfig::default(),
             opts: self.opts.clone(),

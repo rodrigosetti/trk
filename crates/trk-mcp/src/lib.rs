@@ -398,6 +398,12 @@ mod tests {
                 ),
             ] {
                 let dir = tempfile::tempdir().unwrap();
+                let seed = dir.path().join("seed");
+                for (path, content) in trk_core::seed::FILES {
+                    let path = seed.join(path);
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(path, content).unwrap();
+                }
                 let db = dir.path().join("trk.db");
                 let opts = StoreOpts {
                     now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
@@ -426,7 +432,7 @@ mod tests {
                     .unwrap();
                 let mut server = TrkServer::new(McpArgs {
                     db,
-                    config: ConfigDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed")),
+                    config: ConfigDir::new(&seed),
                     project_root: dir.path().to_path_buf(),
                     user: UserConfig::default(),
                     opts,

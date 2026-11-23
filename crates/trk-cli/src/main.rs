@@ -9,7 +9,6 @@ mod herdr;
 mod herdr_ui;
 mod render;
 mod run;
-mod seed;
 mod skill;
 
 use std::io::{IsTerminal, Read};
@@ -21,6 +20,7 @@ use trk_core::config::Level;
 use trk_core::error::{Code, Error, Result, bad_args};
 use trk_core::model::DEFAULT_PRIORITY;
 use trk_core::ops::{ClaimOpts, Edit, NewIssue, WaitOpts};
+use trk_core::seed;
 use trk_core::view::With;
 
 use crate::env::Env;
