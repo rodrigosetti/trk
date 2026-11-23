@@ -426,6 +426,18 @@ export default class Trk extends View {
       .child(armed ? `${text}?` : text);
   }
 
+  issueId(t, id, place, color = t.muted) {
+    return div().id(`copy-${place}-${id}`).flex_none().text_size(11).text_color(color)
+      .cursor_pointer().hover((s) => s.text_color(t.foreground)).tooltip("Copy issue ID")
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        cx.write_to_clipboard(id);
+        this.say(`Copied ${id}`);
+        cx.notify();
+      })
+      .child(id);
+  }
+
   /** The right end of a row: why it needs you, the agent's state, or the next check. */
   badge(t, issue, now) {
     const why = this.reasons(issue);
@@ -453,7 +465,7 @@ export default class Trk extends View {
       .when(on, (el) => el.bg(t.selected)).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.select(issue.id, cx))
       .child(div().w(18).flex_none().text_size(10.5).font_semibold().text_color(urgent).child(issue.priority))
-      .child(div().flex_none().text_size(11).text_color(t.muted).child(issue.id))
+      .child(this.issueId(t, issue.id, "row"))
       .child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : issue.group === "blocked" ? t.muted : t.foreground).child(issue.title))
       .when(issue.type !== "code-change", (el) => el.child(div().flex_none().text_size(10).text_color(t.dim).child(issue.type)))
       .child(this.badge(t, issue, now));
@@ -513,7 +525,8 @@ export default class Trk extends View {
         .child(div().flex_1().min_w(0).text_size(13.5).font_semibold().text_color(t.foreground).child(issue.title))
         .child(this.button(t, "hide-detail", "Hide details", (cx) => this.hideDetail(cx), { tip: "Hide details and expand the issue list (Esc)" })))
       .child(h_flex().gap(6).items_center().flex_wrap()
-        .child(div().text_size(11).text_color(t.dim).child(`${issue.id} · ${issue.type} · ${issue.state} · updated ${ago(issue.updated_at, now)} ago`))
+        .child(this.issueId(t, issue.id, "detail", t.dim))
+        .child(div().text_size(11).text_color(t.dim).child(`· ${issue.type} · ${issue.state} · updated ${ago(issue.updated_at, now)} ago`))
         .child(div().flex_1())
         .children(PRIORITIES.map((p) => div().id(`prio-${issue.id}-${p}`).px(5).h(18).flex().items_center().rounded(5).text_size(10.5).font_semibold()
           .text_color(p === issue.priority ? t.accent_foreground : t.dim).when(p === issue.priority, (el) => el.bg(t.accent))
