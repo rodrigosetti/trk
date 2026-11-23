@@ -17,6 +17,9 @@ mod resume;
 #[path = "cli/gc.rs"]
 mod gc;
 
+#[path = "cli/type_install.rs"]
+mod type_install;
+
 #[path = "cli/base.rs"]
 mod base;
 
@@ -1371,6 +1374,7 @@ fn agent_preview_and_run_dry_run() {
     e.ok(&["note", &id, "The waiting check exited with 1"]);
     let spec = e.ok(&["run", &id, "--harness", "omp", "--dry-run"]);
     assert_eq!(spec["agent"], "implementer");
+    assert_eq!(spec["routing"]["worktree"], true);
     assert_eq!(spec["argv"][0], "omp");
     assert!(
         spec["worktree"]
@@ -1450,12 +1454,15 @@ fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
     let server = trk_mcp::TrkServer::new(trk_mcp::McpArgs {
         db: path.clone(),
         config: trk_core::config::ConfigDir { path: e.trk_dir() },
+        project_root: e.repo(),
+        user: trk_core::config::ConfigDir::new(e.trk_dir())
+            .user_config()
+            .unwrap(),
         opts: opts.clone(),
         issue: id.clone(),
         actor: spec["actor"].as_str().unwrap().into(),
         agent: "implementer".into(),
         base: "main".into(),
-        verify: String::new(),
     })
     .unwrap();
     let (ok, before) = server.call_sync("get_task", json!({}));
@@ -2315,5 +2322,89 @@ fn waiting_check_ui_and_message_failures_are_independent_and_nonfatal() {
         );
         let notified = matches!(mode, "rename" | "headless");
         assert_eq!(!ui.text("messages").is_empty(), notified, "{mode}");
+    }
+}
+
+#[test]
+fn types_without_worktrees_run_and_check_in_the_project_root() {
+    let e = Env::new();
+    let root = std::fs::canonicalize(e.repo()).unwrap();
+    let linked = e.dir.path().join("linked");
+    assert!(
+        StdCommand::new("git")
+            .current_dir(&root)
+            .args(["worktree", "add", "-q", "-b", "side"])
+            .arg(&linked)
+            .status()
+            .unwrap()
+            .success()
+    );
+    e.set_config("base = \"main\"", "base = \"side\"");
+    let config = e.trk_dir().join("config.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        config,
+        format!(
+            "{text}\n\
+             [harness.cwd-proof]\n\
+             command = 'sh'\n\
+             args = ['-c', 'pwd > observed-cwd']\n\
+             files = {{ '.omp/mcp.json' = '{{mcp_json}}' }}\n"
+        ),
+    )
+    .unwrap();
+
+    for issue_type in ["research", "review"] {
+        let id = e.create(&["Read the current checkout", "--type", issue_type]);
+        assert_eq!(e.ok(&["show", &id])["routing"]["worktree"], false);
+        let preview = e.ok(&["run", &id, "--harness", "cwd-proof", "--dry-run"]);
+        assert_eq!(preview["routing"]["worktree"], false);
+        assert!(preview["worktree"].is_null());
+        assert_eq!(preview["cwd"], json!(root));
+        assert!(e.ok(&["show", &id])["claim"].is_null());
+
+        // Launch from a linked checkout: a read-only type still sees the primary.
+        let out = e
+            .cmd()
+            .current_dir(&linked)
+            .args(["--json", "run", &id, "--harness", "cwd-proof", "--fg"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let launched: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(launched["data"]["exit_code"], 0);
+        assert_eq!(
+            std::fs::read_to_string(root.join("observed-cwd"))
+                .unwrap()
+                .trim(),
+            root.to_str().unwrap()
+        );
+        let claim = e.ok(&["show", &id])["claim"].clone();
+        assert!(claim["worktree"].is_null());
+        assert!(!e.trk_dir().join("worktrees").join(&id).exists());
+        let branch = StdCommand::new("git")
+            .current_dir(&root)
+            .args(["show-ref", "--verify", "--quiet"])
+            .arg(format!("refs/heads/{id}"))
+            .status()
+            .unwrap();
+        assert_eq!(branch.code(), Some(1));
+        let exclude = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap();
+        assert!(exclude.contains("/.omp/mcp.json"));
+
+        let actor = claim["actor"].as_str().unwrap();
+        e.ok(&[
+            "--as",
+            actor,
+            "wait",
+            &id,
+            "--reason",
+            "verify current checkout",
+            "--check",
+            "test \"$(pwd)\" = \"$TRK_REPO\" && test \"$TRK_WORKTREE\" = \"$TRK_REPO\" && test \"$TRK_BRANCH\" = main && test \"$TRK_BASE\" = side",
+        ]);
+        let check = e.ok(&["check", &id]);
+        assert_eq!(check["results"][0]["result"], "passed", "{check:#}");
+        assert_eq!(e.ok(&["show", &id])["state"], "closed");
     }
 }

@@ -42,6 +42,10 @@ files, and lists the ones that differ from the new defaults. `trk install --forc
 config with the defaults. `trk --version` prints the commit the binary was built from. Running
 agent sessions keep the binary they started with.
 
+The research and review type defaults now set `worktree = false`. Existing installations
+keep their type files; `trk install` lists `types/research.toml` and `types/review.toml`
+as differing until you add that setting yourself or overwrite defaults with `--force`.
+
 ### Active sessions during upgrades
 
 Opening the shared database with a newer trk can apply forward schema migrations. An older,
@@ -219,9 +223,10 @@ trk list type=review --sort type
 trk ready type=research --sort type
 ```
 
-The check runs with `sh -c` in the worktree the issue was claimed in, with `TRK_ISSUE`,
-`TRK_WORKTREE`, `TRK_REPO` (the primary checkout), `TRK_BRANCH`, `TRK_BASE` (the
-resolved base branch) and `TRK_VERIFY` (`[check] verify`, default empty) set. Its exit code decides:
+The check runs with `sh -c` in the worktree the issue was claimed in, or the primary
+project root when the claim has no worktree, with `TRK_ISSUE`, `TRK_WORKTREE`,
+`TRK_REPO` (the primary checkout), `TRK_BRANCH`, `TRK_BASE` (the resolved base
+branch) and `TRK_VERIFY` (`[check] verify`, default empty) set. Its exit code decides:
 
 | Exit | Meaning | Result |
 | --- | --- | --- |
@@ -346,6 +351,8 @@ never the current worktree. Git worktree removal is not forced; branch deletion 
 `git branch -d` in the primary checkout, only for the issue-ID branch and only after all
 recorded worktrees are removed or absent. Dirty worktrees, unmerged branches and other
 unsafe or refused targets are reported as skipped.
+Runs without a recorded worktree have no worktree or branch resources for GC to collect;
+their recorded sessions remain eligible for normal session cleanup.
 
 JSON uses the normal envelope with `data: {dry_run, issues}`. Each issue has `id` and
 `session`, `worktree`, `branch` outcomes with `status` (`removed`, `absent`, `skipped`) and
@@ -386,11 +393,18 @@ returns an error without launching a session. `trk run --dry-run` previews the s
 The agent for a run is `--agent` (a one-off override), else the issue type's `agent` mapping.
 The seed types are `code-change` → `implementer`, `research` → `researcher`, and `review` → `reviewer`.
 Use `trk create ... --type review`, `trk edit <ID> --type research`, and `trk list 'type=review'`.
-The harness is `--harness`, else the first installed harness the agent prefers (see Configuration). The seed
-config prefers `omp` running `openai-codex/gpt-6-luna`. The worktree is
+Each `.trk/types/<name>.toml` may set `worktree = true` (the default when omitted)
+or `worktree = false`. This is a type-only setting, not an agent or harness setting;
+`--agent` does not override it. `code-change` keeps the default, while the research
+and review seeds set it to `false`. With `true`, the worktree is
 `.trk/worktrees/<ID>` on a branch named after the issue. New issue branches start at
 the resolved `[run] base`; existing issue branches are reused, so a later session
-on the same issue finds the earlier work.
+on the same issue finds the earlier work. With `false`, the session runs in the primary
+project root, creates neither branch nor worktree, and records no worktree path in its claim.
+`trk show --json` routing and `trk run --dry-run --json` expose the resolved `worktree` boolean.
+
+The harness is `--harness`, else the first installed harness the agent prefers (see Configuration).
+The seed config prefers `omp` running `openai-codex/gpt-6-luna`.
 
 The MCP server (`trk mcp --issue … --actor … --agent …`, started by the harness) serves exactly one
 issue with six tools: `get_task`, `add_note`, `report_followup`, `hand_back`, `close` and `wait`.
@@ -408,8 +422,8 @@ waiting sessions with `state: "waiting"` (their displayed lease is historical), 
 the old session's access.
 
 With `[launcher] herdr = true`, each run opens a **new Herdr space**, named with the issue's title
-and rooted in its worktree. Its first terminal runs the agent directly; the launching space and
-its tabs are left intact. This works from any terminal, not only one already in Herdr.
+and rooted in its launch directory (the worktree or primary project root). Its first terminal
+runs the agent directly; the launching space and its tabs are left intact.
 trk confirms the space's title, folder and agent pane through `herdr-app ls`; JSON includes
 `placement` (`visible` or `failed`) and the actual terminal address used by `trk attach` and `trk send`.
 
@@ -537,6 +551,28 @@ There is no schema to apply: states, the close reasons (`done`, `abandoned`), pr
 one dependency kind (`blocks`) are fixed. Agents and prompts are read when a session starts;
 `trk agent check` validates them. `trk show` and `trk run --dry-run` print which type and agent
 files a run would use.
+
+Agent instructions and briefings are MiniJinja templates with the same context in `trk run`,
+the MCP server and `trk agent preview`:
+
+| Variable | Value |
+| --- | --- |
+| `issue` | Issue object, including dependencies and derived fields; briefings also include notes |
+| `project.name`, `project.root`, `project.prefix` | Project root directory name, root path (not the session worktree), and configured issue ID prefix |
+| `type.name`, `type.description` | Resolved `types/<type>.toml` metadata, even with an agent override |
+| `config.check.interval`, `config.check.timeout`, `config.check.max_wakes` | Configured check durations and numeric wake cap |
+| `config.claims.agent_lease`, `config.run.worktrees` | Configured lease duration and worktree directory |
+| `agent.name`, `agent.description` | Selected agent metadata |
+| `tools` | List of available tools, each with `name` and `description` |
+| `worktree`, `actor`, `harness` | Session worktree path, actor and harness name; worktree/harness may be null |
+| `base` | Resolved `[run] base` branch |
+| `fold_instructions`, `instructions` | Whether instructions are folded into the briefing, and their rendered text (otherwise null) |
+
+Durations and `config.run.worktrees` retain their configured strings (for example `5m`
+and `.trk/worktrees`), without path expansion. Example: `{{ project.name }}:
+{{ type.description }}; wake cap {{ config.check.max_wakes }}`.
+`trk agent check` renders with sample issue/type/project values (project root `/tmp/project`,
+type `code-change` with description `Sample type description`) and the project's configured settings.
 
 There is no global configuration and no cross-project view: `trk list`, `trk runs` and
 `trk check --watch` act on the project of the working directory, so each project needs its own

@@ -97,7 +97,7 @@ A waiting issue carries:
 | `check_interval` | seconds between checks; default `[check] interval` (5m) |
 | `next_check_at` | when the check is due; set to "now" on entering waiting |
 | `last_check_at`, `last_check_exit` | the last "not yet" |
-| `wait_cwd` | where the check runs: the worktree of the claim that started the wait |
+| `wait_cwd` | where the check runs: the claim's worktree, or the primary project root when no worktree was recorded |
 
 The check's exit code is the whole protocol:
 
@@ -110,7 +110,7 @@ The check's exit code is the whole protocol:
 
 Error is the default. A command that is misspelled, whose credentials expired, or whose branch conflicts fails loudly and returns as work, instead of waiting forever. Only the one reserved code keeps an issue waiting, so "not yet" is always a deliberate answer.
 
-A check may do the remaining work (merge the branch) or only look (is the PR merged?). It runs under `sh -c` in the claim's worktree with `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO`, `TRK_BRANCH`, `TRK_BASE` (the resolved base branch) and `TRK_VERIFY` (`[check] verify`, default empty). It must be non-interactive, non-blocking (no `--watch`) and safe to run more than once: `trk check` may die between running a command and recording its result, and the next pass runs it again.
+A check may do the remaining work (merge the branch) or only look (is the PR merged?). It runs under `sh -c` in the claim's worktree, falling back to the primary project root when the claim has no worktree, with `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO`, `TRK_BRANCH`, `TRK_BASE` (the resolved base branch) and `TRK_VERIFY` (`[check] verify`, default empty). It must be non-interactive, non-blocking (no `--watch`) and safe to run more than once: `trk check` may die between running a command and recording its result, and the next pass runs it again.
 
 Merge your branch locally only after verifying the merged result in the issue worktree:
 
@@ -277,7 +277,7 @@ A check is written by an agent and executed later, unattended, with the user's p
 
 | Piece | Defines |
 | --- | --- |
-| Type | Name, description and agent routing; no workflow or custom fields |
+| Type | Name, description, agent routing and whether to use a worktree; no workflow or custom fields |
 | Agent | Who does the work: instructions, briefing, other MCP servers, harness preference, built-in tool level |
 | Harness profile | How to run an agent in one harness: command, arguments, environment, files, how MCP servers and instructions are passed |
 | Launcher | Where it runs: three command templates for `hc` |
@@ -308,14 +308,20 @@ builtin_tools = "default"                # default | read-only | none
 The agent for a run is `trk run --agent X` (a one-off override), otherwise the issue type's `agent`.
 The seed types are `code-change` (description `code change`, agent `implementer`),
 `research` (agent `researcher`) and `review` (agent `reviewer`, read-only built-in tools).
-A type file is `types/<name>.toml` with `name`, `description` and `agent`.
+A type file is `types/<name>.toml` with `name`, `description`, `agent` and optional
+`worktree` (boolean, default `true`). Only types configure `worktree`; agents, harnesses
+and `--agent` do not override it. The `code-change` seed omits it and keeps the default;
+the research and review seeds set `worktree = false`. False launches in the primary
+project root without creating or reusing an issue branch or worktree, and records no
+worktree path in the claim.
 `trk agent check` validates agent files, templates and harness profiles.
 
 Types, agents and prompts all come from the project's `.trk/` directory, which `trk install`
 fills with the defaults. There is one configuration layer: no global config to merge with and
 no trust gate, because `.trk/` is created by the user's own `trk install` and is not tracked by
 git. An agent's `harness.prefer` orders the harnesses it may use; `trk run --harness` overrides it.
-`trk show` and `trk run --dry-run` expose routing provenance before execution.
+`trk show --json` routing and `trk run --dry-run --json` expose routing provenance,
+including the resolved `worktree` boolean, before execution.
 
 ### The trk MCP server
 
@@ -344,7 +350,32 @@ With `inbox = true`, `trk note <ID> --to-agent` messages are attached once to th
 
 Notes are in the briefing because they are the issue's memory across sessions. An issue reopened by a failed check carries the check's output as its latest note, so the next session starts from the failure.
 
-Instruction and briefing templates can use `{{ base }}` for the resolved `[run] base` branch.
+Both templates receive this MiniJinja context in `trk run`, the MCP server and
+`trk agent preview`; existing variables retain their meanings:
+
+| Variable | Contract |
+| --- | --- |
+| `issue` | Issue JSON with dependencies and derived fields; briefing includes all notes |
+| `project.name` | Name of the project root directory |
+| `project.root` | Project root path, not the session worktree |
+| `project.prefix` | `[issues] prefix` |
+| `type.name`, `type.description` | Resolved type name and description from `types/<type>.toml`, unaffected by an agent override |
+| `config.check.interval`, `config.check.timeout` | Configured duration strings |
+| `config.check.max_wakes` | Numeric configured automatic wake cap |
+| `config.claims.agent_lease` | Configured lease duration string |
+| `config.run.worktrees` | Configured directory string, without tilde expansion or root resolution |
+| `agent.name`, `agent.description` | Selected agent metadata |
+| `tools` | Available tools as `{name, description}` objects |
+| `worktree` | Session worktree path or null |
+| `base` | Resolved `[run] base` branch |
+| `actor` | Session actor |
+| `harness` | Harness name or null |
+| `fold_instructions` | Whether instructions are supplied for folding into the briefing |
+| `instructions` | Rendered instructions when folding, otherwise null |
+
+`trk agent check` uses the same context with a sample project root `/tmp/project`,
+the configured issue prefix and settings, and sample type `code-change` with description
+`Sample type description`. It does not require a project type to be mapped to every agent.
 
 ### `trk run`
 
@@ -353,15 +384,15 @@ trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]
 ```
 
 1. Check the issue is ready, and resolve its agent and harness.
-2. Create or reuse the worktree. New issue branches start at the resolved base: `git worktree add <worktrees>/<ID> -b <ID> <base>`. Existing issue branches are reused rather than reset to the base. The branch is always named after the issue, so a later session finds earlier work.
+2. If the type's `worktree` is true, create or reuse the worktree. New issue branches start at the resolved base: `git worktree add <worktrees>/<ID> -b <ID> <base>`. Existing issue branches are reused rather than reset to the base. The branch is always named after the issue, so a later session finds earlier work. Otherwise use the primary project root without creating a branch or worktree.
 3. Mint the actor `agent:<harness>:<uuid>`; the harness's own session id, once known, goes in `actor.meta`.
-4. Claim the issue with the actor, agent, worktree and terminal name (Herdr binds its returned address after launch).
+4. Claim the issue with the actor, agent, optional worktree path and terminal name (Herdr binds its returned address after launch). A type with `worktree = false` records no claim worktree path.
 5. Render the launch spec: briefing, MCP server list (trk plus the agent's others), environment (`TRK_ACTOR`, for attribution only), files, argv.
 6. Start in a new Herdr space when enabled and available, otherwise use the launcher's `start` template. `--print` emits the launch spec as JSON instead; `--dry-run` also skips the claim.
 
 Related commands: `trk attach <ID>` and `trk send <ID>` (only when their launcher templates are set) target the active claim's terminal, or the waiting session's terminal when there is no active claim. An active claim takes precedence even if it has no terminal; historical terminals are never a fallback once the issue leaves waiting. `trk runs` lists active and waiting agent sessions with `state` (`claimed` or `waiting`), agent, harness, terminal and claim metadata. A waiting row's lease is historical, not active. `trk reap` releases active claims whose MCP server has gone, recording the exit as a note; it leaves waiting sessions alone.
 
-The worktree outlives the claim: a waiting issue's check runs in it. Closing an issue retains its resources until manual `trk gc` or an eligible end-of-pass `trk check` sweep removes them.
+The worktree outlives the claim: a waiting issue's check runs in it, or in the primary project root if no worktree was recorded. Closing an issue retains its resources until manual `trk gc` or an eligible end-of-pass `trk check` sweep removes them.
 
 ### `trk gc`
 
@@ -376,6 +407,10 @@ GC takes the check queue lock and uses an immediate database transaction to seri
 - **Sessions:** discover the recorded exact terminal with `herdr-app ls`, then close its containing space with `herdr-app do space.close`. Never infer a session from a title. Protect the caller's current terminal's space and spaces used by other issues' active or waiting sessions; unavailable discovery or unsafe targets are skipped.
 - **Worktrees:** only descendants of the configured worktree directory are eligible, never the current worktree. Use `git worktree remove` without force; dirty worktrees and other Git refusals are skipped, not overridden.
 - **Branches:** only the branch named exactly after the issue ID, from the primary checkout, after every recorded worktree is removed or absent. Use `git branch -d`, never `-D`; unmerged, checked-out or otherwise refused branches are skipped.
+
+Claims without a recorded worktree have no worktree or issue-branch resources to collect;
+GC does not infer a branch from the issue ID alone. Their recorded sessions are still
+eligible for session cleanup.
 
 `--dry-run` reports the same selection and safety decisions without removing resources or appending notes. Each real removal appends a note attributed to the caller; absent or skipped resources do not, so a second run adds no cleanup note when nothing remains.
 
@@ -462,7 +497,7 @@ Everything is in `<project root>/.trk/`, created by `trk install`:
   config.toml          # user, issue id prefix, leases, check interval and timeout, worktrees,
                        # launcher templates, harness profiles, named views
   agents/*.toml        # one file per agent
-  types/*.toml         # name, description, agent routing
+  types/*.toml         # name, description, agent routing, optional worktree boolean
   prompts/*.j2         # MiniJinja templates for instructions and briefings
 ```
 
@@ -499,6 +534,10 @@ targets the same location: the primary checkout's root in a git repository, else
 directory. It writes `.trk/` (keeping existing config files unless `--force`), creates or
 migrates the database, and installs the agent skill at `.agents/skills/trk` (linked from
 `.claude/skills/trk`), excluded from git through `.git/info/exclude`.
+Existing type files are preserved: after the research and review seed defaults change
+to `worktree = false`, `trk install` lists `types/research.toml` and `types/review.toml`
+in `differ` without overwriting them. Users may add the setting themselves or use
+`trk install --force` to replace files with current defaults.
 
 ### Connection and transactions
 

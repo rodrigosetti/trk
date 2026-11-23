@@ -50,12 +50,13 @@ impl Env {
         TrkServer::new(McpArgs {
             db: self.dir.path().join("trk.db"),
             config: ConfigDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed")),
+            project_root: self.dir.path().to_path_buf(),
+            user: trk_core::config::UserConfig::default(),
             opts: self.opts.clone(),
             issue: self.issue.clone(),
             actor: actor.into(),
             agent: "implementer".into(),
             base: "main".into(),
-            verify: String::new(),
         })
         .unwrap()
     }

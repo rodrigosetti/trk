@@ -16,6 +16,7 @@ struct TypeDef {
     name: Option<String>,
     description: Option<String>,
     agent: Option<String>,
+    worktree: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,7 @@ pub struct Routing {
     pub description: String,
     pub agent: String,
     pub override_agent: bool,
+    pub worktree: bool,
     pub type_source: PathBuf,
     pub agent_source: PathBuf,
     pub prompt_directory: PathBuf,
@@ -118,6 +120,7 @@ impl RoutingConfig {
             description,
             agent,
             override_agent: override_agent.is_some(),
+            worktree: def.worktree.unwrap_or(true),
             type_source: path,
             agent_source,
             prompt_directory: self.config.path.clone(),
