@@ -99,6 +99,17 @@ pub fn git_info(dir: &Path) -> Option<GitInfo> {
     Some(GitInfo { toplevel, primary })
 }
 
+/// Detect the landing branch from the repository's primary checkout.
+pub fn detect_base(primary: &Path) -> String {
+    git(
+        primary,
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    )
+    .and_then(|r| r.strip_prefix("refs/remotes/origin/").map(String::from))
+    .or_else(|| git(primary, &["symbolic-ref", "--quiet", "--short", "HEAD"]))
+    .unwrap_or_else(|| "main".into())
+}
+
 /// `<git common dir>/info/exclude` for the repository at `dir`.
 fn exclude_file(dir: &Path) -> Option<PathBuf> {
     let common = git(dir, &["rev-parse", "--git-common-dir"])?;
@@ -247,6 +258,15 @@ impl Env {
     /// makes worktrees from, and `TRK_REPO` for checks.
     pub fn checkout(&self) -> Option<PathBuf> {
         self.root.join(".git").exists().then(|| self.root.clone())
+    }
+
+    /// `[run] base`, with repository detection for older configs.
+    pub fn base(&self) -> String {
+        self.user
+            .run
+            .base
+            .clone()
+            .unwrap_or_else(|| detect_base(&self.root))
     }
 
     /// The checkout of the working directory, when it belongs to this

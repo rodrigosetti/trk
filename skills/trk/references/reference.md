@@ -78,6 +78,13 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 
 `trk attach <ID>` interactively takes over the same terminal as `send`; suggest it to the user rather than running it. Active claims take precedence even without a terminal. With no active claim, `send`, `attach` and inbox delivery use the latest claim only if released with reason `waiting` and the issue is still waiting. That session may add notes and report follow-ups, but cannot change lifecycle state. Once the issue closes, reopens or is claimed again, the old session loses this access.
 
+`[run] base` in `.trk/config.toml` selects the base branch. When writing a new config,
+`trk install` detects the branch named by `origin/HEAD`, then the current branch of the
+primary checkout, then falls back to `main`. Older configs without `base` use the same
+detection at runtime; an explicit value wins. New issue branches start at that base;
+existing issue branches are reused. Waiting checks receive `TRK_BASE` and prompt
+templates can use `{{ base }}`. Quote `"$TRK_BASE"` in shell checks.
+
 `trk check --json` results: `passed` closes, `retry` keeps waiting, `woken` restores the live waiting session's claim and sends a repair prompt, `failed` reopens (no live session, wake cap reached or failed delivery), and `skipped` means the issue changed during the check or wake delivery. `woken` and `failed` include output, also saved in a note. Liveness requires the original MCP server on this host, a terminal (present in Herdr when enabled), and `[launcher] send`. trk only interprets exit codes; timeout is failure, exit 75 is retry.
 
 `[check] max_wakes` caps automatic failed-check claim restorations per session: default `5`, including when omitted from older configs; `0` disables automatic waking. The cap check and persistent `wake_count` increment happen transactionally with automatic claim restoration, before delivery, so a failed send still consumes a wake. Passes, retries and failures without restoration do not increment it. Entering or updating waiting and human resume preserve it. A fresh explicit claim, including `--steal`, resets it to zero; an idempotent claim by the current owner does not. Wake prompts include `wake N of M`. At the cap, a failed check reopens the issue with `wake cap of M reached` and the command's output in its note.

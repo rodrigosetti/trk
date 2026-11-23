@@ -146,12 +146,17 @@ pub struct RunSection {
     /// Where `trk run` creates worktrees: absolute, `~/…`, or relative to the
     /// project root.
     pub worktrees: String,
+    /// Branch new issue branches start from and checks land on. Missing in
+    /// older configs; the CLI detects the repository's default branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 impl Default for RunSection {
     fn default() -> Self {
         RunSection {
             worktrees: ".trk/worktrees".into(),
+            base: None,
         }
     }
 }

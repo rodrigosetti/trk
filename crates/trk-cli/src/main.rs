@@ -474,6 +474,7 @@ fn mcp(g: &Global, issue: &str, actor: &str, agent: &str) -> anyhow::Result<()> 
         issue: issue.to_string(),
         actor: actor.to_string(),
         agent: agent.to_string(),
+        base: env.base(),
     })
 }
 
@@ -924,7 +925,11 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
                 None => "# email = \"you@example.com\"".to_string(),
             },
         )
-        .replace("{{PREFIX}}", &prefix);
+        .replace("{{PREFIX}}", &prefix)
+        .replace(
+            "{{BASE}}",
+            &toml::Value::String(env::detect_base(&root)).to_string(),
+        );
     let mut files: Vec<(&str, String)> = vec![
         (".gitignore", seed::GITIGNORE.to_string()),
         ("config.toml", config_toml),
@@ -1299,6 +1304,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 worktree: issue_json["claim"]["worktree"].as_str(),
                 actor: "agent:<harness>:<session>",
                 harness: None,
+                base: &env.base(),
             };
             let instructions = trk_agent::prompt::instructions(&resolved.config, &input)?;
             let briefing = trk_agent::prompt::briefing(&resolved.config, &input, None)?;

@@ -13,7 +13,8 @@ fn user_config() -> UserConfig {
     toml::from_str(
         &text
             .replace("{{EMAIL_LINE}}", "email = \"a@b.c\"")
-            .replace("{{PREFIX}}", "proj"),
+            .replace("{{PREFIX}}", "proj")
+            .replace("{{BASE}}", "\"main\""),
     )
     .unwrap()
 }
@@ -94,12 +95,19 @@ fn the_briefing_carries_description_notes_and_blockers() {
         agent: &a,
         tools: &tools,
         worktree: Some("/wt/orch-abc"),
+        base: "develop",
         actor: "agent:omp:u1",
         harness: Some("omp"),
     };
     let rules = trk_agent::prompt::instructions(&seed(), &input).unwrap();
     assert!(rules.contains("Exit 75: not yet"), "{rules}");
     assert!(rules.contains("/wt/orch-abc"));
+    assert!(rules.contains("landing branch is `develop`"), "{rules}");
+    assert!(rules.contains("TRK_BASE (the landing branch)"), "{rules}");
+    assert!(
+        rules.contains(r#"[ "$(git branch --show-current)" = "$TRK_BASE" ]"#),
+        "{rules}"
+    );
     let b = trk_agent::prompt::briefing(&seed(), &input, None).unwrap();
     assert!(b.contains("Claims need leases."), "{b}");
     assert!(b.contains("The waiting check exited with 1"), "{b}");

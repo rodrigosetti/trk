@@ -25,7 +25,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     put(
         &cfg_dir,
         "prompts/rules.j2",
-        "{% include 'prompts/fragment.j2' %}: {{ issue.type }}",
+        "{% include 'prompts/fragment.j2' %}: {{ issue.type }} targeting {{ base }}",
     );
     put(&cfg_dir, "prompts/fragment.j2", "Project policy");
     let cfg = RoutingConfig::new(&ConfigDir::new(&cfg_dir));
@@ -44,12 +44,13 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
         agent: &resolved.agent,
         tools: &[],
         worktree: None,
+        base: "release/stable",
         actor: "human:test@example.com",
         harness: None,
     };
     assert_eq!(
         trk_agent::prompt::instructions(&resolved.config, &input).unwrap(),
-        "Project policy: code-change"
+        "Project policy: code-change targeting release/stable"
     );
 
     // An explicit agent overrides the type's mapping.

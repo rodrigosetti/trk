@@ -116,9 +116,9 @@ contain ANSI styling.
 ## Waiting and `trk check`
 
 ```sh
-# Done once the branch is in main: the check does the merge.
-trk wait orch-4kq -r "merge into main" \
-  -c 'cd "$TRK_REPO" && [ "$(git branch --show-current)" = main ] && git merge --no-edit "$TRK_BRANCH"'
+# Done once the branch is in the configured base: the check does the merge.
+trk wait orch-4kq -r "merge into base branch" \
+  -c 'cd "$TRK_REPO" && [ "$(git branch --show-current)" = "$TRK_BASE" ] && git merge --no-edit "$TRK_BRANCH"'
 
 # Done once the PR is merged; wake for conflicts or failed head-commit CI.
 # gh's built-in jq filter reads the head commit's check runs and statuses.
@@ -197,7 +197,8 @@ trk ready type=research --sort type
 ```
 
 The check runs with `sh -c` in the worktree the issue was claimed in, with `TRK_ISSUE`,
-`TRK_WORKTREE`, `TRK_REPO` (the main checkout) and `TRK_BRANCH` set. Its exit code decides:
+`TRK_WORKTREE`, `TRK_REPO` (the primary checkout), `TRK_BRANCH` and `TRK_BASE` (the
+resolved base branch) set. Its exit code decides:
 
 | Exit | Meaning | Result |
 | --- | --- | --- |
@@ -261,7 +262,7 @@ Three properties follow from that:
 - **A waiting issue still blocks.** What depends on it becomes ready when the work has landed, not
   when the session stopped.
 - **Checks are a merge queue.** Only one `trk check` runs at a time and it runs checks one after
-  another, so two sessions never merge into main at once.
+  another, so two sessions never merge into the base branch at once.
 - **Failures come back as work.** A failed check wakes its live session to fix it; otherwise
   the issue reopens and the next session reads the output in the notes. A command that
   is missing or times out (`[check] timeout`, 10m) fails rather than waiting forever.
@@ -352,8 +353,9 @@ The seed types are `code-change` → `implementer`, `research` → `researcher`,
 Use `trk create ... --type review`, `trk edit <ID> --type research`, and `trk list 'type=review'`.
 The harness is `--harness`, else the first installed harness the agent prefers (see Configuration). The seed
 config prefers `omp` running `openai-codex/gpt-6-luna`. The worktree is
-`.trk/worktrees/<ID>` on a branch named after the issue, so a later session on the same
-issue finds the earlier work.
+`.trk/worktrees/<ID>` on a branch named after the issue. New issue branches start at
+the resolved `[run] base`; existing issue branches are reused, so a later session
+on the same issue finds the earlier work.
 
 The MCP server (`trk mcp --issue … --actor … --agent …`, started by the harness) serves exactly one
 issue with six tools: `get_task`, `add_note`, `report_followup`, `hand_back`, `close` and `wait`.
@@ -472,10 +474,22 @@ Everything trk keeps for a project is in `.trk/` at its root, written by `trk in
   checks/                 logs of running checks
 ```
 
-`config.toml` is explicit: `trk install` writes every setting, and a missing one is an error
-rather than a silent default. `[issues] prefix` names new issues (`<prefix>-<base32>`); it
-defaults to the directory name, or `trk install --prefix NAME`. Changing it later only affects
-new issues.
+`config.toml` is explicit: `trk install` writes every setting; most missing settings are
+errors. `[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory
+name, or `trk install --prefix NAME`. Changing it later only affects new issues.
+
+`[run] base` selects the base branch, for example:
+
+```toml
+[run]
+base = "develop"
+```
+
+When writing a new config, `trk install` detects the branch named by `origin/HEAD`,
+then the current branch of the primary checkout, and finally falls back to `main`.
+Older configs that omit `base` use the same detection at runtime. An explicit `base`
+takes precedence. Waiting checks receive the resolved branch as `TRK_BASE`; instruction
+and briefing prompt templates can use `{{ base }}`.
 
 There is no schema to apply: states, the close reasons (`done`, `abandoned`), priorities and the
 one dependency kind (`blocks`) are fixed. Agents and prompts are read when a session starts;
