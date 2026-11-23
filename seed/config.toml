@@ -20,6 +20,8 @@ agent_lease = "30m"
 interval = "5m"
 # How long one check may run before it counts as a failure.
 timeout  = "10m"
+# Maximum failed-check wakes per session. 0 disables waking and always reopens.
+max_wakes = 5
 
 [run]
 # Where `trk run` creates git worktrees: absolute, ~/…, or relative to the

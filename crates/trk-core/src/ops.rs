@@ -143,7 +143,7 @@ impl Ctx<'_> {
             "UPDATE issue SET state = ?2, title = ?3, description = ?4, priority = ?5, type = ?6,
                     close_reason = ?7, waiting_reason = ?8, waiting_check = ?9, check_interval = ?10,
                     next_check_at = ?11, last_check_at = ?12, last_check_exit = ?13, wait_cwd = ?14,
-                    closed_at = ?15, updated_at = ?16
+                    closed_at = ?15, updated_at = ?16, wake_count = ?17
              WHERE id = ?1",
             params![
                 i.id,
@@ -162,6 +162,7 @@ impl Ctx<'_> {
                 i.wait_cwd,
                 i.closed_at,
                 self.ts(),
+                i.wake_count,
             ],
         )?;
         Ok(())
@@ -497,8 +498,9 @@ impl Ctx<'_> {
                 .with_hint("close its blockers first, or remove the edge with `trk dep rm`"));
             }
             issue.state = State::Claimed;
-            self.save_issue(&issue)?;
         }
+        issue.wake_count = 0;
+        self.save_issue(&issue)?;
         self.conn.execute(
             "INSERT INTO claim (issue_id, actor, claimed_at, lease_until, worktree, host, agent, terminal)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -861,7 +863,8 @@ impl Ctx<'_> {
             )?;
             return Ok(CheckResult::Passed);
         }
-        let resume = if let Some(claim) = resume_claim {
+        let capped = issue.wake_count >= self.opts.max_wakes;
+        let resume = if let Some(claim) = resume_claim.filter(|_| !capped) {
             self.conn
                 .query_row(
                     &format!(
@@ -892,6 +895,12 @@ impl Ctx<'_> {
             "the issue is open again"
         };
         let mut body = format!("The waiting check {what}; {outcome}.\n");
+        if capped {
+            body.push_str(&format!(
+                "\nSession wake cap of {} reached; no further wake was sent.\n",
+                self.opts.max_wakes,
+            ));
+        }
         if let Some(r) = &reason {
             body.push_str(&format!("\nIt was waiting for: {r}\n"));
         }
@@ -910,6 +919,9 @@ impl Ctx<'_> {
         } else {
             State::Open
         };
+        if resume.is_some() {
+            issue.wake_count += 1;
+        }
         Self::clear_waiting(&mut issue);
         self.save_issue(&issue)?;
         self.event(

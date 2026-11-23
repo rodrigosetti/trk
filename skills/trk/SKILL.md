@@ -96,7 +96,9 @@ The check is a shell command that `trk check` runs later, unattended, with `sh -
 
 It may do the remaining work or only look. It may run more than once, so it must be safe to repeat, and it must never prompt. Let real failures exit non-zero on their own; do not turn them into 75. It sees `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` (the main checkout) and `TRK_BRANCH`.
 
-A failed check restores the original claim with a fresh lease if the session's MCP server is alive on this host, its terminal is recorded (and present with Herdr), and `[launcher] send` is configured. It sends a prompt with the output to fix the failure and end again, normally with `wait`; the session's MCP tools work again. A gone session or failed send leaves the issue open. trk only interprets exit codes, never PRs or CI.
+A failed check restores the original claim with a fresh lease if the session's MCP server is alive on this host, its terminal is recorded (and present with Herdr), `[launcher] send` is configured, and its wake count is below `[check] max_wakes` (default `5`, also when omitted; `0` disables waking). Each restoration increments the persistent count, even if delivery fails. Entering or updating `wait` preserves it; a fresh explicit claim, including `--steal`, resets it to zero, but an idempotent claim by the current owner does not. The prompt includes `wake N of M` and the output to fix the failure and end again, normally with `wait`; the session's MCP tools work again. At the cap, the issue reopens with a note saying `wake cap of M reached` and retaining the output. A gone session or failed send also leaves it open. trk only interprets exit codes, never PRs or CI.
+
+While claimed or waiting with a nonzero count, issue JSON includes top-level `wake_count` and pretty `trk show` displays a `wakes` line. Otherwise the count is omitted.
 
 Without a check, the issue waits until a human runs `trk close <ID>` or `trk reopen <ID> -m "the answer"`. Running `trk wait` on an issue that is already waiting replaces its check, interval and reason.
 

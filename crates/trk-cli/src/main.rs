@@ -193,6 +193,8 @@ enum Cmd {
         Exit 0 closes the issue as done; exit 75 means not yet, check again after --every;\n\
         any other exit or timeout wakes the original live session, otherwise reopens the issue;\n\
         the output is kept in a note. Failed wake delivery also reopens the issue.\n\
+        [check] max_wakes caps wakes per session (default 5; 0 disables waking).\n\
+        At the cap, failures reopen with an output note. A fresh claim resets the count.\n\
         Without --check the issue waits for `trk close` or `trk reopen`.\n\
         On an issue that is already waiting, this replaces its check, interval and reason."
     )]

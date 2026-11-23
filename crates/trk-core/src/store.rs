@@ -16,7 +16,7 @@ use crate::model::*;
 pub const ISSUE_COLS: &str = "i.id, i.state, i.title, i.description, \
      i.priority, i.type, i.close_reason, i.waiting_reason, i.waiting_check, i.check_interval, \
      i.next_check_at, i.last_check_at, i.last_check_exit, i.wait_cwd, i.created_by, i.created_at, \
-     i.updated_at, i.closed_at";
+     i.updated_at, i.closed_at, i.wake_count";
 
 #[derive(Debug, Clone)]
 pub struct StoreOpts {
@@ -26,6 +26,8 @@ pub struct StoreOpts {
     pub agent_lease: jiff::SignedDuration,
     /// Time between checks of a waiting issue that does not set its own.
     pub check_interval: jiff::SignedDuration,
+    /// Maximum failed-check wakes per session; zero disables waking.
+    pub max_wakes: u32,
     /// Prefix of new issue ids: `<prefix>-<base32>`.
     pub prefix: String,
 }
@@ -36,6 +38,7 @@ impl Default for StoreOpts {
             now: None,
             agent_lease: jiff::SignedDuration::from_mins(30),
             check_interval: jiff::SignedDuration::from_mins(5),
+            max_wakes: 5,
             prefix: "trk".into(),
         }
     }
@@ -195,6 +198,9 @@ fn migrations() -> Vec<M<'static>> {
         M::up(
             "ALTER TABLE check_lock ADD COLUMN pgid INTEGER;
              UPDATE check_lock SET pgid = 0",
+        ),
+        M::up(
+            "ALTER TABLE issue ADD COLUMN wake_count INTEGER NOT NULL DEFAULT 0 CHECK (wake_count >= 0)",
         ),
     ]
 }
@@ -500,6 +506,7 @@ pub fn row_to_issue(r: &rusqlite::Row) -> rusqlite::Result<Issue> {
         created_at: r.get(15)?,
         updated_at: r.get(16)?,
         closed_at: r.get(17)?,
+        wake_count: r.get(18)?,
     })
 }
 

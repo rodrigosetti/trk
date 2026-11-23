@@ -397,7 +397,9 @@ fn pass(
             },
         };
         interrupt.check()?;
-        let session = if run.timed_out || !matches!(run.exit, Some(0 | CHECK_RETRY_EXIT)) {
+        let session = if (run.timed_out || !matches!(run.exit, Some(0 | CHECK_RETRY_EXIT)))
+            && i.wake_count < env.user.check.max_wakes
+        {
             // Unknown liveness is not enough to restore a claim.
             crate::run::waiting_session(env, &i.id).unwrap_or(None)
         } else {
@@ -407,6 +409,7 @@ fn pass(
             c.check_record(&i.id, &check, &run, session.as_ref().map(|s| s.claim))
         })?;
         if let CheckResult::Woken { claim } = result {
+            let wake_count = store.read(None, |c| Ok(c.issue(&i.id)?.wake_count))?;
             let reason = if run.timed_out {
                 "timed out".to_string()
             } else {
@@ -420,11 +423,13 @@ fn pass(
                 start += 1;
             }
             let message = format!(
-                "The waiting check failed for {} ({reason}). Your claim has been restored. \
+                "The waiting check failed for {} ({reason}; wake {wake_count} of {}). Your claim has been restored. \
                  Address the failure using the check output below and the issue's notes. \
-                 Then end the session again, normally by calling wait with a corrected check.\
+                 Then end the session again, normally by calling wait with a corrected check, \
+                 or hand_back if the failure cannot be fixed by this session.\
                  \n\nCheck:\n{check}\n\nOutput:\n{}",
                 i.id,
+                env.user.check.max_wakes,
                 if output.is_empty() {
                     "(no output)"
                 } else {

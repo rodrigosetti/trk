@@ -234,6 +234,7 @@ impl Env {
             now: std::env::var("TRK_NOW").ok().and_then(|s| s.parse().ok()),
             agent_lease: self.agent_lease()?,
             check_interval: parse_duration(&self.user.check.interval)?,
+            max_wakes: self.user.check.max_wakes,
             prefix: self.user.issues.prefix.clone(),
         })
     }
