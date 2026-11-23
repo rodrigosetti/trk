@@ -678,6 +678,14 @@ fn gc_worktreeless_run_never_collects_a_coincidentally_named_branch() {
         assert!(fixture.e.repo().is_dir());
         assert_eq!(fixture.notes(&id), notes);
     }
+
+    let sweep = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
+    let issue = gc_issue(&sweep["gc"], &id);
+    assert_eq!(issue["worktree"]["status"], "absent", "{issue:#}");
+    gc_status(issue, "branch", "absent");
+    assert!(fixture.branch_exists(&id));
+    assert!(fixture.e.repo().is_dir());
+    assert_eq!(fixture.notes(&id), notes);
 }
 
 #[test]
@@ -710,4 +718,275 @@ fn gc_collects_historical_worktrees_after_the_type_opts_out() {
     assert!(!fixture.branch_exists(&id));
     assert!(fixture.e.repo().is_dir());
     assert_eq!(fixture.closed_spaces(), ["history"]);
+}
+
+fn check_gc_at(fixture: &GcEnv, now: &str, args: &[&str]) -> Value {
+    let output = fixture
+        .cmd()
+        .env("TRK_NOW", now)
+        .arg("--json")
+        .args(args)
+        .output()
+        .unwrap();
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "{args:?}: {error}: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    assert!(output.status.success(), "{value:#}");
+    assert_eq!(value["ok"], true, "{value:#}");
+    value["data"].clone()
+}
+
+fn check_gc_config(fixture: &GcEnv, settings: &str) {
+    let path = fixture.e.trk_dir().join("config.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut in_check = false;
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_check = trimmed == "[check]";
+        }
+        if in_check
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(key, _)| matches!(key.trim(), "gc" | "gc_grace"))
+        {
+            continue;
+        }
+        lines.push(line);
+        if trimmed == "[check]" {
+            lines.push(settings);
+        }
+    }
+    assert!(text.lines().any(|line| line.trim() == "[check]"));
+    std::fs::write(path, lines.join("\n") + "\n").unwrap();
+}
+
+#[test]
+fn check_gc_missing_keys_default_to_enabled_with_one_hour_grace() {
+    let fixture = GcEnv::new();
+    check_gc_config(&fixture, "");
+    let (id, path) = fixture.closed("done", "term-target");
+    let notes = fixture.notes(&id);
+
+    let before = check_gc_at(&fixture, "2026-11-20T10:59:59Z", &["check"]);
+    assert!(before.get("gc").is_none(), "{before:#}");
+    assert!(path.exists());
+    assert!(fixture.branch_exists(&id));
+    assert!(fixture.closed_spaces().is_empty());
+    assert_eq!(fixture.notes(&id), notes);
+
+    let after = check_gc_at(&fixture, "2026-11-20T11:00:00Z", &["check"]);
+    assert_eq!(after["gc"]["dry_run"], false);
+    for resource in ["session", "worktree", "branch"] {
+        gc_status(gc_issue(&after["gc"], &id), resource, "removed");
+    }
+    assert!(!path.exists());
+    assert!(!fixture.branch_exists(&id));
+    assert_eq!(fixture.closed_spaces(), ["target"]);
+}
+
+#[test]
+fn check_gc_zero_grace_collects_issues_closed_in_the_same_pass() {
+    let fixture = GcEnv::new();
+    check_gc_config(&fixture, "gc_grace = \"0\"");
+    let id = fixture.e.create(&["Close and collect"]);
+    let path = fixture.worktree(&id);
+    fixture.claim(&id, Some(&path), "term-target", &fixture.host);
+    fixture
+        .e
+        .ok(&["wait", &id, "--check", "exit 0", "--reason", "testing"]);
+
+    let data = check_gc_at(&fixture, "2026-11-20T10:00:00Z", &["check"]);
+    assert_eq!(data["results"][0]["issue"], id);
+    assert_eq!(data["results"][0]["result"], "passed");
+    gc_status(gc_issue(&data["gc"], &id), "worktree", "removed");
+    assert!(!path.exists());
+    assert!(!fixture.branch_exists(&id));
+    assert_eq!(fixture.e.ok(&["show", &id])["state"], "closed");
+}
+
+#[test]
+fn check_gc_can_be_disabled_without_disabling_manual_gc() {
+    for settings in ["gc = false", "gc = true"] {
+        let fixture = GcEnv::new();
+        check_gc_config(&fixture, settings);
+        let (id, path) = fixture.closed("done", "term-target");
+        let notes = fixture.notes(&id);
+        let args: &[&str] = if settings == "gc = false" {
+            &["check"]
+        } else {
+            &["check", "--no-gc"]
+        };
+        let data = check_gc_at(&fixture, "2026-11-20T12:00:00Z", args);
+        assert!(data.get("gc").is_none(), "{data:#}");
+        assert!(path.exists());
+        assert!(fixture.branch_exists(&id));
+        assert!(fixture.closed_spaces().is_empty());
+        assert_eq!(fixture.notes(&id), notes);
+
+        gc_status(
+            gc_issue(&fixture.run(&["gc", &id]), &id),
+            "worktree",
+            "removed",
+        );
+        assert!(!path.exists());
+    }
+}
+
+#[test]
+fn check_gc_explicit_id_does_not_sweep_other_closed_issues() {
+    let fixture = GcEnv::new();
+    let (id, path) = fixture.closed("done", "term-target");
+    let waiting = fixture.e.waiting("Selected check", "exit 0");
+    let notes = fixture.notes(&id);
+    let data = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check", &waiting]);
+    assert_eq!(data["results"][0]["result"], "passed");
+    assert!(data.get("gc").is_none(), "{data:#}");
+    assert!(path.exists());
+    assert!(fixture.branch_exists(&id));
+    assert!(fixture.closed_spaces().is_empty());
+    assert_eq!(fixture.notes(&id), notes);
+}
+
+#[test]
+fn check_gc_ignores_abandoned_issues() {
+    let fixture = GcEnv::new();
+    let (id, path) = fixture.closed("abandoned", "term-target");
+    let notes = fixture.notes(&id);
+    let data = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
+    assert!(data.get("gc").is_none(), "{data:#}");
+    assert!(path.exists());
+    assert!(fixture.branch_exists(&id));
+    assert!(fixture.closed_spaces().is_empty());
+    assert_eq!(fixture.notes(&id), notes);
+}
+
+#[test]
+fn check_gc_dry_run_previews_without_changing_resources_notes_or_database() {
+    let fixture = GcEnv::new();
+    let (id, path) = fixture.closed("done", "term-target");
+    let waiting = fixture.e.waiting("Preview check", "exit 0");
+    let before = fixture.e.ok(&["show", &waiting, "--with", "notes"]);
+    let notes = fixture.notes(&id);
+    let database = fixture.e.trk_dir().join("trk.db");
+    let bytes = std::fs::read(&database).unwrap();
+
+    let data = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check", "--dry-run"]);
+    assert_eq!(data["gc"]["dry_run"], true);
+    let issue = gc_issue(&data["gc"], &id);
+    for resource in ["session", "worktree", "branch"] {
+        gc_status(issue, resource, "removed");
+        assert!(
+            issue[resource]["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("would remove ")
+        );
+    }
+    assert_eq!(std::fs::read(database).unwrap(), bytes);
+    assert!(path.exists());
+    assert!(fixture.branch_exists(&id));
+    assert!(fixture.closed_spaces().is_empty());
+    assert_eq!(fixture.notes(&id), notes);
+    assert_eq!(fixture.e.ok(&["show", &waiting, "--with", "notes"]), before);
+}
+
+#[test]
+fn check_gc_session_failure_does_not_change_check_results_or_exit_status() {
+    let fixture = GcEnv::new();
+    let (id, path) = fixture.closed("done", "term-target");
+    std::fs::write(
+        fixture.bin.join("herdr-app"),
+        r#"#!/bin/sh
+if [ "$1" = ls ]; then
+    printf '%s\n' '{"spaces":[{"id":"target","tabs":[{"terminals":[{"terminal":"term-target"}]}]}]}'
+else
+    exit 1
+fi
+"#,
+    )
+    .unwrap();
+    let waiting = fixture.e.waiting("Still closes", "exit 0");
+
+    let data = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
+    assert_eq!(data["results"][0]["issue"], waiting);
+    assert_eq!(data["results"][0]["result"], "passed");
+    assert_eq!(fixture.e.ok(&["show", &waiting])["state"], "closed");
+    assert!(
+        data["gc"]["errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty()),
+        "{data:#}"
+    );
+    gc_status(gc_issue(&data["gc"], &id), "worktree", "removed");
+    assert!(!path.exists());
+    assert!(!fixture.branch_exists(&id));
+    assert!(!fixture.notes(&id).as_array().unwrap().is_empty());
+}
+
+#[test]
+fn check_gc_watch_sweeps_each_pass_and_keeps_skipped_resources_quiet() {
+    let fixture = GcEnv::new();
+    check_gc_config(&fixture, "gc_grace = \"0\"");
+    let (first, first_path) = fixture.closed("done", "term-target");
+    let (skipped, skipped_path) = fixture.closed("done", "missing-terminal");
+    std::fs::write(skipped_path.join("dirty"), "keep this work").unwrap();
+    let skipped_notes = fixture.notes(&skipped);
+    fixture.e.waiting(
+        "Watch heartbeat",
+        "echo pass >> \"$TRK_REPO/watch-passes\"; exit 75",
+    );
+    let output_path = fixture.e.dir.path().join("watch-output");
+    let stderr_path = fixture.e.dir.path().join("watch-stderr");
+    let path = std::env::join_paths(
+        std::iter::once(fixture.bin.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"));
+    command
+        .args(["check", "--all", "--watch", "1s"])
+        .env("PATH", path)
+        .env("TRK_TEST_UI", fixture.e.dir.path())
+        .env_remove("HC_TERMINAL_ID")
+        .stdout(std::fs::File::create(&output_path).unwrap())
+        .stderr(std::fs::File::create(&stderr_path).unwrap());
+    let mut runner = CheckRunner::spawn_command(&fixture.e, command);
+    check_wait_until("the first watch pass to collect a closed issue", || {
+        !first_path.exists()
+    });
+
+    let second = fixture.e.create(&["Closed between watch passes"]);
+    let second_path = fixture.worktree(&second);
+    fixture.claim(&second, Some(&second_path), "term-history", &fixture.host);
+    fixture.close_at(&second, "done", "2026-11-20T10:00:00Z");
+    check_wait_until(
+        "a later watch pass to collect a manually closed issue",
+        || !second_path.exists(),
+    );
+    let passes = || {
+        std::fs::read_to_string(fixture.e.repo().join("watch-passes"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    let before = passes();
+    check_wait_until("two more watch passes with only skipped resources", || {
+        passes() >= before + 2
+    });
+    runner.signal("-INT");
+    runner.wait();
+
+    let output = std::fs::read_to_string(output_path).unwrap();
+    assert_eq!(output.matches(&first).count(), 1, "{output}");
+    assert_eq!(output.matches(&second).count(), 1, "{output}");
+    assert_eq!(output.matches(&skipped).count(), 1, "{output}");
+    assert!(skipped_path.exists());
+    assert!(fixture.branch_exists(&skipped));
+    assert_eq!(fixture.notes(&skipped), skipped_notes);
 }

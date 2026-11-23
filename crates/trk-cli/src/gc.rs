@@ -1,4 +1,4 @@
-//! Explicit, conservative cleanup of resources left by closed issues.
+//! Conservative cleanup of resources left by closed issues.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -379,13 +379,17 @@ fn branch(
     ))
 }
 
-pub fn run(
+/// Collect under the caller's queue lock and write transaction. Automatic
+/// sweeps omit ineligible issues; all resource safety gates remain shared.
+pub(crate) fn collect(
     env: &Env,
-    ids: Vec<String>,
+    c: &mut Ctx<'_>,
+    ids: &[String],
     dry_run: bool,
     abandoned: bool,
     older_than: Option<&str>,
-) -> Result<Out> {
+    sweep: bool,
+) -> Result<Value> {
     let age = older_than.map(parse_duration).transpose()?;
     let host = hostname();
     let own = std::env::var("HC_TERMINAL_ID").ok();
@@ -393,7 +397,7 @@ pub fn run(
     let root = resolved(&env.worktrees_dir())?;
     let repo = env.checkout();
     let mut errors = Vec::new();
-    let issues = crate::check::with_gc_lock(env, dry_run, |c| {
+    let issues = {
         let ids = if ids.is_empty() {
             let mut stmt = c
                 .conn
@@ -433,12 +437,14 @@ pub fn run(
                 None
             };
             if let Some(reason) = gate {
-                results.push(IssueResult {
-                    id,
-                    session: Resource::new("skipped", reason),
-                    worktree: Resource::new("skipped", reason),
-                    branch: Resource::new("skipped", reason),
-                });
+                if !sweep {
+                    results.push(IssueResult {
+                        id,
+                        session: Resource::new("skipped", reason),
+                        worktree: Resource::new("skipped", reason),
+                        branch: Resource::new("skipped", reason),
+                    });
+                }
                 continue;
             }
             let claims = c.claims(&id)?;
@@ -526,27 +532,50 @@ pub fn run(
                 branch,
             });
         }
-        Ok(results)
-    })?;
-    let data = json!({"dry_run": dry_run, "issues": issues});
+        results
+    };
+    let mut data = json!({"dry_run": dry_run, "issues": issues});
     if !errors.is_empty() {
-        return Err(Error::new(Code::InvalidState, errors.join("; ")).with_detail("gc", data));
+        data["errors"] = json!(errors);
     }
+    Ok(data)
+}
+
+pub fn run(
+    env: &Env,
+    ids: Vec<String>,
+    dry_run: bool,
+    abandoned: bool,
+    older_than: Option<&str>,
+) -> Result<Out> {
+    let data = crate::check::with_gc_lock(env, dry_run, |c| {
+        collect(env, c, &ids, dry_run, abandoned, older_than, false)
+    })?;
+    if let Some(errors) = data["errors"].as_array() {
+        let message = errors
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(Error::new(Code::InvalidState, message).with_detail("gc", data));
+    }
+    let issues = data["issues"].as_array().unwrap();
     let mut text = String::new();
-    for issue in &issues {
+    for issue in issues {
         text.push_str(&format!(
             "{}{}\n",
-            issue.id,
+            issue["id"].as_str().unwrap_or_default(),
             if dry_run { " (dry-run)" } else { "" }
         ));
         for (name, resource) in [
-            ("session", &issue.session),
-            ("worktree", &issue.worktree),
-            ("branch", &issue.branch),
+            ("session", &issue["session"]),
+            ("worktree", &issue["worktree"]),
+            ("branch", &issue["branch"]),
         ] {
             text.push_str(&format!(
                 "  {name}: {} — {}\n",
-                resource.status, resource.reason
+                resource["status"].as_str().unwrap_or_default(),
+                resource["reason"].as_str().unwrap_or_default()
             ));
         }
     }
