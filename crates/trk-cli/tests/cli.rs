@@ -1582,8 +1582,8 @@ fn mcp_server_over_stdio() {
     assert!(!err, "{v}");
     assert_eq!(v["waiting"], json!(id));
     let (err, v) = call(&mut req, "add_note", json!({"body": "after wait"}));
-    assert!(err);
-    assert_eq!(v["error"]["code"], "not_permitted");
+    assert!(!err, "{v}");
+    assert_eq!(v["task"]["state"], "waiting");
     drop(stdin);
     child.wait().unwrap();
 
@@ -1591,7 +1591,10 @@ fn mcp_server_over_stdio() {
     assert_eq!(v["state"], "waiting");
     assert_eq!(v["waiting"]["interval"], 60);
     assert_eq!(v["waiting"]["cwd"], json!(wt.to_string_lossy()));
-    assert!(e.ok(&["runs"]).as_array().unwrap().is_empty());
+    let runs = e.ok(&["runs"]);
+    assert_eq!(runs.as_array().unwrap().len(), 1);
+    assert_eq!(runs[0]["issue"], id);
+    assert_eq!(runs[0]["state"], "waiting");
     assert!(!e.repo().join("hello.txt").exists());
     let r = e.ok(&["check"]);
     assert_eq!(r["results"][0]["result"], "passed", "{r:#}");
@@ -1704,8 +1707,11 @@ esac
                 "hc",
                 r#"#!/bin/sh
 set -eu
-[ "$1" = send ]
-printf '%s\n%s\n' "$2" "$3" >> "$TRK_TEST_UI/messages"
+case "$1" in
+send) printf '%s\n%s\n' "$2" "$3" >> "$TRK_TEST_UI/messages" ;;
+attach) printf '%s\n' "$2" >> "$TRK_TEST_UI/attachments" ;;
+*) exit 1 ;;
+esac
 "#,
             ),
         ] {
@@ -1753,17 +1759,22 @@ printf '%s\n%s\n' "$2" "$3" >> "$TRK_TEST_UI/messages"
         id
     }
 
-    fn check(&self, id: &str, failure: &str) -> Value {
+    fn cmd(&self) -> Command {
         let path = std::env::join_paths(
             std::iter::once(self.bin.clone())
                 .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        let out = self
-            .e
-            .cmd()
-            .env("PATH", path)
+        let mut cmd = self.e.cmd();
+        cmd.env("PATH", path)
             .env("TRK_TEST_UI", self.e.dir.path())
+            .env("TRK_TEST_UI_FAILURE", "");
+        cmd
+    }
+
+    fn check(&self, id: &str, failure: &str) -> Value {
+        let out = self
+            .cmd()
             .env("TRK_TEST_UI_FAILURE", failure)
             .args(["--json", "check", id])
             .output()
@@ -1780,6 +1791,131 @@ printf '%s\n%s\n' "$2" "$3" >> "$TRK_TEST_UI/messages"
         }
         std::fs::read_to_string(path).unwrap()
     }
+}
+
+#[test]
+fn waiting_sessions_accept_send_and_attach_and_runs_labels_both_states() {
+    let ui = WaitingUi::new();
+    let waiting = ui.waiting("exit 75", false);
+    let active = ui.e.create(&["Still working"]);
+    ui.claim(&active, "new-session", true);
+
+    for args in [
+        vec!["send", waiting.as_str(), "keep going"],
+        vec!["attach", waiting.as_str()],
+    ] {
+        let out = ui.cmd().arg("--json").args(&args).output().unwrap();
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(out.status.success(), "{args:?}: {v:#}");
+        assert_eq!(v["data"]["terminal"], "exact-origin");
+    }
+    assert_eq!(ui.text("messages"), "exact-origin\nkeep going\n");
+    assert_eq!(ui.text("attachments"), "exact-origin\n");
+
+    let runs = ui.e.ok(&["runs"]);
+    let rows = runs.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    for (id, state) in [(&waiting, "waiting"), (&active, "claimed")] {
+        let row = rows.iter().find(|r| r["issue"] == *id).unwrap();
+        assert_eq!(row["state"], state);
+    }
+    let out =
+        ui.e.cmd()
+            .args(["--format", "pretty", "runs"])
+            .output()
+            .unwrap();
+    assert!(out.status.success());
+    let table = String::from_utf8(out.stdout).unwrap();
+    assert!(table.lines().next().unwrap().contains("STATE"), "{table}");
+    for (id, state) in [(&waiting, "waiting"), (&active, "claimed")] {
+        let row = table.lines().find(|line| line.contains(id)).unwrap();
+        assert!(row.contains(state), "{table}");
+    }
+}
+
+#[test]
+fn send_and_attach_refuse_waiting_terminals_after_close_or_reopen() {
+    for transition in ["close", "reopen"] {
+        let ui = WaitingUi::new();
+        let id = ui.waiting("exit 75", false);
+        ui.e.ok(&[transition, &id]);
+
+        for args in [
+            vec!["send", id.as_str(), "do not deliver"],
+            vec!["attach", id.as_str()],
+        ] {
+            let out = ui.cmd().arg("--json").args(&args).output().unwrap();
+            let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(out.status.code(), Some(3), "{args:?}: {v:#}");
+            assert_eq!(v["error"]["code"], "not_found");
+        }
+        assert_eq!(ui.text("messages"), "");
+        assert_eq!(ui.text("attachments"), "");
+        assert!(ui.e.ok(&["runs"]).as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn send_and_attach_prefer_active_claim_even_without_a_terminal() {
+    for terminal in [Some("new-session"), None] {
+        let ui = WaitingUi::new();
+        let id = ui.waiting("exit 75", false);
+        ui.e.ok(&["reopen", &id]);
+        if let Some(terminal) = terminal {
+            ui.claim(&id, terminal, true);
+        } else {
+            ui.e.ok(&["claim", &id, "--as", "agent:omp:replacement"]);
+        }
+
+        for args in [
+            vec!["send", id.as_str(), "replacement only"],
+            vec!["attach", id.as_str()],
+        ] {
+            let out = ui.cmd().arg("--json").args(&args).output().unwrap();
+            let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+            if let Some(terminal) = terminal {
+                assert!(out.status.success(), "{args:?}: {v:#}");
+                assert_eq!(v["data"]["terminal"], terminal);
+            } else {
+                assert_eq!(out.status.code(), Some(3), "{args:?}: {v:#}");
+                assert_eq!(v["error"]["code"], "not_found");
+            }
+        }
+        if terminal.is_some() {
+            assert_eq!(ui.text("messages"), "new-session\nreplacement only\n");
+            assert_eq!(ui.text("attachments"), "new-session\n");
+        } else {
+            assert_eq!(ui.text("messages"), "");
+            assert_eq!(ui.text("attachments"), "");
+        }
+    }
+}
+
+#[test]
+fn reap_skips_waiting_sessions_even_when_their_mcp_server_has_exited() {
+    let ui = WaitingUi::new();
+    let waiting = ui.waiting("exit 75", false);
+    let dead = ui.e.create(&["Ended active session"]);
+    ui.claim(&dead, "dead-session", false);
+    let alive = ui.e.create(&["Live active session"]);
+    ui.claim(&alive, "new-session", true);
+    let before = ui.e.ok(&["show", &waiting, "--with", "all"]);
+
+    let reaped = ui.e.ok(&["reap"]);
+    assert_eq!(reaped.as_array().unwrap().len(), 1);
+    assert_eq!(reaped[0]["issue"], dead);
+    assert_eq!(ui.e.ok(&["show", &dead])["state"], "open");
+    assert_eq!(ui.e.ok(&["show", &alive])["state"], "claimed");
+    assert_eq!(ui.e.ok(&["show", &waiting, "--with", "all"]), before);
+    assert!(ui.e.ok(&["reap"]).as_array().unwrap().is_empty());
+    let runs = ui.e.ok(&["runs"]);
+    assert_eq!(runs.as_array().unwrap().len(), 2);
+    assert!(
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["issue"] == waiting && row["state"] == "waiting")
+    );
 }
 
 #[test]

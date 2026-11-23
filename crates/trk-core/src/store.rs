@@ -370,6 +370,24 @@ impl<'a> Ctx<'a> {
             .optional()?)
     }
 
+    /// The active claim, or the latest claim released to the current waiting issue.
+    /// A waiting session holds no claim and must not authorize lifecycle changes.
+    pub fn session_claim(&self, issue_id: &str) -> Result<Option<Claim>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT {CLAIM_COLS} FROM claim c
+                     LEFT JOIN actor a ON a.id = c.actor JOIN issue i ON i.id = c.issue_id
+                     WHERE c.issue_id = ?1 AND {SESSION_CLAIM_FILTER}
+                     ORDER BY c.released_at IS NOT NULL LIMIT 1"
+                ),
+                [issue_id],
+                row_to_claim,
+            )
+            .optional()?)
+    }
+
     pub fn claims(&self, issue_id: &str) -> Result<Vec<Claim>> {
         let mut st = self.conn.prepare(&format!(
             "SELECT {CLAIM_COLS} FROM claim c LEFT JOIN actor a ON a.id = c.actor WHERE c.issue_id = ?1 ORDER BY c.id"
@@ -413,6 +431,11 @@ impl<'a> Ctx<'a> {
         Ok(v)
     }
 }
+
+pub(crate) const SESSION_CLAIM_FILTER: &str = "(c.released_at IS NULL OR (
+        i.state = 'waiting' AND c.release_reason = 'waiting'
+        AND c.id = (SELECT max(latest.id) FROM claim latest WHERE latest.issue_id = c.issue_id)
+    ))";
 
 pub const CLAIM_COLS: &str = "c.id, c.issue_id, c.actor, a.on_behalf_of, c.claimed_at, c.lease_until, c.worktree, \
      c.host, c.agent, c.terminal, c.released_at, c.release_reason";

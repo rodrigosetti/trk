@@ -130,7 +130,7 @@ impl TrkServer {
         }
         if self.inner.agent.inbox {
             let msgs = store.write(&self.inner.session.actor, false, |c| {
-                if c.active_claim(&self.inner.session.issue)?
+                if c.session_claim(&self.inner.session.issue)?
                     .is_some_and(|cl| cl.actor == c.actor_str())
                 {
                     c.take_inbox(&self.inner.session.issue)

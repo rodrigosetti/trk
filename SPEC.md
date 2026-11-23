@@ -111,7 +111,7 @@ Error is the default. A command that is misspelled, whose credentials expired, o
 
 A check may do the remaining work (merge the branch) or only look (is the PR merged?). It must be safe to run more than once: `trk check` may die between running a command and recording its result, and the next pass runs it again.
 
-Entering waiting releases the claim with reason `waiting`. The session is over; nobody holds the issue. Running `wait` on an issue that is already waiting replaces its check, interval and reason, which is how a human repairs a bad check without reopening.
+Entering waiting releases the claim with reason `waiting`; nobody holds the issue. The session and terminal may stay open as the waiting session (see Claims). Running `wait` on an issue that is already waiting replaces its check, interval and reason, which is how a human repairs a bad check without reopening.
 
 ### Actors
 
@@ -131,8 +131,9 @@ The kind ends at the first colon, and for agents the harness ends at the second.
 - Only the claimant may close, wait or unclaim a claimed issue; a human's `--force` overrides and is recorded.
 - A claim ends with one of: `closed`, `waiting`, `unclaimed`, `expired`, `stolen`.
 - For agent actors, a claim also records the agent definition (`agent`) and the launcher terminal (`terminal`), both set by `trk run`.
+- The **waiting session** is the actor of the latest claim, if that claim was released with reason `waiting` and the issue is still waiting. It holds no claim or lease. Closing or reopening the issue ends this access; a later claim replaces the old session.
 
-**Enforcement.** Agent actors write only to issues they currently claim, plus creating follow-ups of such an issue; the rule is in `trk-core` and applies to the CLI as well. An agent with a shell can still run `trk` as a human, so hard isolation requires running the harness where the database is not reachable.
+**Enforcement.** Agent actors write only to issues they currently claim, plus creating follow-ups of such an issue. A waiting session may still append notes and create follow-ups, but may not close, wait, hand back or otherwise mutate the issue. The rule is in `trk-core` and applies to the CLI as well. An agent with a shell can still run `trk` as a human, so hard isolation requires running the harness where the database is not reachable.
 
 ### Notes and history
 
@@ -238,7 +239,9 @@ The harness starts `trk mcp --issue <ID> --actor <actor> --agent <name>` over st
 | `close` | `reason` (`done`, `abandoned`), `note` | claimed → closed |
 | `wait` | `reason`, `check?`, `interval?` | claimed → waiting |
 
-The set is fixed. An agent definition may narrow it with `trk_tools.include`. After `close`, `wait` or `hand_back` the claim is gone and every further call fails with `not_permitted`.
+The set is fixed. An agent definition may narrow it with `trk_tools.include`. `get_task` remains readable without a claim. After `wait`, the waiting session may call `add_note` and `report_followup`; `wait`, `close` and `hand_back` remain refused because it holds no claim. Once the issue leaves waiting, this exception ends. After `close` or `hand_back`, further writes are refused.
+
+With `inbox = true`, `trk note <ID> --to-agent` messages are attached once to the owning active or waiting session's next tool result, including an error result. An old or unrelated session cannot consume them. Waiting sessions do not renew the released claim's lease.
 
 ### Prompt channels
 
@@ -263,7 +266,7 @@ trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]
 5. Render the launch spec: briefing, MCP server list (trk plus the agent's others), environment (`TRK_ACTOR`, for attribution only), files, argv.
 6. Start in a new Herdr space when enabled and available, otherwise use the launcher's `start` template. `--print` emits the launch spec as JSON instead; `--dry-run` also skips the claim.
 
-Related commands: `trk attach <ID>` and `trk send <ID>` (only when their launcher templates are set), `trk runs` (active claims with their terminals), `trk reap` (releases claims whose MCP server has gone, recording the exit as a note).
+Related commands: `trk attach <ID>` and `trk send <ID>` (only when their launcher templates are set) target the active claim's terminal, or the waiting session's terminal when there is no active claim. An active claim takes precedence even if it has no terminal; historical terminals are never a fallback once the issue leaves waiting. `trk runs` lists active and waiting agent sessions with `state` (`claimed` or `waiting`), agent, harness, terminal and claim metadata. A waiting row's lease is historical, not active. `trk reap` releases active claims whose MCP server has gone, recording the exit as a note; it leaves waiting sessions alone.
 
 The worktree outlives the claim: a waiting issue's check runs in it. trk never removes worktrees.
 
@@ -463,8 +466,8 @@ Every command builds one typed result, then renders it in the requested format. 
 | `trk log <ID>` | Timeline: events and notes |
 | **Agent sessions** |  |
 | `trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]` | Start an agent session; agent override is one-off |
-| `trk runs` | Active agent claims with agent, harness, terminal and lease |
-| `trk attach <ID>` / `trk send <ID> TEXT` | Attach to or type into the session |
+| `trk runs` | Active and waiting agent sessions, marked by state, with agent, harness, terminal and claim metadata |
+| `trk attach <ID>` / `trk send <ID> TEXT` | Attach to or type into the active session, or the waiting session when no claim is active |
 | `trk reap` | Release claims whose session has ended, with a note |
 | `trk mcp --issue ID --actor A --agent N` | The per-issue MCP server (started by the harness, not by hand) |
 | `trk agent list` / `preview <agent> [--issue ID]` / `check` | Inspect and validate agent definitions |

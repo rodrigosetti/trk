@@ -64,12 +64,14 @@ Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `cl
 | `trk dep add or rm <BLOCKER> <BLOCKED>` | Blocker edges |
 | `trk log <ID>` | Timeline |
 | `trk run [ID] [--agent A] [--harness H] [--dry-run or --print]` | Start an agent session; without ID, first ready issue by priority then age; agent override is one-off |
-| `trk runs`, `trk send <ID> TEXT`, `trk reap` | Watch, steer and clean up sessions |
+| `trk runs`, `trk send <ID> TEXT`, `trk reap` | List active/waiting sessions by state, steer the active or waiting terminal, release only ended active claims |
 | `trk agent list`, `trk agent preview <agent> [--issue ID]`, `trk agent check` | Inspect agents |
 | `trk install [--force] [--prefix P]` | Set trk up in a project: `.trk/` (database, config) and this skill; safe to repeat |
 | `trk whoami`, `trk backup <PATH>` | Environment and backup |
 
 `-d` and `-c` take text, `@file`, or `@-` for stdin.
+
+`trk attach <ID>` interactively takes over the same terminal as `send`; suggest it to the user rather than running it. Active claims take precedence even without a terminal. With no active claim, `send`, `attach` and inbox delivery use the latest claim only if released with reason `waiting` and the issue is still waiting. That session may add notes and report follow-ups, but cannot change lifecycle state. Once the issue closes, reopens or is claimed again, the old session loses this access.
 
 ## Errors
 

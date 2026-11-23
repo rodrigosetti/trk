@@ -149,7 +149,7 @@ pub fn error_json(e: &Error) -> Value {
         && let Value::Object(m) = &mut v
     {
         m.entry("hint").or_insert(json!(
-            "your claim on this issue is gone (released, expired or stolen); stop working on it"
+            "this write requires your active claim, except notes and follow-ups from your waiting session"
         ));
     }
     v

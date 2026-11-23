@@ -63,15 +63,16 @@ upgrade. Otherwise:
    directory. Restart/reconnect through the harness if supported; otherwise preserve the
    session context and restart the harness with its existing MCP configuration.
    trk does not hot-reload migrations or automatically replace/re-exec a running MCP server.
-3. Call `get_task` after reconnecting. Reads work without an active claim, but writes and
-   `hand_back` still require legitimate ownership. If the original claim remains active,
-   resume or hand back normally. Lease renewal cannot access an incompatible database, so
-   do not assume a long-interrupted session still owns its issue.
-4. If the claim was released, expired or taken over, stop agent writes. The human can record
-   preserved handoff text with their own identity (`trk note <ID> ...`). If further work is
-   needed, they can end the stale session and use `trk run <ID>` once the issue is open and
-   ready. If blocked, resolve its blockers first; do not steal a claim, remove dependencies,
-   impersonate another actor or edit the database merely to recover a handoff.
+3. Call `get_task` after reconnecting. Reads work without an active claim. If the original
+   claim remains active, resume or hand back normally. Lease renewal cannot access an
+   incompatible database, so do not assume a long-interrupted session still owns its issue.
+4. If this is the waiting session (the latest claim was released with reason `waiting`,
+   and the issue is still waiting), notes and follow-ups still work; lifecycle changes do
+   not. Otherwise stop agent writes. The human can record preserved handoff text with
+   their own identity (`trk note <ID> ...`). If further work is needed, they can end the
+   stale session and use `trk run <ID>` once the issue is open and ready. If blocked,
+   resolve its blockers first; do not steal a claim, remove dependencies, impersonate
+   another actor or edit the database merely to recover a handoff.
 
 Restarting an MCP server does not claim an issue or bypass dependency/ownership checks.
 
@@ -199,7 +200,7 @@ full, and `trk check --dry-run` shows the queue before anything runs.
 ```sh
 trk run                          # start the highest-priority ready issue
 trk run orch-4kq                 # claim as agent:<harness>:<uuid>, create the worktree, start in hc
-trk runs                         # active agent claims: agent, harness, terminal, lease, MCP liveness
+trk runs                         # active and waiting sessions: state, terminal, claim metadata, MCP liveness
 trk attach orch-4kq              # take over the terminal
 trk note orch-4kq --to-agent "Also update the docs"   # delivered with the agent's next tool result
 trk send orch-4kq "Wrap up and finish"                # typed into the session
@@ -224,6 +225,16 @@ The MCP server (`trk mcp --issue … --actor … --agent …`, started by the ha
 issue with six tools: `get_task`, `add_note`, `report_followup`, `hand_back`, `close` and `wait`.
 It renews the claim's lease while it runs. The briefing carries the issue's description and every
 note, which is how an issue that came back from a failed check explains itself.
+
+Leaving an issue waiting releases the claim, not the terminal. While the issue stays
+waiting, the actor of its latest claim released with reason `waiting` can still call
+`add_note` and `report_followup`, and receive `--to-agent` notes with its next tool result.
+It cannot call `wait`, `close` or `hand_back` again without a claim. `trk send` and
+`trk attach` use that waiting session's terminal when there is no active claim; an
+active claim always takes precedence, even if it has no terminal. `trk runs` marks
+waiting sessions with `state: "waiting"` (their displayed lease is historical), and
+`trk reap` skips them. Closing, reopening or claiming the issue for a replacement ends
+the old session's access.
 
 With `[launcher] herdr = true`, each run opens a **new Herdr space**, named with the issue's title
 and rooted in its worktree. Its first terminal runs the agent directly; the launching space and

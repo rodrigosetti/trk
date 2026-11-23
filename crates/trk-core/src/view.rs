@@ -1,5 +1,5 @@
 //! Read models: the issue object of `show --json`, derived state, list,
-//! timeline and active agent runs. `derived` is computed here, never stored.
+//! timeline and active or waiting agent runs. `derived` is computed here, never stored.
 
 use std::collections::BTreeMap;
 
@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use crate::error::Result;
 use crate::model::*;
 use crate::query;
-use crate::store::{CLAIM_COLS, Ctx, ISSUE_COLS, row_to_claim, row_to_issue};
+use crate::store::{CLAIM_COLS, Ctx, ISSUE_COLS, SESSION_CLAIM_FILTER, row_to_claim, row_to_issue};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct With {
@@ -229,12 +229,12 @@ impl Ctx<'_> {
         self.events(&id)
     }
 
-    /// Active agent claims with their agent, harness, terminal and lease.
+    /// Active and waiting agent sessions with their terminal and claim metadata.
     pub fn runs(&self) -> Result<Vec<Value>> {
         let mut st = self.conn.prepare(&format!(
             "SELECT {CLAIM_COLS}, a.harness, a.meta, i.title
              FROM claim c JOIN actor a ON a.id = c.actor JOIN issue i ON i.id = c.issue_id
-             WHERE c.released_at IS NULL AND a.kind = 'agent' ORDER BY c.claimed_at"
+             WHERE {SESSION_CLAIM_FILTER} AND a.kind = 'agent' ORDER BY c.claimed_at, c.id"
         ))?;
         let rows = st.query_map([], |r| {
             let c = row_to_claim(r)?;
@@ -248,6 +248,11 @@ impl Ctx<'_> {
             let (c, harness, meta, title) = row?;
             let mut v = self.claim_json(&c);
             v["issue"] = json!(c.issue_id);
+            v["state"] = json!(if c.released_at.is_some() {
+                "waiting"
+            } else {
+                "claimed"
+            });
             v["title"] = json!(title);
             v["harness"] = json!(harness);
             v["meta"] = serde_json::from_str(&meta).unwrap_or(json!({}));

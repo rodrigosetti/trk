@@ -455,11 +455,12 @@ pub fn runs(env: &Env) -> Result<Out> {
     let mut t = comfy_table::Table::new();
     t.load_style(comfy_table::presets::NOTHING);
     t.set_header([
-        "ISSUE", "AGENT", "HARNESS", "TERMINAL", "LEASE", "MCP", "TITLE",
+        "ISSUE", "STATE", "AGENT", "HARNESS", "TERMINAL", "LEASE", "MCP", "TITLE",
     ]);
     for r in &runs {
         t.add_row([
             r["issue"].as_str().unwrap_or("").to_string(),
+            r["state"].as_str().unwrap_or("").to_string(),
             r["agent"].as_str().unwrap_or("").to_string(),
             r["harness"].as_str().unwrap_or("").to_string(),
             r["terminal"].as_str().unwrap_or("").to_string(),
@@ -473,7 +474,7 @@ pub fn runs(env: &Env) -> Result<Out> {
         ]);
     }
     let text = if runs.is_empty() {
-        "no active agent runs".to_string()
+        "no active or waiting agent sessions".to_string()
     } else {
         t.to_string()
     };
@@ -484,7 +485,7 @@ fn terminal_of(env: &Env, id: &str) -> Result<(String, String)> {
     let store = env.store()?;
     store.read(None, |c| {
         let id = c.resolve_id(id)?;
-        let claim = c.active_claim(&id)?;
+        let claim = c.session_claim(&id)?;
         let t = claim.and_then(|c| c.terminal).ok_or_else(|| {
             Error::new(
                 Code::NotFound,
@@ -576,7 +577,7 @@ pub fn reap(env: &Env) -> Result<Out> {
     let runs = store.read(None, |c| c.runs())?;
     let mut reaped = vec![];
     for r in runs {
-        if mcp_alive(&r["meta"]) != Some(false) {
+        if r["state"] != "claimed" || mcp_alive(&r["meta"]) != Some(false) {
             continue;
         }
         let id = r["issue"].as_str().unwrap_or_default().to_string();

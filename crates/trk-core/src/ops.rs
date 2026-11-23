@@ -35,7 +35,7 @@ pub struct NewIssue {
     pub blocked_by: Vec<String>,
     /// Issues the new one blocks.
     pub blocks: Vec<String>,
-    /// The issue this one was discovered from. Agents must claim it.
+    /// The issue this one was discovered from. Agents must own its active or waiting session.
     pub followup_of: Option<String>,
 }
 
@@ -217,12 +217,12 @@ impl Ctx<'_> {
             .is_some_and(|c| c.actor == self.actor_str()))
     }
 
-    /// Agent actors write only to issues they currently claim.
+    /// Require the supplied claim or session to belong to the acting agent.
     fn agent_gate(&self, issue_id: &str, claim: &Option<Claim>) -> Result<()> {
         if self.actor().is_agent() && claim.as_ref().is_none_or(|c| c.actor != self.actor_str()) {
             return Err(Error::new(
                 Code::NotPermitted,
-                "agent actors may only write to issues they currently claim",
+                "agent actors may only write with an active claim or, for notes and follow-ups, their waiting session",
             )
             .with_issue(issue_id));
         }
@@ -297,13 +297,15 @@ impl Ctx<'_> {
             .transpose()?;
         if self.actor().is_agent() {
             let ok = match &followup_of {
-                Some(p) => self.is_claimed_by_me(p)?,
+                Some(p) => self
+                    .session_claim(p)?
+                    .is_some_and(|c| c.actor == self.actor_str()),
                 None => false,
             };
             if !ok {
                 return Err(Error::new(
                     Code::NotPermitted,
-                    "agent actors may create issues only as follow-ups of an issue they claim",
+                    "agent actors may create issues only as follow-ups of their active or waiting session",
                 ));
             }
         }
@@ -896,7 +898,7 @@ impl Ctx<'_> {
 
     pub fn note(&self, id: &str, body: &str, amends: Option<i64>, to_agent: bool) -> Result<i64> {
         let id = self.resolve_id(id)?;
-        let claim = self.active_claim(&id)?;
+        let claim = self.session_claim(&id)?;
         self.agent_gate(&id, &claim)?;
         if body.trim().is_empty() {
             return Err(bad_args("a note needs text"));

@@ -121,13 +121,15 @@ trk dep rm <BLOCKER> <BLOCKED> --json
 trk run --json                            # start the first ready issue
 trk run <ID> --dry-run --json             # preview: agent, harness, worktree, briefing
 trk run <ID> --json                       # claim and start the agent in its own terminal
-trk runs --json                           # active sessions: agent, terminal, lease, MCP liveness
+trk runs --json                           # active and waiting sessions: state, terminal, claim metadata, MCP liveness
 trk note <ID> --to-agent "Also update the docs" --json   # delivered with its next tool result
 trk send <ID> "Wrap up and finish" --json                # typed into its terminal
 trk reap --json                           # release claims whose session has ended
 ```
 
-Only ready issues can be run. A session ends by closing, waiting or handing back; an issue whose check failed is ready again, and its notes tell the next session why. Do not run `trk attach`: it takes over the terminal interactively, so suggest it to the user instead.
+Only ready issues can be run. A session releases its claim by closing, waiting or handing back; an issue whose check failed is ready again, and its notes tell the next session why. Do not run `trk attach`: it takes over the terminal interactively, so suggest it to the user instead.
+
+The waiting session is the actor of the latest claim released with reason `waiting`, only while the issue is still waiting. It can keep notes, file follow-ups and receive `--to-agent` messages, but cannot `wait`, `close` or `hand_back` again. `send` and `attach` use its terminal when no active claim exists; an active claim always wins, even without a terminal. `runs` marks it with `state: "waiting"`; its lease is historical and `reap` skips it. Closing, reopening or a replacement claim ends the old session's access.
 
 Without an ID, `trk run` selects by priority, then oldest creation time, then ID, matching
 `trk ready`. No ready issues is an error. `trk run --dry-run --json` previews the selection.

@@ -344,11 +344,12 @@ fn waiting_releases_the_claim_and_keeps_the_worktree() {
     assert_eq!(v["waiting"]["interval"], 120);
     assert_eq!(v["derived"]["due"], true);
     assert_eq!(ids(&s, "due"), vec![id.clone()]);
-    // The agent has let go: it can no longer write.
-    let e = s
-        .write(AGENT, false, |c| c.note(&id, "x", None, false))
-        .unwrap_err();
-    assert_eq!(e.code(), Code::NotPermitted);
+    // The waiting session may keep notes without reclaiming the issue.
+    s.write(AGENT, false, |c| {
+        c.note(&id, "review addressed", None, false)
+    })
+    .unwrap();
+    assert!(s.read(None, |c| c.active_claim(&id)).unwrap().is_none());
     // A waiting issue cannot be claimed; a human changes its check in place.
     let e = s
         .write(HUMAN, false, |c| c.claim(&id, ClaimOpts::default()))
@@ -359,6 +360,128 @@ fn waiting_releases_the_claim_and_keeps_the_worktree() {
     assert_eq!(i.waiting_check.as_deref(), Some("true"));
     assert_eq!(i.wait_cwd.as_deref(), Some("/tmp/wt"));
     assert_eq!(i.check_interval, Some(300));
+}
+
+#[test]
+fn waiting_session_permissions_end_when_waiting_ends() {
+    for transition in ["close", "reopen", "pass", "fail"] {
+        let (_d, mut s) = setup();
+        let id = create(&mut s, "Waiting work");
+        claim(&mut s, AGENT, &id);
+        wait(&mut s, AGENT, &id, Some("check"), Some("review"));
+        let follow = || NewIssue {
+            followup_of: Some(id.clone()),
+            ..new("Follow-up")
+        };
+        s.write(AGENT, false, |c| c.create(follow())).unwrap();
+        assert_eq!(
+            s.write(AGENT2, false, |c| c.note(&id, "not mine", None, false))
+                .unwrap_err()
+                .code(),
+            Code::NotPermitted
+        );
+        assert_eq!(
+            s.write(AGENT2, false, |c| c.create(follow()))
+                .unwrap_err()
+                .code(),
+            Code::NotPermitted
+        );
+        assert_eq!(
+            s.write(AGENT, false, |c| c.close(&id, "done", None, false))
+                .unwrap_err()
+                .code(),
+            Code::NotPermitted
+        );
+        assert_eq!(
+            s.write(AGENT, false, |c| c.wait(&id, WaitOpts::default()))
+                .unwrap_err()
+                .code(),
+            Code::NotPermitted
+        );
+        assert_eq!(
+            s.write(AGENT, false, |c| c.edit(
+                &id,
+                Edit {
+                    title: Some("not allowed".into()),
+                    ..Default::default()
+                }
+            ))
+            .unwrap_err()
+            .code(),
+            Code::NotPermitted
+        );
+        let runs = s.read(None, |c| c.runs()).unwrap();
+        assert_eq!(runs[0]["actor"], AGENT);
+        assert_eq!(runs[0]["state"], "waiting");
+        match transition {
+            "close" => s
+                .write(HUMAN, false, |c| c.close(&id, "done", None, false))
+                .unwrap(),
+            "reopen" => s.write(HUMAN, false, |c| c.reopen(&id, None)).unwrap(),
+            "pass" => assert_eq!(
+                record(&mut s, &id, "check", &run(0, "")),
+                CheckResult::Passed
+            ),
+            "fail" => assert_eq!(
+                record(&mut s, &id, "check", &run(1, "")),
+                CheckResult::Failed
+            ),
+            _ => unreachable!(),
+        }
+        assert!(s.read(None, |c| c.session_claim(&id)).unwrap().is_none());
+        assert!(s.read(None, |c| c.runs()).unwrap().is_empty());
+        assert_eq!(
+            s.write(AGENT, false, |c| c.note(&id, "too late", None, false))
+                .unwrap_err()
+                .code(),
+            Code::NotPermitted
+        );
+        assert_eq!(
+            s.write(AGENT, false, |c| c.create(follow()))
+                .unwrap_err()
+                .code(),
+            Code::NotPermitted
+        );
+    }
+}
+
+#[test]
+fn only_the_latest_session_can_act_when_waiting_again() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    wait(&mut s, AGENT, &id, None, Some("first review"));
+    s.write(HUMAN, false, |c| c.reopen(&id, None)).unwrap();
+    claim(&mut s, AGENT2, &id);
+    assert_eq!(
+        s.read(None, |c| c.session_claim(&id))
+            .unwrap()
+            .unwrap()
+            .actor,
+        AGENT2
+    );
+    wait(&mut s, AGENT2, &id, None, Some("second review"));
+    s.write(AGENT2, false, |c| {
+        c.note(&id, "current session", None, false)
+    })
+    .unwrap();
+    assert_eq!(
+        s.write(AGENT, false, |c| c.note(&id, "old session", None, false))
+            .unwrap_err()
+            .code(),
+        Code::NotPermitted
+    );
+    let runs = s.read(None, |c| c.runs()).unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["actor"], AGENT2);
+    assert_eq!(runs[0]["state"], "waiting");
+    assert_eq!(
+        s.read(None, |c| c.session_claim(&id))
+            .unwrap()
+            .unwrap()
+            .actor,
+        AGENT2
+    );
 }
 
 #[test]

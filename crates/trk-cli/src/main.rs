@@ -266,7 +266,7 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Active agent claims with agent, harness, terminal and lease
+    /// Active and waiting agent sessions with state, terminal and lease
     Runs,
     /// Attach to the session's terminal
     Attach { id: String },
