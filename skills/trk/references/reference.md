@@ -41,9 +41,12 @@ Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `cl
 | `state`, `close_reason` | where it is |
 | `claim` | the active claim: `actor`, `claimed_at`, `lease_until`, `worktree`, `agent`, `terminal` |
 | `waiting` | while waiting: `reason`, `check`, `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit`, `cwd` |
+| `wake_count` | top-level session restoration count; included only when nonzero and the issue is claimed or waiting |
 | `deps` | `blocked_by` and `blocks`, each a list of `{id, title, state, priority}` |
 | `derived` | `ready`, `blocked_by` (open blockers), `due`, `progress` (`{total, closed}` blockers), `unblocks_higher_priority` |
 | `notes`, `events`, `claims` | with `--with notes,events,claims` (notes are included by default) |
+
+Pretty `trk show` displays the same nonzero count as a `wakes` line while claimed or waiting.
 
 ## Commands
 
@@ -73,7 +76,9 @@ Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `cl
 
 `trk attach <ID>` interactively takes over the same terminal as `send`; suggest it to the user rather than running it. Active claims take precedence even without a terminal. With no active claim, `send`, `attach` and inbox delivery use the latest claim only if released with reason `waiting` and the issue is still waiting. That session may add notes and report follow-ups, but cannot change lifecycle state. Once the issue closes, reopens or is claimed again, the old session loses this access.
 
-`trk check --json` results: `passed` closes, `retry` keeps waiting, `woken` restores the live waiting session's claim and sends a repair prompt, `failed` reopens (no live session or failed delivery), and `skipped` means the issue changed during the check or wake delivery. `woken` and `failed` include output, also saved in a note. Liveness requires the original MCP server on this host, a terminal (present in Herdr when enabled), and `[launcher] send`. trk only interprets exit codes; timeout is failure, exit 75 is retry.
+`trk check --json` results: `passed` closes, `retry` keeps waiting, `woken` restores the live waiting session's claim and sends a repair prompt, `failed` reopens (no live session, wake cap reached or failed delivery), and `skipped` means the issue changed during the check or wake delivery. `woken` and `failed` include output, also saved in a note. Liveness requires the original MCP server on this host, a terminal (present in Herdr when enabled), and `[launcher] send`. trk only interprets exit codes; timeout is failure, exit 75 is retry.
+
+`[check] max_wakes` caps claim restorations per session: default `5`, including when omitted from older configs; `0` disables waking. The cap check and persistent `wake_count` increment happen transactionally with claim restoration, before delivery, so a failed send still consumes a wake. Passes, retries and failures without restoration do not increment it. Entering or updating waiting preserves it. A fresh explicit claim, including `--steal`, resets it to zero; an idempotent claim by the current owner does not. Wake prompts include `wake N of M`. At the cap, a failed check reopens the issue with `wake cap of M reached` and the command's output in its note.
 
 ## Errors
 

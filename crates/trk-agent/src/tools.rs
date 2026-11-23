@@ -115,7 +115,8 @@ pub fn catalogue() -> Vec<ToolDef> {
                  exit 0 closes the issue as done; exit {CHECK_RETRY_EXIT} means not yet, check again after `interval`; \
                  any other exit or timeout records the output as a note and wakes you to fix the failure if your session is still alive. \
                  Your claim and tools are restored; address the failure and end again, normally with wait. \
-                 If your session is gone or wake delivery fails, the issue returns to open for a new session. \
+                 If your session is gone, wake delivery fails, or [check] max_wakes is reached, the issue returns to open for a new session. \
+                 The wake cap defaults to 5 per session; 0 disables waking. Each wake includes its count. \
                  The command may do the remaining work itself (merge the branch) or only look (is the PR merged?). \
                  It runs unattended and may run more than once: make it non-interactive and safe to repeat. \
                  Without `check`, the issue waits for a human to close or reopen it."

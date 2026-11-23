@@ -1976,6 +1976,7 @@ fn waiting_check_normalizes_edge_markers_and_preserves_embedded_literal_text() {
 fn failed_and_retrying_waiting_checks_do_not_mark_spaces_closed() {
     for (exit, result, state) in [(1, "woken", "claimed"), (75, "retry", "waiting")] {
         let ui = WaitingUi::new();
+        ui.e.set_config("max_wakes = 5", "");
         let id = ui.waiting(&format!("echo failure evidence; exit {exit}"), true);
         let out = ui.check(&id, "");
         assert_eq!(out["result"], result);
@@ -1986,6 +1987,7 @@ fn failed_and_retrying_waiting_checks_do_not_mark_spaces_closed() {
         if exit == 1 {
             assert!(messages.starts_with("exact-origin\n"), "{messages}");
             assert!(messages.contains("waiting check failed"), "{messages}");
+            assert!(messages.contains("wake 1 of 5"), "{messages}");
             assert!(messages.contains("failure evidence"), "{messages}");
             assert!(messages.contains("Address the failure"), "{messages}");
             assert!(messages.contains("calling wait"), "{messages}");
@@ -2004,6 +2006,76 @@ fn failed_and_retrying_waiting_checks_do_not_mark_spaces_closed() {
             assert_eq!(messages, "");
         }
     }
+}
+
+#[test]
+fn wake_budget_is_shown_in_both_active_states_and_caps_delivered_wakes() {
+    let ui = WaitingUi::new();
+    ui.e.set_config("max_wakes = 5", "max_wakes = 2");
+    let check = "echo capped failure evidence; exit 1";
+    let id = ui.waiting(check, true);
+    assert!(ui.e.ok(&["show", &id]).get("wake_count").is_none());
+    for count in 1..=2 {
+        assert_eq!(ui.check(&id, "")["result"], "woken");
+        let issue = ui.e.ok(&["show", &id]);
+        assert_eq!(issue["state"], "claimed");
+        assert_eq!(issue["wake_count"], count);
+        let messages = ui.text("messages");
+        assert!(
+            messages.contains(&format!("wake {count} of 2")),
+            "{messages}"
+        );
+        for state in ["claimed", "waiting"] {
+            if state == "waiting" {
+                ui.e.ok(&["wait", &id, "--force", "-c", check]);
+            }
+            let issue = ui.e.ok(&["show", &id]);
+            assert_eq!(issue["state"], state);
+            assert_eq!(issue["wake_count"], count);
+            let out = ui
+                .e
+                .cmd()
+                .args(["--format", "pretty", "show", &id])
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            let pretty = String::from_utf8(out.stdout).unwrap();
+            assert!(
+                pretty.lines().any(|line| {
+                    line.contains("wakes") && line.contains(&count.to_string())
+                }),
+                "{pretty}"
+            );
+        }
+    }
+    let messages = ui.text("messages");
+    let result = ui.check(&id, "");
+    assert_eq!(result["result"], "failed");
+    assert_eq!(result["state"], "open");
+    assert_eq!(ui.text("messages"), messages);
+    let issue = ui.e.ok(&["show", &id, "--with", "notes"]);
+    assert!(issue.get("wake_count").is_none());
+    assert!(
+        issue["notes"].as_array().unwrap().iter().any(|note| {
+            let body = note["body"].as_str().unwrap();
+            body.contains("wake cap of 2 reached") && body.contains("capped failure evidence")
+        }),
+        "{issue}"
+    );
+}
+
+#[test]
+fn zero_wake_budget_never_delivers_to_a_live_waiting_session() {
+    let ui = WaitingUi::new();
+    ui.e.set_config("max_wakes = 5", "max_wakes = 0");
+    let id = ui.waiting("echo disabled wake evidence; exit 1", true);
+    let result = ui.check(&id, "");
+    assert_eq!(result["result"], "failed");
+    assert_eq!(result["state"], "open");
+    assert_eq!(ui.text("messages"), "");
+    let issue = ui.e.ok(&["show", &id, "--with", "claims"]);
+    assert!(issue.get("wake_count").is_none());
+    assert_eq!(issue["claims"].as_array().unwrap().len(), 1);
 }
 
 #[test]

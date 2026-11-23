@@ -65,8 +65,8 @@ Everything else on an issue is state the tool owns: `state`, `close_reason`, the
 | claimed | waiting | `wait` with a check, a reason, or both |
 | waiting | closed | the check exits 0 (reason `done`), or a human closes |
 | waiting | waiting | the check exits 75: checked again one interval later |
-| waiting | claimed | the check fails or times out and its original session is alive; restore that session's claim and send a repair prompt |
-| waiting | open | the check fails or times out with no live original session, or a human reopens; an undelivered wake also releases the restored claim to open |
+| waiting | claimed | the check fails or times out, its original session is alive, and its wake count is below `[check] max_wakes`; restore that session's claim and send a repair prompt |
+| waiting | open | the check fails or times out with no live original session or its wake cap reached, or a human reopens; an undelivered wake also releases the restored claim to open |
 | open | closed | a human closes without claiming (cancel) |
 | closed | open | a human reopens |
 
@@ -114,9 +114,11 @@ A check may do the remaining work (merge the branch) or only look (is the PR mer
 
 Entering waiting releases the claim with reason `waiting`; nobody holds the issue. The session and terminal may stay open as the waiting session (see Claims). Running `wait` on an issue that is already waiting replaces its check, interval and reason, which is how a human repairs a bad check without reopening.
 
-On failure, the CLI checks the latest claim released as `waiting`: its MCP server must still be alive on this host, its terminal must be recorded (and present in Herdr when enabled), and `[launcher] send` must be configured. Unknown liveness is not alive. In the same transaction that records the failed check, trk restores that session's actor, worktree, host, agent and terminal in a new claim with a fresh lease. The original MCP server can renew and use its tools again. The CLI then sends a prompt with the check output asking the session to address the failure and end again, normally with `wait`.
+On failure, the CLI checks the latest claim released as `waiting`: its MCP server must still be alive on this host, its terminal must be recorded (and present in Herdr when enabled), and `[launcher] send` must be configured. `[check] max_wakes` limits restorations per session (default `5`, including when omitted from existing configs); `0` disables waking. In the same transaction that records the failed check, trk verifies `wake_count < max_wakes`, restores that session's actor, worktree, host, agent and terminal in a new claim with a fresh lease, and increments the persistent `wake_count`. The original MCP server can renew and use its tools again. The CLI then sends a prompt with `wake N of M` and the check output asking the session to address the failure and end again, normally with `wait`.
 
-With no live session the issue reopens as before. If sending the prompt fails after restoration, trk releases that exact claim and reopens with an explanatory note; it never releases a replacement claim or overrides a subsequent session action. Exit 0 and 75 do not restore claims. trk interprets only exit codes, not PRs, CI or other external state.
+Entering or updating waiting preserves `wake_count`. A fresh explicit claim, including a stolen claim, resets it to zero; an idempotent claim by the current owner does not. Only restoring a claim increments it, not a retry, pass, or failed check that reopens without restoration. While claimed or waiting with a nonzero count, issue JSON includes top-level `wake_count` and pretty `trk show` displays a `wakes` line; otherwise the count is omitted from these displays.
+
+With no live session or the wake cap reached, the issue reopens. A capped failure records `wake cap of M reached` together with the check output in its note. If sending the prompt fails after restoration, trk releases that exact claim and reopens with an explanatory note; it never releases a replacement claim or overrides a subsequent session action, and the restoration still counts. Exit 0 and 75 do not restore claims. trk interprets only exit codes, not PRs, CI or other external state.
 
 ### Actors
 
@@ -173,9 +175,9 @@ One pass:
 
 `TRK_ACTOR` is removed. Stdin is `/dev/null`; stdout and stderr are captured together. The command runs in its own process group, and after `[check] timeout` (default 10m) the group gets `SIGTERM`, then `SIGKILL` two seconds later.
 
-**Recording.** The result is written in one transaction that first re-reads the issue. If it is no longer waiting on exactly the command that ran (a human closed it, reopened it, or changed the check meanwhile), the result is dropped. A requested resumption must still match the latest historical waiting claim. Failed checks restore the claim in this transaction, before sending the repair prompt; failed delivery conditionally releases only that restored claim.
+**Recording.** The result is written in one transaction that first re-reads the issue. If it is no longer waiting on exactly the command that ran (a human closed it, reopened it, or changed the check meanwhile), the result is dropped. A requested resumption must still match the latest historical waiting claim and remain below the wake cap. Failed checks restore the claim and increment the wake count in this transaction, before sending the repair prompt; failed delivery conditionally releases only that restored claim.
 
-**Results.** `trk check --json` reports `passed` (closed), `retry` (waiting), `woken` (failed check, original session resumed), `failed` (failed check, reopened, including failed wake delivery), or `skipped` (changed meanwhile). Both `woken` and `failed` include the output. A failed check is a recorded outcome, not a CLI error. If wake delivery fails but the issue has already moved on, the guarded release does nothing and the result is `skipped`.
+**Results.** `trk check --json` reports `passed` (closed), `retry` (waiting), `woken` (failed check, original session resumed), `failed` (failed check, reopened, including a reached wake cap or failed wake delivery), or `skipped` (changed meanwhile). Both `woken` and `failed` include the output. A failed check is a recorded outcome, not a CLI error. If wake delivery fails but the issue has already moved on, the guarded release does nothing and the result is `skipped`.
 
 **The lock.** A single-row table holds the pid, host and start time of the running pass. It is taken in a write transaction, so two passes cannot both take it. A holder whose process no longer exists on this host is replaced. A holder on another host is never replaced automatically.
 

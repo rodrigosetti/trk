@@ -146,9 +146,17 @@ The check runs with `sh -c` in the worktree the issue was claimed in, with `TRK_
 
 A failed check restores the original session's claim with a fresh lease when its MCP
 server is alive on this host, its terminal is recorded (and present when using Herdr),
-and `[launcher] send` is configured. The session receives the output and a prompt to
-fix the failure and end again, normally with `wait`. Its MCP tools work again.
-If the session is gone or sending fails, the issue is open for another session.
+`[launcher] send` is configured, and its wake count is below `[check] max_wakes`.
+The cap defaults to `5`, including in existing configs that omit it; `0` disables waking.
+Each restored claim increments the session's persistent count, even if sending fails.
+Entering or updating `wait` preserves it. A fresh explicit claim (including `--steal`)
+resets it to zero; repeating a claim as its current owner does not.
+The session receives `wake N of M`, the output and a prompt to fix the failure and end
+again, normally with `wait`. Its MCP tools work again.
+If the cap is reached, the issue reopens with a note saying `wake cap of M reached`
+and retaining the check output. A gone session or failed send also reopens the issue.
+`trk show` displays a `wakes` line for a nonzero count while claimed or waiting;
+issue JSON includes top-level `wake_count` only in those cases.
 `trk check --json` distinguishes `woken` from `failed` (reopened); both include output.
 trk interprets only the check's exit code, not PRs or CI.
 

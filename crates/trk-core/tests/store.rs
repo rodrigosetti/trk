@@ -662,6 +662,102 @@ fn a_failed_check_restores_the_waiting_session_with_a_fresh_claim() {
 }
 
 #[test]
+fn wake_cap_persists_across_waits_and_store_reopens() {
+    let (d, mut s) = setup();
+    s.opts.max_wakes = 2;
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    for count in 1..=2 {
+        let active = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+        wait(&mut s, AGENT, &id, Some("merge"), None);
+        assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().wake_count, count - 1);
+        let result = s
+            .write(HUMAN, false, |c| {
+                c.check_record(&id, "merge", &run(1, "conflict"), Some(active.id))
+            })
+            .unwrap();
+        assert!(matches!(result, CheckResult::Woken { .. }));
+        claim(&mut s, AGENT, &id);
+        assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().wake_count, count);
+    }
+    let active = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    wait(&mut s, AGENT, &id, Some("merge"), None);
+    let opts = StoreOpts {
+        now: s.opts.now,
+        max_wakes: 2,
+        ..Default::default()
+    };
+    drop(s);
+    let mut s = Store::open(&d.path().join("trk.db"), opts).unwrap();
+    assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().wake_count, 2);
+    assert_eq!(
+        s.write(HUMAN, false, |c| {
+            c.check_record(&id, "merge", &run(1, "final conflict"), Some(active.id))
+        })
+        .unwrap(),
+        CheckResult::Failed
+    );
+    assert_eq!(state(&s, &id), State::Open);
+    assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().wake_count, 2);
+    assert!(s.read(None, |c| c.active_claim(&id)).unwrap().is_none());
+    assert_eq!(s.read(None, |c| c.claims(&id)).unwrap().len(), 3);
+    let notes = s.read(None, |c| c.notes(&id)).unwrap();
+    let body = notes.last().unwrap()["body"].as_str().unwrap();
+    assert!(body.contains("wake cap of 2 reached"), "{body}");
+    assert!(body.contains("final conflict"), "{body}");
+    claim(&mut s, AGENT, &id);
+    assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().wake_count, 0);
+}
+
+#[test]
+fn stealing_a_resumed_claim_starts_a_fresh_wake_budget() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    let active = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    wait(&mut s, AGENT, &id, Some("merge"), None);
+    assert!(matches!(
+        s.write(HUMAN, false, |c| {
+            c.check_record(&id, "merge", &run(1, "conflict"), Some(active.id))
+        })
+        .unwrap(),
+        CheckResult::Woken { .. }
+    ));
+    assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().wake_count, 1);
+    s.write(AGENT2, false, |c| {
+        c.claim(
+            &id,
+            ClaimOpts {
+                steal: true,
+                ..Default::default()
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().wake_count, 0);
+}
+
+#[test]
+fn zero_wake_cap_reopens_without_restoring_a_live_candidate() {
+    let (_d, mut s) = setup();
+    s.opts.max_wakes = 0;
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    let active = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    wait(&mut s, AGENT, &id, Some("merge"), None);
+    assert_eq!(
+        s.write(HUMAN, false, |c| {
+            c.check_record(&id, "merge", &run(1, "conflict"), Some(active.id))
+        })
+        .unwrap(),
+        CheckResult::Failed
+    );
+    assert_eq!(state(&s, &id), State::Open);
+    assert_eq!(s.read(None, |c| c.issue(&id)).unwrap().wake_count, 0);
+    assert_eq!(s.read(None, |c| c.claims(&id)).unwrap().len(), 1);
+}
+
+#[test]
 fn stale_or_foreign_resume_candidates_reopen_instead() {
     let (_d, mut s) = setup();
     let foreign = create(&mut s, "Other");

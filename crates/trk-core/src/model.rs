@@ -147,6 +147,8 @@ pub struct Issue {
     pub last_check_at: Option<String>,
     pub last_check_exit: Option<i64>,
     pub wait_cwd: Option<String>,
+    /// Failed-check wakes since the last fresh claim.
+    pub wake_count: u32,
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,

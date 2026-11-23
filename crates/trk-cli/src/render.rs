@@ -364,6 +364,9 @@ impl Renderer {
                 .unwrap_or_default()
         );
         s.push_str(&format!("{}\n", self.dim(&meta)));
+        if let Some(count) = i["wake_count"].as_u64() {
+            s.push_str(&format!("{} {count}\n", self.dim("wakes")));
+        }
         if let Some(routing) = i.get("routing").filter(|r| !r.is_null()) {
             s.push_str(&format!("\n{}\n", self.heading("Routing")));
             if let Some(agent) = routing["agent"].as_str() {
