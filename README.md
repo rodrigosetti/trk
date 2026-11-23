@@ -387,6 +387,9 @@ trk herdr uninstall              # remove the mod and layouts unless you edited 
 - For a **trk dashboard** button above Settings in Herdr's sidebar:
   run `trk herdr install --layout`, then `herdr-app do layout.switch --name main-trk`.
   The button opens the dashboard for the shown space, or focuses its existing trk panel.
+  Unpinned panels follow that space's first terminal with a live folder, in tab order—not
+  keyboard focus or the space's original creation folder. With no live folder, they use
+  the space folder.
   A collapsed sidebar shows just the icon. `main-trk` is a personal copy of Herdr's layout;
   the shipped `main` layout is untouched. Switch back with `herdr-app do layout.switch --name main`.
 - `./install.sh` and `trk install` refresh an installed mod, so it never lags the binary; neither
@@ -409,6 +412,8 @@ trk herdr uninstall              # remove the mod and layouts unless you edited 
   `"global": { "ctrl-shift-i": "trk.new" }`. They reach a shown copy of the panel.
 - By hand: `herdr-app do tab.new --mod trk --props '{"folder": "/path/to/project"}'`. Without
   `folder` a copy follows the shown space; `"select": "<id>"` opens it on an issue.
+  Run the panel's location regressions with
+  `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
 
 ## Configuration
 

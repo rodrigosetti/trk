@@ -12,7 +12,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextView } from "gpui-base";
 import {
-  exec, spaces, panes, agents, terminals, focused, theme, props, run, notify, checking,
+  exec, spaces, panes, agents, terminals, theme, props, run, notify, checking,
   shared, setShared, setBadge, setAgentOrder, nextCommand, watchFolder, layout,
 } from "herdr";
 
@@ -118,14 +118,20 @@ export default class Trk extends View {
 
   // ---------------------------------------------------------------- data
 
-  /** Where to run trk: the given folder, else where the shown space is. */
+  /** The given folder, else the shown space's first live terminal (as in Herdr's panels). */
   location() {
     const space = spaces().find((s) => s.active);
     const folder = props()?.folder;
     if (folder) return { cwd: folder, on: null };
-    const f = focused();
-    const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-    return { cwd: pane?.cwd || space?.folder || null, on: space?.machine ?? null };
+    // Mod tabs have no cwd; space.folder is only where the space was created.
+    // Resolve in space tab order so focusing the dashboard cannot change its project.
+    const all = panes();
+    const on = space?.machine ?? null;
+    for (const tab of space?.tabs ?? []) {
+      const pane = all.find((p) => p.tab === tab.id && p.terminal && p.cwd);
+      if (pane) return { cwd: pane.cwd, on };
+    }
+    return { cwd: space?.folder || null, on };
   }
 
   async trk(args, timeout = 30000) {
