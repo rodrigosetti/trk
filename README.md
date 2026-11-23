@@ -295,6 +295,15 @@ trk run orch-4kq --dry-run       # print the launch spec; claims nothing
 trk agent preview implementer --issue orch-4kq        # instructions, briefing, tool schemas
 ```
 
+In the dashboard, select a waiting / needs-you issue and press `v` to **Resume** the
+original session, including when it has no check. Enter a nonempty continuation message
+(for example, `SSH unlocked; continue`) and press Enter; Esc cancels without changes.
+Resume runs in the background; success confirms claim restoration and instruction delivery,
+not completion by the agent. The row refreshes from the database on success or error.
+`s` **Send** delivers text only and never restores ownership; `x` **Close** and `o` **Reopen**
+remain separate actions. `?` lists the keys. If Resume fails, inspect the error and current
+state; restore session access and retry, or reopen and run a replacement as described above.
+
 Omitting the ID selects the first ready issue, ordered by priority (P0–P3), then oldest
 creation time, then ID, matching `trk ready`. If there are no ready issues, the command
 returns an error without launching a session. `trk run --dry-run` previews the selection.

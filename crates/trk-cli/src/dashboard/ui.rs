@@ -14,11 +14,12 @@ use trk_core::model::{Edge, Event, parse_ts};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Text the person is typing in the footer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     Note,
     NoteToAgent,
     Send,
+    Resume { id: String },
 }
 
 /// Something that asks for a yes first.
@@ -960,6 +961,7 @@ fn hints(ui: &Ui) -> String {
         keys.push("m note");
         keys.push("x close");
         if i.state == State::Waiting {
+            keys.push("v resume");
             keys.push("o reopen");
         }
         if i.state == State::Claimed {
@@ -990,7 +992,8 @@ fn footer(frame: &mut Frame, area: Rect, ui: &Ui) {
             match kind {
                 Input::Note => "note",
                 Input::NoteToAgent => "note to agent",
-                Input::Send => "send to session",
+                Input::Send => "send text only",
+                Input::Resume { .. } => "resume + send (Enter submit · Esc cancel)",
             },
             text,
         )),
@@ -1015,7 +1018,7 @@ fn footer(frame: &mut Frame, area: Rect, ui: &Ui) {
         )),
         None => Line::from(Span::styled(hints(ui), dim())),
     };
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(Paragraph::new(line).wrap(Wrap { trim: false }), area);
 }
 
 fn popup(frame: &mut Frame, title: &str, lines: Vec<Line<'static>>) {
@@ -1059,7 +1062,11 @@ const HELP: &[(&str, &str)] = &[
     ("", ""),
     ("r", "run: start an agent session on a ready issue"),
     ("a", "go to the session's terminal (Herdr pane, or attach)"),
-    ("s", "send text to the session's terminal"),
+    ("s", "send text only; does not restore a waiting claim"),
+    (
+        "v",
+        "resume waiting: restore original ownership + send instructions",
+    ),
     ("m  M", "add a note; M queues it for the agent"),
     ("x", "close as done or abandoned"),
     ("o", "reopen a waiting issue"),
@@ -1144,11 +1151,19 @@ pub fn draw(frame: &mut Frame, ui: &mut Ui) {
         18..30 => 6,
         _ => 9,
     };
+    // Leave room for actionable command-error hints rather than clipping
+    // them off the right edge of the terminal.
+    let footer_height =
+        if matches!(ui.mode, Mode::Normal) && ui.status.as_ref().is_some_and(|s| s.error) {
+            4.min((area.height / 3).max(1))
+        } else {
+            1
+        };
     let [top, body, feed, bottom] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(activity_height),
-        Constraint::Length(1),
+        Constraint::Length(footer_height),
     ])
     .areas(area);
     frame.render_widget(Paragraph::new(header(ui)), top);

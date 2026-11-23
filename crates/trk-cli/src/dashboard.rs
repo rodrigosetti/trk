@@ -3,7 +3,7 @@
 //! The view is `trk_core::dashboard`'s snapshot, re-read when the database
 //! changes. Quick writes (note, close, reopen, priority) go through the
 //! store here; commands that take seconds or own the terminal (`run`,
-//! `send`, `edit`, `create`, attach) run as `trk` itself, so they behave
+//! `send`, `resume`, `edit`, `create`, attach) run as `trk` itself, so they behave
 //! exactly as they do from the shell.
 
 mod ui;
@@ -396,6 +396,15 @@ impl App<'_> {
                         }
                     }
                     KeyCode::Char('a' | 's') => self.fail(format!("{id} has no session terminal")),
+                    KeyCode::Char('v') if state == State::Waiting => {
+                        self.ui.mode = Mode::Input {
+                            kind: Input::Resume { id },
+                            text: String::new(),
+                        }
+                    }
+                    KeyCode::Char('v') => {
+                        self.fail(format!("{id} is {state}: only waiting issues can resume"))
+                    }
                     KeyCode::Char('m') => {
                         self.ui.mode = Mode::Input {
                             kind: Input::Note,
@@ -447,8 +456,14 @@ impl App<'_> {
     }
 
     fn submit(&mut self, kind: Input, text: String) {
-        let Some((id, _)) = self.selected() else {
-            return;
+        // Resume authorizes this issue, even if a concurrent update removes
+        // its row while the person is typing.
+        let id = match &kind {
+            Input::Resume { id } => id.clone(),
+            _ => match self.selected() {
+                Some((id, _)) => id,
+                None => return,
+            },
         };
         match kind {
             Input::Note | Input::NoteToAgent => {
@@ -464,6 +479,11 @@ impl App<'_> {
                 format!("sending to {id}"),
                 vec!["send".into(), id.clone(), text],
                 format!("sent to the session of {id}"),
+            ),
+            Input::Resume { .. } => self.background(
+                format!("resuming {id}"),
+                vec!["resume".into(), id.clone(), "-m".into(), text],
+                format!("resumed {id}: original claim restored and instructions delivered"),
             ),
         }
     }
@@ -819,6 +839,25 @@ mod tests {
         ui.selected = 0;
         let text = screen(&mut ui, 90, 9);
         assert!(text.contains("▶ IN FLIGHT 1") && text.contains("Paint the walls"));
+    }
+
+    #[test]
+    fn command_errors_show_recovery_instructions_on_narrow_terminals() {
+        let (_d, s) = sample();
+        let mut ui = ui_of(&s);
+        ui.status = Some(ui::Status {
+            text: "resume delivery failed: send to exact-original failed: controlled delivery refused (the restored claim was released; a human may run `trk run t-123`)".into(),
+            error: true,
+        });
+        for width in [80, 140] {
+            let text = screen(&mut ui, width, 30);
+            let visible = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                visible.contains("trk run t-123"),
+                "recovery command clipped:\n{text}"
+            );
+            assert!(text.contains("IN FLIGHT"), "issue state hidden:\n{text}");
+        }
     }
 
     #[test]
