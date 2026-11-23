@@ -475,8 +475,8 @@ export default class Trk extends View {
       .on_click((_e, cx) => this.select(issue.id, cx))
       .child(div().w(18).flex_none().text_size(10.5).font_semibold().text_color(urgent).child(issue.priority))
       .child(this.issueId(t, issue.id, "row"))
+      .child(div().flex_none().text_size(10).text_color(t.dim).child(issue.type))
       .child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : issue.group === "blocked" ? t.muted : t.foreground).child(issue.title))
-      .when(issue.type !== "code-change", (el) => el.child(div().flex_none().text_size(10).text_color(t.dim).child(issue.type)))
       .child(this.badge(t, issue, now));
   }
 
