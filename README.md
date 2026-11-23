@@ -360,20 +360,32 @@ tracks the skill anyway; the omp profile also hides it with a per-session `--con
 
 ## Herdr panel
 
-Where the [Herdr](https://herdr.dev) app is set up (`~/.config/herdr-app` exists), `trk install`
-also installs a Herdr mod (from [`herdr/mods/trk/`](herdr/mods/trk/main.js), embedded in the
-binary): the dashboard as a native panel. It reads `trk dashboard --json`, the snapshot the
-terminal dashboard draws, and every button runs `trk` itself, so both behave the same.
+In the [Herdr](https://herdr.dev) app, the dashboard is also a native panel: a Herdr mod (from
+[`herdr/mods/trk/`](herdr/mods/trk/main.js), embedded in the binary). It reads
+`trk dashboard --json`, the snapshot the terminal dashboard draws, and every button runs `trk`
+itself, so both behave the same.
 
 ```sh
-herdr-app do pane.split --direction right --mod trk    # beside the focused pane
-herdr-app do tab.new --mod trk                          # as its own tab
-herdr-app do layout.switch --name trk                   # the trk layout: issues left, the selected session right
+trk herdr open                   # the panel for this project, as a tab in this Herdr space
+trk herdr open --split right     # beside this terminal's pane instead (or: down)
 ```
 
-- It shows the project of the shown space (the focused pane's folder), and follows it as you
-  switch spaces. `--props '{"folder": "/path/to/project"}'` pins a copy to one project;
-  `"select": "<id>"` opens it on an issue.
+That is the whole setup. Herdr mods are machine-wide and a space shows one once a pane or tab
+there holds it, so `open` does both steps: it installs or refreshes the mod when needed, then
+opens the panel in the space this terminal is in (outside Herdr: the space whose folder is the
+project, or `--space <id>`). The panel is pinned to this project and stays in that space, across
+restarts, until you close it in Herdr. Opening again goes to the panel that is there. Spaces
+where you never open it are untouched.
+
+```sh
+trk herdr install [--layout]     # only the mod; --layout adds the trk layout
+trk herdr uninstall              # remove the mod, and the layout unless you edited it
+```
+
+- `./install.sh` and `trk install` refresh an installed mod, so it never lags the binary; neither
+  installs it. The mod folder is trk's and is rewritten; `layouts/trk.json` is yours once written.
+- The `trk` layout (`herdr-app do layout.switch --name trk`) shows issues on the left and the
+  selected issue's live session on the right. It follows the shown space's project.
 - Issues are grouped as in the dashboard. A session whose agent Herdr reports as blocked moves to
   **Needs you**; a working one shows a spinner. New needs-you issues post a toast, and the Dock
   badge counts them across the projects shown.
@@ -384,9 +396,8 @@ herdr-app do layout.switch --name trk                   # the trk layout: issues
   `s` sends, `m`/`M` note (to the agent), `v` resumes, `x` closes, `c` creates.
 - `trk.new` and `trk.refresh` are mod commands for `keys.json`, for example
   `"global": { "ctrl-shift-i": "trk.new" }`. They reach a shown copy of the panel.
-
-The mod folder is trk's and is rewritten by every `trk install`. `layouts/trk.json` is yours once
-written: it is kept unless `--force` is given.
+- By hand: `herdr-app do tab.new --mod trk --props '{"folder": "/path/to/project"}'`. Without
+  `folder` a copy follows the shown space; `"select": "<id>"` opens it on an issue.
 
 ## Configuration
 

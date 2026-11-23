@@ -37,7 +37,7 @@ impl Placement {
     }
 }
 
-fn command(program: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+pub(crate) fn command(program: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     let out = Command::new(program)
         .args(args)
         .output()
@@ -53,7 +53,7 @@ fn command(program: &str, args: &[&str]) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
-fn json_command(program: &str, args: &[&str]) -> Result<Value, String> {
+pub(crate) fn json_command(program: &str, args: &[&str]) -> Result<Value, String> {
     serde_json::from_slice(&command(program, args)?)
         .map_err(|e| format!("invalid JSON from {program}: {e}"))
 }
@@ -85,7 +85,7 @@ pub fn available() -> Result<(), String> {
 }
 
 /// Find the space containing the exact terminal address, not a name or pane ID.
-fn terminal_space<'a>(ui: &'a Value, terminal: &str) -> Option<&'a Value> {
+pub(crate) fn terminal_space<'a>(ui: &'a Value, terminal: &str) -> Option<&'a Value> {
     ui["spaces"].as_array()?.iter().find(|space| {
         space["tabs"]
             .as_array()

@@ -66,8 +66,7 @@ enum Cmd {
         primary checkout is used). Everything goes in .trk/, which starts out ignored by git.\n\
         Safe to run again: it refreshes the agent skill and upgrades the database, and keeps\n\
         existing config files unless --force is given.\n\
-        Where the Herdr app is set up (~/.config/herdr-app), it also installs the trk mod and\n\
-        the trk layout there: the dashboard as a Herdr panel."
+        It also refreshes the Herdr mod when that is installed (see `trk herdr`)."
     )]
     Install {
         /// Overwrite existing config files with the defaults
@@ -316,6 +315,17 @@ enum Cmd {
         #[command(subcommand)]
         cmd: AgentCmd,
     },
+    /// The dashboard as a panel in the Herdr app
+    #[command(
+        after_help = "The mod is installed once per machine; a Herdr space shows it once a pane or tab\n\
+        there holds it. `trk herdr open` does both: it installs or refreshes the mod when needed,\n\
+        then opens the panel for this project in the space this terminal is in. The panel stays\n\
+        in that space until you close it in Herdr."
+    )]
+    Herdr {
+        #[command(subcommand)]
+        cmd: HerdrCmd,
+    },
     /// Resolved actor, project directory and database
     Whoami,
     /// Consistent copy via VACUUM INTO
@@ -332,6 +342,37 @@ enum DepCmd {
     Rm {
         blocker: String,
         blocked: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum HerdrCmd {
+    /// Install or refresh the mod in ~/.config/herdr-app (once per machine)
+    Install {
+        /// Also write the `trk` layout: issues on the left, the selected session on the right
+        #[arg(long)]
+        layout: bool,
+        /// Overwrite a layout you have edited
+        #[arg(long)]
+        force: bool,
+        /// Only refresh a mod that is installed already (what install.sh runs)
+        #[arg(long)]
+        if_installed: bool,
+    },
+    /// Show the panel for this project in a Herdr space; again: goes to the one that is there
+    Open {
+        /// Beside this terminal's pane instead of as a tab
+        #[arg(long, value_parser = ["right", "down"])]
+        split: Option<String>,
+        /// The space, by id from `herdr-app ls` (default: this terminal's, else the project's)
+        #[arg(long)]
+        space: Option<String>,
+    },
+    /// Remove the mod, and the `trk` layout unless you edited it
+    Uninstall {
+        /// Remove an edited layout too
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -456,9 +497,44 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
     if let Cmd::Install { force, prefix } = cmd {
         return install(g, force, prefix);
     }
+    // The mod is machine-wide: installing and removing it need no project.
+    let cmd = match cmd {
+        Cmd::Herdr {
+            cmd:
+                HerdrCmd::Install {
+                    layout,
+                    force,
+                    if_installed,
+                },
+        } => {
+            return herdr_ui::install(
+                &herdr_ui::app_home(),
+                herdr_ui::InstallOpts {
+                    layout,
+                    force,
+                    if_installed,
+                },
+            );
+        }
+        Cmd::Herdr {
+            cmd: HerdrCmd::Uninstall { force },
+        } => return herdr_ui::uninstall(&herdr_ui::app_home(), force),
+        cmd => cmd,
+    };
     let env = Env::new(g)?;
     match cmd {
         Cmd::Install { .. } => unreachable!(),
+        Cmd::Herdr { cmd } => {
+            let HerdrCmd::Open { split, space } = cmd else {
+                unreachable!()
+            };
+            let place = match split.as_deref() {
+                Some("right") => herdr_ui::Place::Right,
+                Some("down") => herdr_ui::Place::Down,
+                _ => herdr_ui::Place::Tab,
+            };
+            herdr_ui::open(&env, &herdr_ui::app_home(), place, space.as_deref())
+        }
         Cmd::List {
             query,
             fields,
@@ -789,8 +865,8 @@ fn default_prefix(root: &std::path::Path) -> String {
 }
 
 /// `trk install`: `.trk/` with the default config and the database, plus the
-/// agent skill and, where Herdr is set up, its dashboard mod. Existing config
-/// files are kept unless `force`.
+/// agent skill. An installed Herdr mod is refreshed. Existing config files
+/// are kept unless `force`.
 fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
     let loc = env::Location::find(g);
     let dir = loc.dir.clone();
@@ -852,7 +928,7 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
     let created = !env.db.is_file();
     trk_core::Store::install(&env.db, env.store_opts()?)?;
     let skill = skill::install(&root, env.checkout().is_some())?;
-    let herdr = herdr_ui::install(&herdr_ui::app_home(), force)?;
+    let herdr = herdr_ui::refresh(&herdr_ui::app_home())?;
 
     let mut text = format!(
         "project   {}\nconfig    {}\n          wrote {} files{}\ndatabase  {}{}\nprefix    {}\nskill     {}",
@@ -869,8 +945,8 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
         env.user.issues.prefix,
         skill.lines.join("\n          "),
     );
-    if let Some(h) = &herdr {
-        text.push_str(&format!("\nherdr     {}", h.lines.join("\n          ")));
+    if let Some((line, _)) = &herdr {
+        text.push_str(&format!("\nherdr     {line}"));
     }
     if !differ.is_empty() {
         text.push_str(&format!(
@@ -896,7 +972,7 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
         json!({"root": root, "dir": dir, "db": env.db, "db_created": created,
                "prefix": env.user.issues.prefix, "written": written, "kept": kept,
                "differ": differ, "skill": skill.data,
-               "herdr": herdr.map(|h| h.data), "warnings": warnings}),
+               "herdr": herdr.map(|(_, data)| data), "warnings": warnings}),
     ))
 }
 
