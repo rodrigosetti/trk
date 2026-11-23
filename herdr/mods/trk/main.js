@@ -577,8 +577,7 @@ export default class Trk extends View {
     const runner = this.data?.check_runner;
     const reapable = this.data?.issues.some((i) => i.attention.some((a) => a.startsWith("session ended")));
     return h_flex().h(40).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
-      .child(div().font_semibold().text_color(t.foreground).child("trk"))
-      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(title))
+      .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(title))
       .when(Boolean(runner), (el) => el.child(div().flex_none().text_size(10.5).text_color(runner?.busy ? t.working : t.dim).tooltip(`trk check --watch, pid ${runner?.pid}`).child(runner?.busy ? "checking" : "checks on")))
       .when(Boolean(c) && !runner && c.waiting > 0, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.done).tooltip("Waiting issues have checks, and no `trk check --watch` is running").child("no check runner")))
       .when(Boolean(c), (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(`${c.closed} closed`)))

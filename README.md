@@ -371,7 +371,7 @@ tracks the skill anyway; the omp profile also hides it with a per-session `--con
 In the [Herdr](https://herdr.dev) app, the dashboard is also a native panel: a Herdr mod (from
 [`herdr/mods/trk/`](herdr/mods/trk/main.js), embedded in the binary). It reads
 `trk dashboard --json`, the snapshot the terminal dashboard draws, and every button runs `trk`
-itself, so both behave the same.
+itself, so both behave the same. The panel header shows the project name without a `trk` prefix.
 
 ```sh
 trk herdr open                   # the panel for this project, as a tab in this Herdr space
