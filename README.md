@@ -378,6 +378,8 @@ trk herdr open                   # the panel for this project, as a tab in this 
 trk herdr open --split right     # beside this terminal's pane instead (or: down)
 ```
 
+Each issue row shows its type immediately after its ID, including `code-change`.
+
 That is the whole setup. Herdr mods are machine-wide and a space shows one once a pane or tab
 there holds it, so `open` does both steps: it installs or refreshes the mod when needed, then
 opens the panel in the space this terminal is in (outside Herdr: the space whose folder is the
