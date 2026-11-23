@@ -94,6 +94,12 @@ trk close orch-4kq -m "Merged in 9f2c1e0"   # or leave it waiting, below
 trk log orch-4kq
 ```
 
+Use `trk create "Fix the bug" -d "Reproduction details" --run` to create an issue and
+immediately launch its agent, equivalent to `trk run <new-ID>` with default routing
+and launcher settings. It returns the run result (JSON `data.issue` is the new ID).
+`--run` cannot be combined with `--dry-run`. If launching fails, the issue stays saved;
+the error identifies it so you can fix the cause and retry with `trk run <ID>`.
+
 Every command takes `--json` (or `--format pretty|json|jsonl`). Scripts should always pass `--json`;
 JSON output is the versioned API (`schema_version: 4`), and errors use the same envelope with a
 stable `code`, a `hint`, and exit codes 1–5.

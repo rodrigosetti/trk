@@ -1198,6 +1198,99 @@ fn pretty_output() {
 }
 
 #[test]
+fn create_run_launches_the_new_issue_and_preserves_it_on_launch_failure() {
+    let e = Env::new();
+    std::fs::write(
+        e.trk_dir().join("config.toml"),
+        r#"
+[issues]
+prefix = "orch"
+[claims]
+agent_lease = "30m"
+[check]
+interval = "5m"
+timeout = "10m"
+[run]
+worktrees = ".trk/worktrees"
+[launcher]
+start = ["sh", "-c", "exec sh -c \"$1\"", "trk-launch", "{shell_command}"]
+[harness.omp]
+command = "sh"
+args = ["-c", "printf '%s\\n' \"$1\"", "trk-harness", "{briefing}"]
+builtin_tools = { read-only = [] }
+"#,
+    )
+    .unwrap();
+    let older = e.create(&["Older urgent issue", "-p", "P0"]);
+    let launched = e.ok(&[
+        "create",
+        "Review this change",
+        "-d",
+        "Check the edge cases.",
+        "--type",
+        "review",
+        "-p",
+        "P3",
+        "--run",
+    ]);
+    let id = launched["issue"].as_str().unwrap();
+    let issue = e.ok(&["show", id]);
+    assert_eq!(issue["title"], "Review this change");
+    assert_eq!(issue["state"], "claimed");
+    assert_eq!(issue["claim"]["actor"], launched["actor"]);
+    assert_eq!(issue["claim"]["worktree"], launched["worktree"]);
+    assert_eq!(issue["claim"]["agent"], "reviewer");
+    assert!(
+        launched["launcher_output"]
+            .as_str()
+            .unwrap()
+            .contains("Check the edge cases.")
+    );
+    assert_eq!(e.ok(&["show", &older])["state"], "open");
+
+    e.set_config(
+        r#"start = ["sh", "-c", "exec sh -c \"$1\"", "trk-launch", "{shell_command}"]"#,
+        r#"start = ["sh", "-c", "echo unavailable >&2; exit 23"]"#,
+    );
+    let err = e.err(&["create", "Retry launch", "--run"], 1, "internal");
+    let id = err["issue"].as_str().unwrap();
+    let issue = e.ok(&["show", id]);
+    assert_eq!(issue["title"], "Retry launch");
+    assert_eq!(issue["state"], "open");
+    assert!(issue["claim"].is_null());
+    assert!(err["message"].as_str().unwrap().contains("unavailable"));
+}
+
+#[test]
+fn create_run_respects_blockers_and_rejects_dry_run_without_creating() {
+    let e = Env::new();
+    let blocker = e.create(&["Blocker"]);
+    let err = e.err(
+        &["create", "Blocked", "--blocked-by", &blocker, "--run"],
+        5,
+        "blocked",
+    );
+    let id = err["issue"].as_str().unwrap();
+    let issue = e.ok(&["show", id]);
+    assert_eq!(issue["title"], "Blocked");
+    assert_eq!(issue["state"], "open");
+    assert_eq!(issue["deps"]["blocked_by"][0]["id"], blocker);
+    assert!(!e.trk_dir().join("worktrees").exists());
+
+    e.cmd()
+        .args(["create", "Must not persist", "--run", "--dry-run"])
+        .assert()
+        .code(2);
+    assert!(
+        e.ok(&["list"])
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|issue| issue["title"] != "Must not persist")
+    );
+}
+
+#[test]
 fn run_without_id_selects_ready_work_by_priority_and_age() {
     let e = Env::new();
     e.create(&["Older normal issue", "-p", "P2"]);

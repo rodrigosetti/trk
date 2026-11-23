@@ -131,6 +131,9 @@ enum Cmd {
         /// Use this id instead of allocating one (imports)
         #[arg(long, hide = true)]
         id: Option<String>,
+        /// Immediately start an agent on the new issue, as with `trk run <ID>`
+        #[arg(long, conflicts_with = "dry_run")]
+        run: bool,
         #[arg(long)]
         dry_run: bool,
     },
@@ -573,6 +576,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
             blocked_by,
             blocks,
             id,
+            run,
             dry_run,
         } => create(
             &env,
@@ -591,6 +595,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
                 ..Default::default()
             },
             dry_run,
+            run,
         ),
         Cmd::Edit {
             id,
@@ -1016,7 +1021,7 @@ fn list(
     Ok(Out::Issues { items, fields })
 }
 
-fn create(env: &Env, new: NewIssue, dry_run: bool) -> Result<Out> {
+fn create(env: &Env, new: NewIssue, dry_run: bool, run: bool) -> Result<Out> {
     let actor = env.actor()?.to_string();
     let mut store = env.store()?;
     let mut attempt = |new: NewIssue| -> Result<Value> {
@@ -1025,7 +1030,7 @@ fn create(env: &Env, new: NewIssue, dry_run: bool) -> Result<Out> {
             c.show(&id, SHOWN)
         })
     };
-    if new.title.trim().is_empty() && editor::is_tty() && !dry_run {
+    let v = if new.title.trim().is_empty() && editor::is_tty() && !dry_run {
         let doc = editor::Doc {
             title: String::new(),
             priority: new
@@ -1042,7 +1047,7 @@ fn create(env: &Env, new: NewIssue, dry_run: bool) -> Result<Out> {
                 new.description.clone()
             },
         };
-        let v = editor::edit_loop(&doc, |d| {
+        editor::edit_loop(&doc, |d| {
             let description = d.description.trim();
             let placeholder = description.starts_with("<!--") && description.ends_with("-->");
             attempt(NewIssue {
@@ -1056,10 +1061,32 @@ fn create(env: &Env, new: NewIssue, dry_run: bool) -> Result<Out> {
                 },
                 ..new.clone()
             })
-        })?;
-        return Ok(Out::Issue(v));
+        })?
+    } else {
+        attempt(new)?
+    };
+    if run {
+        let id = v["id"].as_str().unwrap_or_default();
+        return run::run(
+            env,
+            run::RunArgs {
+                id: Some(id.to_string()),
+                agent: None,
+                harness: None,
+                fg: false,
+                print: false,
+                dry_run: false,
+            },
+        )
+        .map_err(|err| {
+            let err = match err {
+                Error::Coded(_) => err,
+                other => Error::new(other.code(), other.to_string()),
+            };
+            err.with_issue(id)
+        });
     }
-    Ok(Out::Issue(attempt(new)?))
+    Ok(Out::Issue(v))
 }
 
 fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
