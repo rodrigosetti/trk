@@ -380,12 +380,17 @@ restarts, until you close it in Herdr. Opening again goes to the panel that is t
 where you never open it are untouched.
 
 ```sh
-trk herdr install [--layout]     # only the mod; --layout adds the trk layout
-trk herdr uninstall              # remove the mod, and the layout unless you edited it
+trk herdr install [--layout]     # only the mod; --layout adds the sidebar and split layouts
+trk herdr uninstall              # remove the mod and layouts unless you edited them
 ```
 
+- For a **trk dashboard** button above Settings in Herdr's sidebar:
+  run `trk herdr install --layout`, then `herdr-app do layout.switch --name main-trk`.
+  The button opens the dashboard for the shown space, or focuses its existing trk panel.
+  A collapsed sidebar shows just the icon. `main-trk` is a personal copy of Herdr's layout;
+  the shipped `main` layout is untouched. Switch back with `herdr-app do layout.switch --name main`.
 - `./install.sh` and `trk install` refresh an installed mod, so it never lags the binary; neither
-  installs it. The mod folder is trk's and is rewritten; `layouts/trk.json` is yours once written.
+  installs it. The mod folder is trk's and is rewritten; the layouts are yours once written.
 - The `trk` layout (`herdr-app do layout.switch --name trk`) shows issues on the left and the
   selected issue's live session on the right. It follows the shown space's project.
 - Issues are grouped as in the dashboard. A session whose agent Herdr reports as blocked moves to

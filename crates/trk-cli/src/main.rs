@@ -349,7 +349,7 @@ enum DepCmd {
 enum HerdrCmd {
     /// Install or refresh the mod in ~/.config/herdr-app (once per machine)
     Install {
-        /// Also write the `trk` layout: issues on the left, the selected session on the right
+        /// Also write layouts: main-trk (sidebar dashboard button) and trk (split view)
         #[arg(long)]
         layout: bool,
         /// Overwrite a layout you have edited
@@ -368,7 +368,7 @@ enum HerdrCmd {
         #[arg(long)]
         space: Option<String>,
     },
-    /// Remove the mod, and the `trk` layout unless you edited it
+    /// Remove the mod and its layouts unless you edited them
     Uninstall {
         /// Remove an edited layout too
         #[arg(long)]

@@ -2,17 +2,18 @@
 // you, live sessions and waiting checks. The data is `trk dashboard --json`
 // (the snapshot the terminal dashboard draws); every action runs `trk` itself.
 //
-// Props: { folder?: string, select?: string, focus?: "agent" }
+// Props: { folder?: string, select?: string, focus?: "agent", launcher?: boolean }
 //   folder  show this project instead of the shown space's.
 //   select  the issue to start on, with its detail open.
 //   focus   "agent": selecting an issue shows its session in the layout's
 //           agent block (`{ "agent": "focused" }`), as in layouts/trk.json.
+//   launcher  only the sidebar button; opens or focuses this space's trk panel.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextView } from "gpui-base";
 import {
   exec, spaces, panes, agents, terminals, focused, theme, props, run, notify, checking,
-  shared, setShared, setBadge, setAgentOrder, nextCommand, watchFolder,
+  shared, setShared, setBadge, setAgentOrder, nextCommand, watchFolder, layout,
 } from "herdr";
 
 /** The envelope version of `trk --json` this mod was written against. */
@@ -71,6 +72,7 @@ function eventText(e) {
 
 export default class Trk extends View {
   init(_props, cx) {
+    if (props()?.launcher) return;
     this.data = null;
     this.error = null;
     this.detail = null;
@@ -108,6 +110,7 @@ export default class Trk extends View {
   }
 
   async close() {
+    if (props()?.launcher) return;
     const root = this.context?.root;
     this.context = null;
     this.publish(root, 0);
@@ -577,8 +580,35 @@ export default class Trk extends View {
       .child(this.button(t, "new", "New", (cx) => { this.ask({ kind: "create" }); cx.notify(); }, { tip: "New issue (c)" }));
   }
 
+  openDashboard() {
+    const space = spaces().find((s) => s.active);
+    if (!space) return;
+    const tabs = new Set(space.tabs.map((tab) => tab.id));
+    const panel = panes().find((p) => p.mod === "trk" && tabs.has(p.tab));
+    if (panel) {
+      run("tab.select", { id: panel.tab });
+      run("pane.focus", { pane: panel.pane });
+    } else {
+      run("tab.new", { name: "trk", space: space.id, mod: "trk" });
+    }
+  }
+
+  launcher(t) {
+    const collapsed = (layout()?.children?.find((n) => n.id === "sidebar")?.size?.px ?? 268) < 160;
+    return v_flex().size_full().bg(t.chrome).px(8).pt(4).text_size(13)
+      .when(collapsed, (el) => el.px(0).items_center())
+      .child(h_flex().id("trk-dashboard").h(28).px(8).gap(9).items_center().rounded(8)
+        .when(collapsed, (el) => el.w(32).px(0).justify_center())
+        .tooltip("Open trk dashboard").text_color(t.muted)
+        .hover((s) => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
+        .on_click(() => this.openDashboard())
+        .child(svg("mods/trk/dashboard.svg").size(14))
+        .when(!collapsed, (el) => el.child("trk dashboard")));
+  }
+
   render() {
     const t = theme();
+    if (props()?.launcher) return this.launcher(t);
     this.want = this.location();
     this.agentsBy = new Map(agents().map((a) => [a.address, a]));
     this.panesBy = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p]));
