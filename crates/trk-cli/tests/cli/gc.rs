@@ -118,6 +118,16 @@ esac
         .unwrap()
     }
 
+    fn type_worktree(&self, enabled: bool) {
+        std::fs::write(
+            self.e.trk_dir().join("types/code-change.toml"),
+            format!(
+                "name = \"code-change\"\ndescription = \"code change\"\nagent = \"implementer\"\nworktree = {enabled}\n"
+            ),
+        )
+        .unwrap();
+    }
+
     fn claim(&self, id: &str, path: Option<&Path>, terminal: &str, host: &str) {
         self.store_at("2026-11-20T10:00:00Z")
             .write("human:alice@example.com", false, |context| {
@@ -616,4 +626,88 @@ fn gc_still_collects_git_resources_when_the_terminal_is_gone() {
     gc_status(issue, "branch", "removed");
     assert!(!path.exists());
     assert!(fixture.closed_spaces().is_empty());
+}
+
+#[test]
+fn gc_without_recorded_worktrees_keeps_an_unrelated_issue_named_branch() {
+    let fixture = GcEnv::new();
+    let id = fixture.e.create(&["Never launched"]);
+    fixture.git_at(&fixture.e.repo(), &["branch", &id]);
+    fixture.e.ok(&["close", &id]);
+    let notes = fixture.notes(&id);
+
+    for args in [&["gc", &id, "--dry-run"][..], &["gc", &id][..]] {
+        let data = fixture.run(args);
+        let issue = gc_issue(&data, &id);
+        assert_eq!(issue["worktree"]["status"], "absent", "{issue:#}");
+        gc_status(issue, "branch", "absent");
+        assert!(fixture.branch_exists(&id));
+        assert_eq!(fixture.notes(&id), notes);
+    }
+}
+
+#[test]
+fn gc_worktreeless_run_never_collects_a_coincidentally_named_branch() {
+    let fixture = GcEnv::new();
+    fixture.type_worktree(false);
+    let id = fixture.e.create(&["Run in the project checkout"]);
+    fixture
+        .cmd()
+        .args(["run", &id, "--harness", "omp", "--print"])
+        .assert()
+        .success();
+    let claim = fixture.e.ok(&["show", &id])["claim"].clone();
+    assert_eq!(claim["worktree"], Value::Null);
+    assert!(!fixture.e.trk_dir().join("worktrees").join(&id).exists());
+    assert!(!fixture.branch_exists(&id));
+
+    fixture.git_at(&fixture.e.repo(), &["branch", &id]);
+    fixture
+        .e
+        .ok(&["--as", claim["actor"].as_str().unwrap(), "close", &id]);
+    let notes = fixture.notes(&id);
+    // Configuration changes cannot turn this launch into ownership of a branch.
+    fixture.type_worktree(true);
+
+    for args in [&["gc", &id, "--dry-run"][..], &["gc", &id][..]] {
+        let data = fixture.run(args);
+        let issue = gc_issue(&data, &id);
+        assert_eq!(issue["worktree"]["status"], "absent", "{issue:#}");
+        gc_status(issue, "branch", "absent");
+        assert!(fixture.branch_exists(&id));
+        assert!(fixture.e.repo().is_dir());
+        assert_eq!(fixture.notes(&id), notes);
+    }
+}
+
+#[test]
+fn gc_collects_historical_worktrees_after_the_type_opts_out() {
+    let fixture = GcEnv::new();
+    let id = fixture.e.create(&["Previously launched in a worktree"]);
+    let path = fixture.worktree(&id);
+    fixture.claim(&id, Some(&path), "term-history", &fixture.host);
+    fixture.e.ok(&["unclaim", &id]);
+
+    fixture.type_worktree(false);
+    fixture
+        .cmd()
+        .args(["run", &id, "--harness", "omp", "--print"])
+        .assert()
+        .success();
+    let claim = fixture.e.ok(&["show", &id])["claim"].clone();
+    assert_eq!(claim["worktree"], Value::Null);
+    fixture
+        .e
+        .ok(&["--as", claim["actor"].as_str().unwrap(), "close", &id]);
+
+    let data = fixture.run(&["gc", &id]);
+    let issue = gc_issue(&data, &id);
+    for resource in ["session", "worktree", "branch"] {
+        gc_status(issue, resource, "removed");
+    }
+    assert_eq!(issue["worktree"]["items"].as_array().unwrap().len(), 1);
+    assert!(!path.exists());
+    assert!(!fixture.branch_exists(&id));
+    assert!(fixture.e.repo().is_dir());
+    assert_eq!(fixture.closed_spaces(), ["history"]);
 }

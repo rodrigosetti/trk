@@ -14,7 +14,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     put(
         &cfg_dir,
         "types/code-change.toml",
-        "description = 'Change code'\nagent = 'custom reviewer'\n",
+        "description = 'Change code'\nagent = 'custom reviewer'\nworktree = false\n",
     );
     put(
         &cfg_dir,
@@ -32,6 +32,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     let route = cfg.resolve("code-change", None).unwrap();
     assert_eq!(route.description, "Change code");
     assert_eq!(route.agent, "custom reviewer");
+    assert!(!route.worktree);
     assert_eq!(route.type_source, cfg_dir.join("types/code-change.toml"));
     assert_eq!(
         route.agent_source,
@@ -55,6 +56,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     // An explicit agent overrides the type's mapping.
     let route = cfg.resolve("code-change", Some("other")).unwrap();
     assert!(route.override_agent);
+    assert!(!route.worktree);
     assert_eq!(cfg.load(&route).unwrap().agent.name, "other");
 }
 

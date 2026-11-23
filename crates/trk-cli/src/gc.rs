@@ -497,7 +497,11 @@ pub fn run(
                     paths.push(item);
                 }
             }
-            let branch = if let Some(repo) = &repo {
+            // Claims, not the current type configuration or a matching branch
+            // name, establish whether this issue ever owned git resources.
+            let branch = if seen_paths.is_empty() {
+                Resource::new("absent", "no recorded worktrees or associated branch")
+            } else if let Some(repo) = &repo {
                 capture(
                     branch(repo, &id, clear, &planned_paths, dry_run),
                     &mut errors,

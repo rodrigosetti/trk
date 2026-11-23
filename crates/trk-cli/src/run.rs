@@ -222,21 +222,27 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
 
     // 2. Worktree.
     let checkout = env.checkout();
-    // The branch is always the issue id: a later session finds the same one.
-    let branch = id.clone();
-    let worktree: Option<PathBuf> = checkout.as_ref().map(|_| env.worktrees_dir().join(&id));
+    let worktree = checkout
+        .as_ref()
+        .filter(|_| routing.worktree)
+        .map(|_| env.worktrees_dir().join(&id));
 
     // 3. Actor.
     let uuid = uuid::Uuid::new_v4().to_string();
     let actor = format!("agent:{hname}:{uuid}");
     let mut terminal = terminal_name(&id);
     let session_dir = env.sessions_dir().join(&uuid);
-    let cwd = worktree.clone().unwrap_or_else(|| session_dir.clone());
+    let cwd = if routing.worktree {
+        worktree.as_ref().unwrap_or(&session_dir)
+    } else {
+        &env.root
+    };
 
     let mut warnings: Vec<String> = vec![];
     if !a.dry_run {
         if let (Some(co), Some(wt)) = (&checkout, &worktree) {
-            ensure_worktree(co, wt, &branch)?;
+            // The branch is always the issue id: a later session finds the same one.
+            ensure_worktree(co, wt, &id)?;
             // Agents reach trk through MCP only; a committed skill would reach them anyway.
             for rel in [".agents/skills/trk", ".claude/skills/trk"] {
                 if wt.join(rel).exists() {
@@ -328,10 +334,10 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             std::fs::create_dir_all(d)?;
         }
         std::fs::write(&p, content)?;
-        if let Some(wt) = &worktree
-            && let Ok(rel) = p.strip_prefix(wt)
+        if checkout.is_some()
+            && let Ok(rel) = p.strip_prefix(cwd)
         {
-            crate::env::git_exclude(wt, &format!("/{}", rel.to_string_lossy()));
+            crate::env::git_exclude(cwd, &format!("/{}", rel.to_string_lossy()));
         }
     }
     if a.print {

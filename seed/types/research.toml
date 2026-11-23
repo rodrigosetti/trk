@@ -1,3 +1,4 @@
 name = "research"
 description = "research"
 agent = "researcher"
+worktree = false
