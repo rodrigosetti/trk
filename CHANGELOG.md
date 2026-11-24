@@ -17,6 +17,10 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Theme-colored issue-type badges in Herdr dashboard rows and details, with readable labels and stable colors for custom types.
 - Aligned Herdr dashboard issue IDs, type badges, and text across sections, with wrapped titles and custom type names that stay within narrow list panes.
 
+### Fixed
+
+- Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
+
 ### Beta compatibility and upgrades
 
 - The versioned JSON envelope (`schema_version` and error codes) and MCP tool names are intended to be stable.

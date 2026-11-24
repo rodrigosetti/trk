@@ -489,13 +489,13 @@ export default class Trk extends View {
       .child(div().min_w(0).truncate().child(linkText(l)));
   }
 
-  /** The right end of a row: why it needs you, the agent's state, or the next check. */
+  /** Row metadata; a working session uses the title spinner instead. */
   badge(t, issue, now) {
     const why = this.reasons(issue);
     if (why.length) return div().flex_none().max_w(170).truncate().px(6).h(18).rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).flex().items_center().child(why[0]);
     const s = this.session(issue);
     if (issue.state === "claimed") {
-      if (s?.status === "working") return svg("mods/trk/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
+      if (s?.status === "working") return null;
       if (s?.status === "done") return div().flex_none().text_size(10.5).text_color(t.done).child("finished");
       const who = issue.session?.agent ?? short(issue.session?.actor);
       return div().flex_none().max_w(120).truncate().text_size(10.5).text_color(t.dim).child(s?.status === "idle" ? `${who} idle` : who);
@@ -512,6 +512,7 @@ export default class Trk extends View {
   row(t, issue, now, columns) {
     const on = issue.id === this.selected;
     const urgent = issue.priority === "P0" ? t.blocked : issue.priority === "P1" ? t.done : t.dim;
+    const status = this.badge(t, issue, now);
     return h_flex().id(`row-${issue.id}`).w_full().min_w(0).min_h(28).px(8).py(5).gap(7).flex_none().items_start().rounded(7)
       .when(on, (el) => el.bg(t.selected)).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.select(issue.id, cx))
@@ -519,11 +520,13 @@ export default class Trk extends View {
       .child(this.issueId(t, issue.id, "row").w(columns.id).line_height("18px").whitespace_normal())
       .child(this.typeBadge(t, issue.type).w(columns.type).max_w(columns.type))
       .child(v_flex().flex_1().min_w(0).gap(3)
-        .child(div().whitespace_normal().line_height("18px").text_color(on ? t.foreground : issue.group === "blocked" ? t.muted : t.foreground).child(issue.title))
-        .child(h_flex().min_w(0).flex_wrap().gap(4).items_center()
+        .child(h_flex().min_w(0).gap(4).items_start()
+          .when(!status, (el) => el.child(svg("mods/trk/spinner.svg").size(12).mt(3).flex_none().text_color(t.working).spin(900)))
+          .child(div().flex_1().min_w(0).whitespace_normal().line_height("18px").text_color(on ? t.foreground : issue.group === "blocked" ? t.muted : t.foreground).child(issue.title)))
+        .when(Boolean(status || issue.links?.length), (el) => el.child(h_flex().min_w(0).flex_wrap().gap(4).items_center()
           .when(Boolean(issue.links?.length), (el) => el.child(this.link(t, issue, 0, "row").max_w_full()))
           .when((issue.links?.length ?? 0) > 1, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(`+${issue.links.length - 1}`)))
-          .child(this.badge(t, issue, now).max_w_full())));
+          .when(Boolean(status), (el) => el.child(status.max_w_full())))));
   }
 
   promptBox(t) {

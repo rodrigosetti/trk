@@ -5,12 +5,41 @@ import { SourceTextModule, SyntheticModule } from "node:vm";
 
 const source = await readFile(new URL("./main.js", import.meta.url), "utf8");
 
+// Retain rendered content and conditional children; native checks cover styling.
+class Element {
+  constructor(kind) {
+    this.kind = kind;
+    this.nodes = [];
+    return new Proxy(this, {
+      get(target, key, receiver) {
+        return Reflect.get(target, key, receiver) ?? (() => receiver);
+      },
+    });
+  }
+  child(node) { this.nodes.push(node); return this; }
+  children(nodes) { this.nodes.push(...nodes); return this; }
+  when(condition, apply) { return condition ? apply(this) : this; }
+}
+
+function content(node) {
+  if (typeof node === "string") return [node];
+  return node.kind === "spinner" ? ["spinner"] : node.nodes.flatMap(content);
+}
+
+function emptyContainers(node) {
+  if (typeof node === "string" || node.kind === "spinner") return 0;
+  return Number(node.nodes.length === 0) + node.nodes.reduce((n, child) => n + emptyContainers(child), 0);
+}
+
 async function dashboard(state) {
   const commands = [];
   const executions = [];
   const modules = {
-    "gpui-kit": { View: class {}, div() {}, svg() {} },
-    "gpui-base": { v_flex() {}, h_flex() {}, h_resizable() {}, resizable_panel() {}, InputState: {}, Input() {}, TextView: {} },
+    "gpui-kit": { View: class {}, div: () => new Element("div"), svg: () => new Element("spinner") },
+    "gpui-base": {
+      v_flex: () => new Element("column"), h_flex: () => new Element("row"),
+      h_resizable() {}, resizable_panel() {}, InputState: {}, Input() {}, TextView: {},
+    },
     herdr: {
       spaces: () => state.spaces,
       panes: () => state.panes,
@@ -110,4 +139,36 @@ test("a space without a terminal cwd uses its own folder, never another space's"
   assert.equal(executions[0].options.cwd, "/original");
   state.spaces[1].folder = "";
   assert.equal(view.location().cwd, null);
+});
+
+test("working rows prefix the title once and omit empty metadata without losing links", async () => {
+  const { view } = await dashboard(spaceState());
+  view.agentsBy = new Map([["t3", { status: "working" }]]);
+  view.panesBy = new Map();
+  view.liveTerminals = new Set(["t3"]);
+  const issue = {
+    id: "test-working", title: "A long title that can wrap", priority: "P2", type: "code-change",
+    state: "claimed", group: "running", attention: [], links: [], session: { terminal: "t3" },
+  };
+  const columns = { id: 88, type: 112 };
+  const row = view.row({}, issue, Date.now(), columns);
+  assert.deepEqual(content(row), ["P2", issue.id, issue.type, "spinner", issue.title]);
+  assert.equal(emptyContainers(row), 0, "a spinner-only issue must not reserve an empty metadata row");
+
+  issue.links = [{ url: "https://example.com/pr/1", label: "Review" }, { url: "https://example.com" }];
+  assert.deepEqual(content(view.row({}, issue, Date.now(), columns)),
+    ["P2", issue.id, issue.type, "spinner", issue.title, "↗", "Review", "+1"]);
+
+  // Attention still takes precedence; other session statuses stay below the title.
+  issue.links = [];
+  issue.attention = ["review required"];
+  assert.deepEqual(content(view.row({}, issue, Date.now(), columns)),
+    ["P2", issue.id, issue.type, issue.title, "review required"]);
+  issue.attention = [];
+  for (const [status, label] of [["idle", "omp idle"], ["done", "finished"]]) {
+    view.agentsBy.set("t3", { status });
+    issue.session.agent = "omp";
+    assert.deepEqual(content(view.row({}, issue, Date.now(), columns)),
+      ["P2", issue.id, issue.type, issue.title, label]);
+  }
 });
