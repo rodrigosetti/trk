@@ -145,8 +145,8 @@ fn templates_cross_layers_for_includes_imports_and_inheritance_and_report_source
     );
     let cfg = ConfigDir::with_user_dir(&project, Some(user.clone()));
     let agent = load_agent(&cfg, "personal").unwrap();
-    let issue = trk_agent::check::sample_issue();
     let config = UserConfig::default();
+    let issue = trk_agent::check::sample_issue(&config);
     let input = PromptInput {
         issue: &issue,
         project_root: dir.path(),
@@ -393,8 +393,8 @@ fn provenance_matches_the_harness_instruction_folding_context() {
     put(dir.path(), "prompts/folded.j2", "folded");
     let cfg = ConfigDir::with_user_dir(dir.path(), None);
     let agent = load_agent(&cfg, "local").unwrap();
-    let issue = trk_agent::check::sample_issue();
     let config = UserConfig::default();
+    let issue = trk_agent::check::sample_issue(&config);
     let input = PromptInput {
         issue: &issue,
         project_root: dir.path(),
@@ -419,4 +419,36 @@ fn provenance_matches_the_harness_instruction_folding_context() {
         folded.sources["prompts/folded.j2"].source,
         dir.path().join("prompts/folded.j2")
     );
+}
+
+#[test]
+fn template_inspection_uses_the_inherited_default_issue_type() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    let user = dir.path().join("user");
+    put(&project, "config.toml", "[issues]\nprefix = 'project'\n");
+    put(&user, "config.toml", "[issues]\ndefault_type = 'personal'\n");
+    put(
+        &user,
+        "agents/personal.toml",
+        "name = 'personal'\ninstructions = 'prompts/instructions.j2'\n",
+    );
+    put(
+        &user,
+        "types/personal.toml",
+        "description = 'Personal task'\nagent = 'personal'\n",
+    );
+    put(
+        &user,
+        "prompts/instructions.j2",
+        "{% include 'prompts/' ~ issue.type ~ '-' ~ type.name ~ '.j2' %}",
+    );
+    put(&user, "prompts/personal-personal.j2", "Personal task rules");
+    let cfg = ConfigDir::with_user_dir(&project, Some(user.clone()));
+    let config = cfg.user_config().unwrap();
+    let agent = load_agent(&cfg, "personal").unwrap();
+    let sources = prompt::agent_template_sources(&cfg, &agent, &config).unwrap();
+    let source = &sources["prompts/personal-personal.j2"];
+    assert_eq!(source.layer, "user");
+    assert_eq!(source.source, user.join("prompts/personal-personal.j2"));
 }

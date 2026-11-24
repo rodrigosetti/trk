@@ -20,6 +20,9 @@ mod gc;
 #[path = "cli/type_install.rs"]
 mod type_install;
 
+#[path = "cli/default_type.rs"]
+mod default_type;
+
 #[path = "cli/base.rs"]
 mod base;
 
@@ -28,6 +31,9 @@ mod verify;
 
 #[path = "cli/user_config.rs"]
 mod user_config;
+
+#[path = "cli/monorepo.rs"]
+mod monorepo;
 
 fn local_host() -> String {
     let output = StdCommand::new("hostname").output().unwrap();
@@ -1503,6 +1509,63 @@ fn agent_preview_and_run_dry_run() {
 }
 
 #[test]
+fn run_refuses_harnesses_without_the_agents_builtin_level_before_claiming() {
+    let e = Env::new();
+    std::fs::write(
+        e.trk_dir().join("config.toml"),
+        r#"
+[issues]
+prefix = "orch"
+[claims]
+agent_lease = "30m"
+[check]
+interval = "5m"
+timeout = "10m"
+[run]
+worktrees = ".trk/worktrees"
+[harness.unsupported]
+command = "sh"
+[harness.enforcing]
+command = "sh"
+args = ["{builtin_tools_args}"]
+builtin_tools = { no-network = ["--offline"] }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        e.trk_dir().join("agents/implementer.toml"),
+        "name = 'implementer'\n[harness]\nprefer = ['unsupported']\nbuiltin_tools = 'no-network'\n",
+    )
+    .unwrap();
+    let id = e.create(&["Enforce custom tool policy"]);
+    for mode in ["--dry-run", "--print", "--fg"] {
+        for explicit in [false, true] {
+            let mut args = vec!["run", &id, mode];
+            if explicit {
+                args.extend(["--harness", "unsupported"]);
+            }
+            let error = e.err(&args, 4, "config_invalid");
+            assert!(
+                error["message"].as_str().unwrap().contains(
+                    "harness 'unsupported' cannot enforce builtin_tools = \"no-network\""
+                ),
+                "{error:#}"
+            );
+            let hint = error["hint"].as_str().unwrap();
+            assert!(hint.contains("builtin_tools.no-network"), "{hint}");
+            assert!(hint.contains("--harness"), "{hint}");
+            let issue = e.ok(&["show", &id]);
+            assert_eq!(issue["state"], "open");
+            assert!(issue["claim"].is_null());
+            assert!(!e.trk_dir().join("worktrees").join(&id).exists());
+        }
+    }
+    let spec = e.ok(&["run", &id, "--harness", "enforcing", "--print"]);
+    assert_eq!(spec["argv"], json!(["sh", "--offline"]));
+    assert_eq!(e.ok(&["show", &id])["state"], "claimed");
+}
+
+#[test]
 fn codex_dry_run_passes_every_mcp_server_as_toml_overrides() {
     let e = Env::new();
     std::fs::write(
@@ -1583,6 +1646,12 @@ fn run_resolves_profile_agent_per_harness_and_cli_models_and_args() {
         "model   = \"openai-codex/gpt-6-luna\"",
         "model   = \"profile-model\"",
     );
+    // Model resolution across all profiles uses an unrestricted agent.
+    let agent_path = e.trk_dir().join("agents/reviewer.toml");
+    let original = std::fs::read_to_string(&agent_path)
+        .unwrap()
+        .replace("builtin_tools = \"read-only\"", "builtin_tools = \"default\"");
+    std::fs::write(&agent_path, &original).unwrap();
     let check = |harness: &str, model: Option<&str>, extra: &[&str], cli: Option<&str>| {
         let mut args = vec!["run", &id, "--harness", harness, "--dry-run"];
         if let Some(model) = cli {
@@ -1620,8 +1689,6 @@ fn run_resolves_profile_agent_per_harness_and_cli_models_and_args() {
         check(harness, None, &[], None);
         check(harness, Some("one-run"), &[], Some("one-run"));
     }
-    let agent_path = e.trk_dir().join("agents/reviewer.toml");
-    let original = std::fs::read_to_string(&agent_path).unwrap();
     let extra = r#"
 args = { omp = ["--label", "review {issue}: {model}"], opencode = ["--label", "{model}"] }
 "#;
@@ -1812,6 +1879,13 @@ fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
 #[test]
 fn mcp_server_over_stdio() {
     let e = Env::new();
+    e.set_config("default_type = \"code-change\"", "default_type = \"task\"");
+    std::fs::write(
+        e.trk_dir().join("types/task.toml"),
+        "name = \"task\"\ndescription = \"Project task\"\nagent = \"implementer\"\n",
+    )
+    .unwrap();
+    std::fs::remove_file(e.trk_dir().join("types/code-change.toml")).unwrap();
     assert!(
         StdCommand::new("git")
             .current_dir(e.repo())
@@ -1882,6 +1956,16 @@ fn mcp_server_over_stdio() {
         "{rules}"
     );
     let tools = req("tools/list", json!({}));
+    let followup_tool = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "report_followup")
+        .unwrap();
+    assert_eq!(
+        followup_tool["inputSchema"]["properties"]["type"]["description"],
+        "Work type for the new issue; default task"
+    );
     let names: Vec<&str> = tools["result"]["tools"]
         .as_array()
         .unwrap()
@@ -1915,7 +1999,7 @@ fn mcp_server_over_stdio() {
     assert_eq!(v["task"]["state"], "claimed");
     let (err, task) = call(&mut req, "get_task", json!({}));
     assert!(!err, "{task}");
-    assert_eq!(task["type"], "code-change");
+    assert_eq!(task["type"], "task");
     assert_eq!(task["routing"]["agent"], "implementer");
     let (err, v) = call(&mut req, "close", json!({"reason": "merged", "note": "x"}));
     assert!(err);
@@ -1927,6 +2011,14 @@ fn mcp_server_over_stdio() {
     );
     assert!(!err, "{v}");
     let followup = v["result"]["created"].as_str().unwrap().to_string();
+    let (err, defaulted) = call(
+        &mut req,
+        "report_followup",
+        json!({"title": "Use the default type", "description": "Project policy."}),
+    );
+    assert!(!err, "{defaulted}");
+    let defaulted = defaulted["result"]["created"].as_str().unwrap();
+    assert_eq!(e.ok(&["show", defaulted])["type"], "task");
     let res = req("resources/read", json!({"uri": "trk://task"}));
     assert!(
         res["result"]["contents"][0]["text"]
@@ -2858,6 +2950,7 @@ fn types_without_worktrees_run_and_check_in_the_project_root() {
              [harness.cwd-proof]\n\
              command = 'sh'\n\
              args = ['-c', 'pwd > observed-cwd']\n\
+             builtin_tools = {{ read-only = [] }}\n\
              files = {{ '.omp/mcp.json' = '{{mcp_json}}' }}\n"
         ),
     )

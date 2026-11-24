@@ -39,7 +39,7 @@ pub struct HarnessProfile {
     /// or absolute after rendering) → content.
     #[serde(default)]
     pub files: BTreeMap<String, String>,
-    /// Extra arguments per `builtin_tools` level (`read-only`, `none`).
+    /// Extra arguments per project-defined `builtin_tools` level; `default` is reserved.
     #[serde(default)]
     pub builtin_tools: BTreeMap<String, Vec<String>>,
     /// Whether the harness shows MCP server instructions to the model. When
@@ -57,6 +57,22 @@ fn yes() -> bool {
 }
 
 impl HarnessProfile {
+    /// Resolve tool restrictions, refusing levels this harness cannot enforce.
+    pub fn builtin_args(&self, level: &str, harness: &str) -> Result<Option<&Vec<String>>> {
+        if level == "default" {
+            return Ok(None);
+        }
+        self.builtin_tools.get(level).map(Some).ok_or_else(|| {
+            Error::new(
+                Code::ConfigInvalid,
+                format!("harness '{harness}' cannot enforce builtin_tools = \"{level}\" (no builtin_tools.{level} in its profile)"),
+            )
+            .with_hint(format!(
+                "define builtin_tools.{level} in [harness.{harness}] in config.toml, or select a harness that defines it with --harness"
+            ))
+        })
+    }
+
     pub fn resolve_model<'a>(
         &'a self,
         agent: &'a AgentDef,
@@ -296,6 +312,9 @@ struct SessionServer<'a> {
 }
 
 pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
+    let builtin_args = input
+        .profile
+        .builtin_args(&input.agent.harness.builtin_tools, input.harness)?;
     let model = input
         .profile
         .resolve_model(input.agent, input.harness, input.model);
@@ -356,10 +375,6 @@ pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
     };
     let renderer = Renderer::new();
     let render = |source: &str| renderer.render(source, &context);
-    let level = input.agent.harness.builtin_tools.as_str();
-    let builtin_args = (level != "default")
-        .then(|| input.profile.builtin_tools.get(level))
-        .flatten();
     let agent_args = input.agent.harness.args.get(input.harness);
     let model_args = model.map(|_| &input.profile.model_args);
     let arg_groups = [

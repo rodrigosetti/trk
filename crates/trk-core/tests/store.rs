@@ -109,7 +109,10 @@ fn create_defaults_and_validation() {
     let i = s.read(None, |c| c.issue(&id)).unwrap();
     assert_eq!(i.state, State::Open);
     assert_eq!(i.priority, "P2");
-    assert_eq!(i.issue_type, trk_core::model::DEFAULT_TYPE);
+    assert_eq!(
+        i.issue_type,
+        trk_core::config::IssuesSection::default().default_type
+    );
     let e = s.write(HUMAN, false, |c| c.create(new("  "))).unwrap_err();
     assert_eq!(e.code(), Code::InvalidField);
     let e = s
@@ -132,6 +135,33 @@ fn create_defaults_and_validation() {
     );
     assert!(s.write(HUMAN, false, |c| c.create(fixed.clone())).is_err());
     assert_eq!(s.read(None, |c| c.resolve_id("abc")).unwrap(), "orch-abc");
+}
+
+#[test]
+fn configured_default_type_and_explicit_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let opts = StoreOpts {
+        default_type: "investigation".into(),
+        ..Default::default()
+    };
+    let mut s = Store::install(&dir.path().join("trk.db"), opts).unwrap();
+    let default_id = create(&mut s, "Use configured type");
+    let explicit_id = s
+        .write(HUMAN, false, |c| {
+            c.create(NewIssue {
+                issue_type: Some("documentation".into()),
+                ..new("Use explicit type")
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        s.read(None, |c| c.issue(&default_id)).unwrap().issue_type,
+        "investigation"
+    );
+    assert_eq!(
+        s.read(None, |c| c.issue(&explicit_id)).unwrap().issue_type,
+        "documentation"
+    );
 }
 
 #[test]

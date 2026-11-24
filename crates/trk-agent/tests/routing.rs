@@ -43,7 +43,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
         cfg_dir.join("agents/custom reviewer.toml")
     );
     let resolved = cfg.load(&route).unwrap();
-    let issue = trk_agent::check::sample_issue();
+    let issue = trk_agent::check::sample_issue(&trk_core::config::UserConfig::default());
     let input = trk_agent::prompt::PromptInput {
         issue: &issue,
         project_root: dir.path(),

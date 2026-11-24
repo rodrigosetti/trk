@@ -168,15 +168,15 @@ pub fn agent_template_sources(
     agent: &AgentDef,
     user: &UserConfig,
 ) -> Result<BTreeMap<String, TemplateSource>> {
-    let issue = crate::check::sample_issue();
-    let tools = crate::tools::agent_tools(agent, &user.check);
+    let issue = crate::check::sample_issue(user);
+    let tools = crate::tools::agent_tools(agent, user);
     template_sources(
         cfg,
         &PromptInput {
             issue: &issue,
             project_root: cfg.path.parent().unwrap_or(&cfg.path),
             config: user,
-            issue_type: "code-change",
+            issue_type: &user.issues.default_type,
             type_description: "Sample type description",
             agent,
             tools: &tools,

@@ -35,6 +35,10 @@ fn user_config() -> UserConfig {
         &trk_core::seed::CONFIG_TOML
             .replace("{{EMAIL_LINE}}", "email = \"a@b.c\"")
             .replace("{{PREFIX}}", "proj")
+            .replace(
+                "{{DEFAULT_TYPE}}",
+                &trk_core::config::IssuesSection::default().default_type,
+            )
             .replace("{{BASE}}", "\"main\""),
     )
     .unwrap()
@@ -48,7 +52,7 @@ fn names(tools: &[trk_agent::ToolDef]) -> Vec<&str> {
 fn every_agent_gets_the_six_tools_unless_it_narrows_them() {
     let (_dir, seed) = seed();
     let a = load_agent(&seed, "implementer").unwrap();
-    let tools = agent_tools(&a, &user_config().check);
+    let tools = agent_tools(&a, &user_config());
     assert_eq!(
         names(&tools),
         [
@@ -71,11 +75,11 @@ fn every_agent_gets_the_six_tools_unless_it_narrows_them() {
     let mut narrow = a.clone();
     narrow.trk_tools.include = vec!["get_*".into(), "close".into(), "nope".into()];
     assert_eq!(
-        names(&agent_tools(&narrow, &user_config().check)),
+        names(&agent_tools(&narrow, &user_config())),
         ["get_task", "close"]
     );
     assert_eq!(
-        trk_agent::tools::unmatched_includes(&narrow, &user_config().check),
+        trk_agent::tools::unmatched_includes(&narrow, &user_config()),
         ["nope"]
     );
 }
@@ -110,6 +114,13 @@ fn seed_agents_check_clean() {
 }
 
 #[test]
+fn sample_issue_uses_the_configured_default_type() {
+    let mut config = user_config();
+    config.issues.default_type = "task".into();
+    assert_eq!(trk_agent::check::sample_issue(&config)["type"], "task");
+}
+
+#[test]
 fn landing_selection_only_changes_implementer_instructions() {
     for preset in ["default", "minimal"] {
         let (_dir, seed) = seed_preset(preset);
@@ -118,7 +129,7 @@ fn landing_selection_only_changes_implementer_instructions() {
             "Open a GitLab merge request targeting {{ base }} ({{ config.run.landing }}).",
         )
         .unwrap();
-        let issue = trk_agent::check::sample_issue();
+        let issue = trk_agent::check::sample_issue(&user_config());
         for landing in ["merge", "pr", "gitlab", "legacy"] {
             let mut config = user_config();
             if landing == "legacy" {
@@ -141,7 +152,7 @@ fn landing_selection_only_changes_implementer_instructions() {
             };
             for &name in agents {
                 let agent = load_agent(&seed, name).unwrap();
-                let tools = agent_tools(&agent, &config.check);
+                let tools = agent_tools(&agent, &config);
                 let input = trk_agent::prompt::PromptInput {
                     issue: &issue,
                     project_root: std::path::Path::new("/project"),
@@ -207,7 +218,7 @@ fn missing_landing_template_is_reported_even_without_an_implementer() {
 fn the_briefing_carries_description_notes_and_blockers() {
     let (_dir, seed) = seed();
     let a = load_agent(&seed, "implementer").unwrap();
-    let tools = agent_tools(&a, &user_config().check);
+    let tools = agent_tools(&a, &user_config());
     let issue = serde_json::json!({
         "id": "orch-abc", "project": "orch", "title": "Add leases", "priority": "P1",
         "description": "Claims need leases.", "state": "claimed",
@@ -251,13 +262,13 @@ fn the_briefing_carries_description_notes_and_blockers() {
 fn seed_waiting_rules_reflect_effective_check_settings() {
     let (_dir, seed) = seed();
     let agent = load_agent(&seed, "implementer").unwrap();
-    let issue = trk_agent::check::sample_issue();
+    let issue = trk_agent::check::sample_issue(&user_config());
     for max_wakes in [0, 3] {
         let mut config = user_config();
         config.check.interval = "1h".into();
         config.check.timeout = "20m".into();
         config.check.max_wakes = max_wakes;
-        let tools = agent_tools(&agent, &config.check);
+        let tools = agent_tools(&agent, &config);
         let input = trk_agent::prompt::PromptInput {
             issue: &issue,
             project_root: std::path::Path::new("/project"),
@@ -483,3 +494,69 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
     );
     assert_eq!(mcp["mcpServers"]["trk"]["env"]["TRK_DIR"], "/tmp/proj/.trk");
 }
+
+#[test]
+fn builtin_levels_are_defined_by_profiles_not_a_fixed_list() {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, content) in trk_core::seed::preset("minimal").unwrap() {
+        let path = dir.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+    let agents = dir.path().join("agents");
+    let cfg = ConfigDir::new(dir.path());
+    let mut user = UserConfig::default();
+    user.harness = toml::from_str(
+        r#"
+[enforcing]
+command = "sh"
+builtin_tools = { no-network = ["--offline"], plan-only = [] }
+[preferred]
+command = "sh"
+"#,
+    )
+    .unwrap();
+    for level in [
+        "default",
+        "no-network",
+        "plan-only",
+        "undefined",
+        "read-only",
+        "none",
+    ] {
+        std::fs::write(
+            agents.join("custom.toml"),
+            format!(
+                "name = 'custom'\n[harness]\nprefer = ['preferred']\nbuiltin_tools = '{level}'\n"
+            ),
+        )
+        .unwrap();
+        let diagnostics = trk_agent::check::check_agents(&cfg, &user);
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.level == Level::Error)
+            .collect();
+        if matches!(level, "default" | "no-network" | "plan-only") {
+            assert!(errors.is_empty(), "{level}: {diagnostics:#?}");
+        } else {
+            assert_eq!(errors.len(), 1, "{level}: {diagnostics:#?}");
+            assert!(
+                errors[0]
+                    .message
+                    .contains(&format!("builtin_tools '{level}'"))
+            );
+            assert!(
+                errors[0]
+                    .message
+                    .contains("available levels: default, no-network, plan-only")
+            );
+        }
+        assert_eq!(
+            diagnostics.iter().any(|d| d.level == Level::Warning
+                && d.message.contains("harness 'preferred' cannot enforce")),
+            level != "default",
+            "{level}: {diagnostics:#?}"
+        );
+    }
+}
+

@@ -9,6 +9,8 @@
 # New issue ids are <prefix>-<base32>, e.g. {{PREFIX}}-4kq. Branches and
 # worktrees made by `trk run` are named after the id.
 prefix = "{{PREFIX}}"
+# Type used when creating an issue without --type; must have a types/<name>.toml.
+default_type = "{{DEFAULT_TYPE}}"
 
 [claims]
 # Lease for agent claims. The MCP server renews it while running. A stopped MCP
@@ -83,9 +85,14 @@ send_retry_delay = 3
 #   args_json            = template rendering a JSON string array prepended to args
 #   model                = default model (agent or --model may override)
 #   model_args           = extra args added only when a model is set
-#   builtin_tools.<lvl>  = extra args enforcing an agent's builtin_tools level
+#   builtin_tools.<lvl>   = extra args enforcing any project-defined level
 #   server_instructions  = false folds the MCP server instructions into the briefing
 #   briefing             = "arg" | "send"
+# Agent builtin_tools = "default" is reserved: no extra restriction args.
+# Other levels (e.g. read-only, no-network, plan-only) must be defined by a profile.
+# An empty list declares support without extra args. trk agent check lists unknown
+# levels and warns for unsupported preferences; trk run refuses an unsupported
+# selected profile, including explicit --harness selections.
 
 [harness]
 prefer = ["omp", "claude-code"]
