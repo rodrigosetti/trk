@@ -333,6 +333,18 @@ pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
         .flatten();
     let agent_args = input.agent.harness.args.get(input.harness);
     let model_args = model.map(|_| &input.profile.model_args);
+    let arg_groups = [
+        ("{builtin_tools_args}", builtin_args),
+        ("{model_args}", model_args),
+        ("{agent_args}", agent_args),
+    ];
+    let fallback_groups = arg_groups.map(|(marker, args)| {
+        if input.profile.args.iter().any(|source| source == marker) {
+            None
+        } else {
+            args
+        }
+    });
     let prefix_args: Vec<String> = input
         .profile
         .args_json
@@ -362,18 +374,25 @@ pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
         .iter()
         .position(|source| uses_briefing(source))
         .unwrap_or(input.profile.args.len());
-    for source in &input.profile.args[..pos] {
-        argv.push(render(source)?);
-    }
-    for source in [builtin_args, model_args, agent_args]
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        argv.push(render(source)?);
-    }
-    for source in &input.profile.args[pos..] {
-        argv.push(render(source)?);
+    for index in 0..=input.profile.args.len() {
+        // Each unmarked group retains its legacy position and ordering.
+        if index == pos {
+            for source in fallback_groups.into_iter().flatten().flatten() {
+                argv.push(render(source)?);
+            }
+        }
+        if let Some(source) = input.profile.args.get(index) {
+            let sources = match arg_groups
+                .iter()
+                .find(|(marker, _)| source.as_str() == *marker)
+            {
+                Some((_, args)) => args.map(Vec::as_slice).unwrap_or_default(),
+                None => std::slice::from_ref(source),
+            };
+            for source in sources {
+                argv.push(render(source)?);
+            }
+        }
     }
 
     let mut env = BTreeMap::from([("TRK_ACTOR".into(), input.actor.to_string())]);
