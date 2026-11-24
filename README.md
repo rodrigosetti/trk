@@ -5,7 +5,15 @@ in `.trk/`; humans use the CLI, and agents use a per-issue MCP server. `trk run`
 an issue, prepares its Git worktree, and starts an agent session. Waiting checks form
 a serialized queue that can verify and land the work.
 
-**Beta software.** Use with care and keep backups of project state.
+**Beta software.** Keep backups of project state. The versioned JSON envelope
+(`schema_version` and error codes) and MCP tool names are intended to be stable.
+Config keys, seed prompts, the database schema across versions, and the Herdr mod
+may change without notice.
+
+**Upgrading:** finish active sessions first, update your source checkout, re-run
+`./install.sh`, then run `trk install` in each project. See the
+[upgrade manual](docs/install-upgrade.md), [changelog](CHANGELOG.md), and
+[release steps](docs/development.md#releasing-010).
 
 ## Prerequisites
 
@@ -40,6 +48,11 @@ Installation detects available launchers and harnesses. `--run` saves the issue 
 starts its agent in a dedicated worktree. Leave `trk check --watch` running in a spare
 terminal: it runs waiting checks and returns failures to the session when possible.
 Use `trk dashboard` for a live overview.
+
+Without a check, an issue waits for a human to close it, reopen it for a new session,
+or run `trk resume <ID> -m "<your decision>"` to continue the live waiting session.
+A chat reply alone will not continue the work; the session must hand you that command
+with the real issue id.
 
 **Safety:** agents write checks that run later, unattended, **as you**. Inspect an
 issue's full command with `trk show <ID>` or preview the queue with

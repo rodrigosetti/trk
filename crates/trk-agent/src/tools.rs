@@ -149,7 +149,10 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
                  exit 0 closes the issue as done; exit {CHECK_RETRY_EXIT} means not yet, check again after `interval`; \
                  any other exit or timeout records the output as a note. {failure} \
                  It runs unattended under sh -c and may run more than once: make it non-interactive, non-blocking (no --watch) and safe to repeat. \
-                 Without `check`, the issue waits for a human to close, reopen, or explicitly resume it."
+                 Without `check`, the issue waits for a human to close, reopen, or run `trk resume <ID> -m \"<your decision>\"` to continue the live session. \
+                 End your chat question with the exact resume command returned by this tool (with the real issue id), \
+                 and say plainly that a chat reply alone will not continue the work. \
+                 If the human replies only in chat, repeat the command rather than only recording a note."
             ),
             object_schema(vec![
                 ("reason", text("What the issue is waiting for, for a human reading the queue"), true),

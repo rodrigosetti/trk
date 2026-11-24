@@ -13,6 +13,34 @@ GitHub Actions runs the workspace tests, lint, and Herdr mod tests on
 toolchain version from `workspace.package.rust-version` in `Cargo.toml` and uses
 Node.js 24 for `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
 
+## Releasing 0.1.0
+
+The first public release is **0.1.0 (beta)**. A human performs the release after
+the release changes have landed on `main`; agents must not create or push the tag.
+
+1. In the release checkout, ensure `main` is up to date and the working tree is clean.
+   Confirm `workspace.package.version` in `Cargo.toml` is `0.1.0`.
+2. Review [CHANGELOG.md](../CHANGELOG.md), replace the pending release date with the
+   actual release date, and commit and land that change before tagging.
+3. Run `cargo test --workspace --locked`, `cargo lint`, and
+   `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs` on the release
+   commit. Resolve failures before proceeding.
+4. Finish any active trk sessions before running `./install.sh`, then `trk --version`.
+   A Git checkout build prints
+   `trk 0.1.0 (<commit>)`, where `<commit>` is the build's abbreviated Git commit
+   (requested at 10 characters, longer if needed for uniqueness). Check that it
+   matches the release commit. Without Git metadata, it prints `trk 0.1.0`.
+   The version comes from Cargo plus the build commit, not the tag name.
+5. **Human only:** create an annotated tag on that tested commit and push it:
+
+   ```sh
+   git tag -a v0.1.0 -m "trk 0.1.0"
+   git push origin v0.1.0
+   ```
+
+Before installing the release, users should finish active sessions and follow the
+[upgrade procedure](install-upgrade.md).
+
 ## Layout
 
 | Crate | Role |

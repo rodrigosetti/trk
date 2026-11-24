@@ -58,6 +58,7 @@ CREATE TABLE issue (
   created_at       TEXT NOT NULL,
   updated_at       TEXT NOT NULL,
   closed_at        TEXT,
+  wake_count       INTEGER NOT NULL DEFAULT 0 CHECK (wake_count >= 0),
   CHECK ((state = 'closed') = (close_reason IS NOT NULL)),
   CHECK ((state = 'closed') = (closed_at IS NOT NULL)),
   CHECK (state = 'waiting' OR (waiting_check IS NULL AND waiting_reason IS NULL AND next_check_at IS NULL))
@@ -90,11 +91,22 @@ CREATE TABLE claim (
   released_at     TEXT,
   release_reason  TEXT CHECK (release_reason IN
                     ('closed', 'waiting', 'unclaimed', 'expired', 'stolen')),
+  launcher        TEXT,
   CHECK ((released_at IS NULL) = (release_reason IS NULL))
 );
 CREATE UNIQUE INDEX claim_one_active ON claim(issue_id) WHERE released_at IS NULL;
 CREATE INDEX claim_active_lease ON claim(lease_until) WHERE released_at IS NULL;
 CREATE INDEX claim_by_actor ON claim(actor, released_at);
+
+-- Current links only; their history is in `set` events.
+CREATE TABLE link (
+  issue_id    TEXT NOT NULL REFERENCES issue(id),
+  url         TEXT NOT NULL CHECK (length(url) > 0),
+  label       TEXT,
+  created_by  TEXT NOT NULL REFERENCES actor(id),
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (issue_id, url)
+);
 
 -- Append-only history. Notes are events with op = 'note'.
 CREATE TABLE event (
@@ -133,7 +145,8 @@ CREATE TABLE check_lock (
   id          INTEGER PRIMARY KEY CHECK (id = 1),
   pid         INTEGER NOT NULL,
   host        TEXT,
-  started_at  TEXT NOT NULL
+  started_at  TEXT NOT NULL,
+  pgid        INTEGER
 );
 
 -- ============================================================
