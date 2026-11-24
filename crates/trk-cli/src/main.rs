@@ -7,6 +7,7 @@ mod env;
 mod gc;
 mod herdr;
 mod herdr_ui;
+mod launcher;
 mod render;
 mod run;
 mod skill;

@@ -174,6 +174,8 @@ pub struct Claim {
     pub host: Option<String>,
     pub agent: Option<String>,
     pub terminal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<String>,
     pub released_at: Option<String>,
     pub release_reason: Option<String>,
 }

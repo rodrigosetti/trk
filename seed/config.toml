@@ -43,21 +43,14 @@ base = {{BASE}}
 # Built-ins: "merge" (local checkout), "pr" (GitHub pull request).
 landing = "merge"
 
-# Launcher templates. Placeholders: {name} (terminal name), {cwd},
-# {shell_command} (cd + env + harness argv), {text}.
+# Launchers are tried in order; tmux is opt-in with use = ["tmux"].
+# Commands are argv arrays, not shell strings. Placeholders: {name}, {cwd},
+# {shell_command} (cd + env + harness argv), {text}, {title}.
+# Every operation is optional; missing operations are skipped. A missing
+# available probe means usable. Start's first stdout line is the session address;
+# empty stdout keeps the generated name. Stderr is diagnostics, never an address.
 [launcher]
-start      = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
-# Open a new Herdr space named with the issue title, rooted in its worktree.
-# If the UI is unavailable before launch, use start headlessly and warn.
-herdr      = true
-attach     = ["hc", "attach", "{name}"]
-send       = ["hc", "send", "{name}", "{text}"]
-# Optional terminal probe for non-Herdr launchers (Herdr uses has_terminal).
-# Requires a known local claim host and nonblank terminal; {name} is substituted.
-# Exit 0 = live, 1 = gone; other exits, command errors, missing/empty = unknown.
-# Unknown sessions are not woken/resumed or reaped. Wakes also require send.
-# Example for a tmux launcher: has-session exits 1 when the target is missing.
-# alive = ["tmux", "has-session", "-t", "{name}"]
+use = ["herdr", "hc"]
 # Seconds to wait before sending the briefing to harnesses that take it by `send`.
 send_delay = 5
 # Total attempts for all sends (briefing, trk send, resume, check wakes/notifications).
@@ -65,6 +58,29 @@ send_delay = 5
 send_retries = 10
 # Seconds between failed send attempts; separate from the initial send_delay.
 send_retry_delay = 3
+
+# Herdr supplies start, exists, focus, close and rename through its UI driver.
+# A failed availability probe selects hc before attempting a launch.
+[launcher.herdr]
+driver = "herdr"
+attach = ["hc", "attach", "{name}"]
+send = ["hc", "send", "{name}", "{text}"]
+
+[launcher.hc]
+available = ["hc", "ls"]
+start = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
+attach = ["hc", "attach", "{name}"]
+send = ["hc", "send", "{name}", "{text}"]
+
+[launcher.tmux]
+available = ["tmux", "-V"]
+start = ["tmux", "new-session", "-d", "-P", "-F", "#{session_id}", "-s", "{name}", "-c", "{cwd}", "{shell_command}"]
+attach = ["tmux", "attach-session", "-t", "{name}"]
+send = ["tmux", "send-keys", "-t", "{name}", "-l", "{text}", ";", "send-keys", "-t", "{name}", "Enter"]
+exists = ["tmux", "has-session", "-t", "{name}"]
+focus = ["tmux", "switch-client", "-t", "{name}"]
+close = ["tmux", "kill-session", "-t", "{name}"]
+rename = ["tmux", "rename-session", "-t", "{name}", "{title}"]
 
 # Harness profiles use MiniJinja in command, args, env values, file paths/content
 # and optional args. Scalars: name issue actor agent harness model cwd worktree

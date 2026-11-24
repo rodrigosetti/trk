@@ -51,7 +51,7 @@ fn rank(priority: &str) -> i64 {
 
 impl Ctx<'_> {
     pub fn claim_json(&self, c: &Claim) -> Value {
-        json!({
+        let mut value = json!({
             "actor": c.actor,
             "on_behalf_of": c.on_behalf_of,
             "claimed_at": c.claimed_at,
@@ -60,7 +60,11 @@ impl Ctx<'_> {
             "host": c.host,
             "agent": c.agent,
             "terminal": c.terminal,
-        })
+        });
+        if let Some(launcher) = &c.launcher {
+            value["launcher"] = json!(launcher);
+        }
+        value
     }
 
     fn edge_json(e: &Edge) -> Value {
@@ -241,9 +245,9 @@ impl Ctx<'_> {
         ))?;
         let rows = st.query_map([], |r| {
             let c = row_to_claim(r)?;
-            let harness: Option<String> = r.get(12)?;
-            let meta: String = r.get(13)?;
-            let title: String = r.get(14)?;
+            let harness: Option<String> = r.get(13)?;
+            let meta: String = r.get(14)?;
+            let title: String = r.get(15)?;
             Ok((c, harness, meta, title))
         })?;
         let mut out = vec![];

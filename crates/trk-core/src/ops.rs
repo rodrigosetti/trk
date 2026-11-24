@@ -55,6 +55,7 @@ pub struct ClaimOpts {
     pub host: Option<String>,
     pub agent: Option<String>,
     pub terminal: Option<String>,
+    pub launcher: Option<String>,
     pub steal: bool,
     pub on_behalf_of: Option<String>,
 }
@@ -510,15 +511,18 @@ impl Ctx<'_> {
         issue.wake_count = 0;
         self.save_issue(&issue)?;
         self.conn.execute(
-            "INSERT INTO claim (issue_id, actor, claimed_at, lease_until, worktree, host, agent, terminal)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id, me, self.ts(), lease_until, opts.worktree, opts.host, opts.agent, opts.terminal],
+            "INSERT INTO claim (issue_id, actor, claimed_at, lease_until, worktree, host, agent, terminal, launcher)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, me, self.ts(), lease_until, opts.worktree, opts.host, opts.agent, opts.terminal, opts.launcher],
         )?;
         let claim_id = self.conn.last_insert_rowid();
         let mut p = json!({
             "claim": claim_id, "lease_until": lease_until, "worktree": opts.worktree,
             "host": opts.host, "agent": opts.agent, "terminal": opts.terminal,
         });
+        if let Some(launcher) = &opts.launcher {
+            p["launcher"] = json!(launcher);
+        }
         if let Some(s) = stolen_from {
             p["stolen_from"] = json!(s);
         }
@@ -861,8 +865,8 @@ impl Ctx<'_> {
         let lease_until = fmt_ts(self.now + self.opts.agent_lease);
         self.conn.execute(
             "INSERT INTO claim
-             (issue_id, actor, claimed_at, lease_until, worktree, host, agent, terminal)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (issue_id, actor, claimed_at, lease_until, worktree, host, agent, terminal, launcher)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 id,
                 previous.actor,
@@ -871,20 +875,21 @@ impl Ctx<'_> {
                 previous.worktree,
                 previous.host,
                 previous.agent,
-                previous.terminal
+                previous.terminal,
+                previous.launcher
             ],
         )?;
         let claim = self.conn.last_insert_rowid();
-        self.event(
-            Some(id),
-            "claim",
-            json!({
-                "claim": claim, "claimant": previous.actor, "lease_until": lease_until,
-                "worktree": previous.worktree, "host": previous.host, "agent": previous.agent,
-                "terminal": previous.terminal, "from": "waiting", "by_check": by_check,
-                "resumed_from": previous.id,
-            }),
-        )?;
+        let mut payload = json!({
+            "claim": claim, "claimant": previous.actor, "lease_until": lease_until,
+            "worktree": previous.worktree, "host": previous.host, "agent": previous.agent,
+            "terminal": previous.terminal, "from": "waiting", "by_check": by_check,
+            "resumed_from": previous.id,
+        });
+        if let Some(launcher) = &previous.launcher {
+            payload["launcher"] = json!(launcher);
+        }
+        self.event(Some(id), "claim", payload)?;
         Ok(claim)
     }
 
