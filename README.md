@@ -45,6 +45,9 @@ Use `trk dashboard` for a live overview.
 issue's full command with `trk show <ID>` or preview the queue with
 `trk check --dry-run` before running it.
 
+For Claude Code, see the [unattended permission policy](docs/configuration.md#claude-code-permissions)
+and [live verification notes](docs/development.md#notes-on-the-implementation).
+
 ## Reference
 
 - [Issues and CLI basics](docs/issues.md)

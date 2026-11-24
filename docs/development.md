@@ -32,7 +32,16 @@ Node.js 24 for `node --experimental-vm-modules --test herdr/mods/trk/main.test.m
   use a MiniJinja loop over `trk_tools` to prefix each tool name with `mcp__trk_`.
   It keeps `write` available even with a restricted `--tools` list, so `builtin_tools = "read-only"`
   is not fully enforced there.
-- **Unverified harness profiles**: the Claude Code, Codex, OpenCode and pi profiles were not run live.
+- **Claude Code** (verified live on 2026-11-24, version **2.1.331**, `--model sonnet`,
+  resolved to Sonnet 5.5): tested in throwaway Git repositories through `trk install`
+  and `trk run`, with Herdr/`hc` terminals. The original profile stopped at workspace
+  trust; after approval its default auto mode did not prompt for MCP or Bash.
+  The explicit-permission profile started in a fresh repository without manual
+  input, received MCP server instructions, called `get_task`/`add_note`/`wait`,
+  created and edited a file, committed in its issue worktree, and landed through
+  `trk check` using the seed merge recipe. Failed-check wake and `trk send`
+  acknowledgements were verified. `read-only` and `none` were also exercised live.
+- **Unverified harness profiles**: the Codex, OpenCode and pi profiles were not run live.
 - **Session liveness** comes from the local claim's terminal via its pinned launcher's `exists` operation or Herdr driver.
   MCP pid, host and exit metadata in `actor.meta` report MCP status separately, not session death.
 - **`trk check` lock**: a row holding the pid and host of the running pass. A holder whose process

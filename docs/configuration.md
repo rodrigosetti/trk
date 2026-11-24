@@ -123,6 +123,34 @@ selected profile lacks it, including explicit `--harness` selections; it no
 longer silently launches unrestricted. Define the level's enforcement flags in
 that profile or select a profile that supports it.
 
+### Claude Code permissions
+
+The seed uses `--permission-mode dontAsk` with `--allowedTools` for Bash, Edit,
+Write, NotebookEdit and the exact trk MCP tools exposed to that session. Other
+operations that need approval are denied rather than prompting; extra agent MCP
+servers are not automatically approved. This avoids depending on the user's
+permission mode or a model-specific auto classifier, without using
+`--dangerously-skip-permissions`.
+
+This is still broad authority: Bash can execute arbitrary programs with your
+account's access. On the verified Claude Code version, `dontAsk` also skips the
+first-use workspace trust dialog. Launch only in repositories you trust; use an
+isolated environment for untrusted code. Narrow the Bash allow rules in your
+project profile if its commands can be enumerated, accepting that other commands
+will be denied. Existing installations keep their profile; copy the Claude Code
+section from `seed/config.toml` to adopt these changes.
+
+Claude's `read-only` level exposes Read/Grep/Glob plus ToolSearch; `none` exposes
+only ToolSearch, not file, shell or delegation tools. ToolSearch is a deliberate
+discovery-only exception: with literal `--tools ""`, Claude 2.1.331 can start its
+first turn without any MCP tools and cannot call `get_task` or `wait`. Both
+restricted levels retain discovery of the agent's trk MCP tools without relying
+on a delayed launcher briefing (which `--fg` does not send automatically).
+These levels restrict built-ins, not MCP side effects or shell checks submitted
+through `wait`; they are not filesystem sandboxes.
+
+### Models and launch arguments
+
 ```toml
 # .trk/config.toml
 [harness.omp]
