@@ -79,14 +79,22 @@ pub struct UserSection {
 pub struct IssuesSection {
     /// Prefix of new issue ids: `<prefix>-<base32>`.
     pub prefix: String,
+    /// Type assigned to issues created without an explicit type.
+    #[serde(default = "default_type")]
+    pub default_type: String,
 }
 
 impl Default for IssuesSection {
     fn default() -> Self {
         IssuesSection {
             prefix: "trk".into(),
+            default_type: default_type(),
         }
     }
+}
+
+fn default_type() -> String {
+    crate::seed::DEFAULT_TYPE.into()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -286,6 +294,21 @@ pub fn fmt_duration(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_issues_config_uses_builtin_default_type() {
+        let issues: IssuesSection = toml::from_str("prefix = \"legacy\"").unwrap();
+        assert_eq!(issues.prefix, "legacy");
+        assert_eq!(issues.default_type, "code-change");
+        assert_eq!(issues.default_type, IssuesSection::default().default_type);
+    }
+
+    #[test]
+    fn issues_config_preserves_configured_default_type() {
+        let issues: IssuesSection =
+            toml::from_str("prefix = \"custom\"\ndefault_type = \"investigation\"").unwrap();
+        assert_eq!(issues.default_type, "investigation");
+    }
 
     #[test]
     fn durations() {

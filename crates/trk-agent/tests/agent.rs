@@ -20,6 +20,10 @@ fn user_config() -> UserConfig {
         &trk_core::seed::CONFIG_TOML
             .replace("{{EMAIL_LINE}}", "email = \"a@b.c\"")
             .replace("{{PREFIX}}", "proj")
+            .replace(
+                "{{DEFAULT_TYPE}}",
+                &trk_core::config::IssuesSection::default().default_type,
+            )
             .replace("{{BASE}}", "\"main\""),
     )
     .unwrap()
@@ -33,7 +37,7 @@ fn names(tools: &[trk_agent::ToolDef]) -> Vec<&str> {
 fn every_agent_gets_the_six_tools_unless_it_narrows_them() {
     let (_dir, seed) = seed();
     let a = load_agent(&seed, "implementer").unwrap();
-    let tools = agent_tools(&a, &user_config().check);
+    let tools = agent_tools(&a, &user_config());
     assert_eq!(
         names(&tools),
         [
@@ -56,11 +60,11 @@ fn every_agent_gets_the_six_tools_unless_it_narrows_them() {
     let mut narrow = a.clone();
     narrow.trk_tools.include = vec!["get_*".into(), "close".into(), "nope".into()];
     assert_eq!(
-        names(&agent_tools(&narrow, &user_config().check)),
+        names(&agent_tools(&narrow, &user_config())),
         ["get_task", "close"]
     );
     assert_eq!(
-        trk_agent::tools::unmatched_includes(&narrow, &user_config().check),
+        trk_agent::tools::unmatched_includes(&narrow, &user_config()),
         ["nope"]
     );
 }
@@ -95,10 +99,17 @@ fn seed_agents_check_clean() {
 }
 
 #[test]
+fn sample_issue_uses_the_configured_default_type() {
+    let mut config = user_config();
+    config.issues.default_type = "task".into();
+    assert_eq!(trk_agent::check::sample_issue(&config)["type"], "task");
+}
+
+#[test]
 fn the_briefing_carries_description_notes_and_blockers() {
     let (_dir, seed) = seed();
     let a = load_agent(&seed, "implementer").unwrap();
-    let tools = agent_tools(&a, &user_config().check);
+    let tools = agent_tools(&a, &user_config());
     let issue = serde_json::json!({
         "id": "orch-abc", "project": "orch", "title": "Add leases", "priority": "P1",
         "description": "Claims need leases.", "state": "claimed",
@@ -142,13 +153,13 @@ fn the_briefing_carries_description_notes_and_blockers() {
 fn seed_waiting_rules_reflect_effective_check_settings() {
     let (_dir, seed) = seed();
     let agent = load_agent(&seed, "implementer").unwrap();
-    let issue = trk_agent::check::sample_issue();
+    let issue = trk_agent::check::sample_issue(&user_config());
     for max_wakes in [0, 3] {
         let mut config = user_config();
         config.check.interval = "1h".into();
         config.check.timeout = "20m".into();
         config.check.max_wakes = max_wakes;
-        let tools = agent_tools(&agent, &config.check);
+        let tools = agent_tools(&agent, &config);
         let input = trk_agent::prompt::PromptInput {
             issue: &issue,
             project_root: std::path::Path::new("/project"),

@@ -12,6 +12,10 @@ fn seed_config() -> UserConfig {
         &trk_core::seed::CONFIG_TOML
             .replace("{{EMAIL_LINE}}", "email = \"a@b.c\"")
             .replace("{{PREFIX}}", "proj")
+            .replace(
+                "{{DEFAULT_TYPE}}",
+                &trk_core::config::IssuesSection::default().default_type,
+            )
             .replace("{{BASE}}", "\"main\""),
     )
     .unwrap()

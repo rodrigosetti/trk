@@ -12,11 +12,11 @@ use crate::prompt::{PromptInput, briefing, instructions};
 use crate::tools::{agent_tools, unmatched_includes};
 
 /// A sample issue object for rendering templates during checks.
-pub fn sample_issue() -> Value {
+pub fn sample_issue(user: &UserConfig) -> Value {
     json!({
         "id": "proj-abc", "title": "Sample",
         "description": "Sample description", "state": "claimed", "priority": "P2",
-        "type": "code-change", "close_reason": null, "waiting": null, "claim": null,
+        "type": user.issues.default_type, "close_reason": null, "waiting": null, "claim": null,
         "deps": {"blocked_by": [], "blocks": []},
         "derived": {"ready": false, "blocked_by": [], "due": false, "unblocks_higher_priority": []},
         "notes": [],
@@ -113,13 +113,13 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
                 ));
             }
         }
-        for miss in unmatched_includes(a, &user.check) {
+        for miss in unmatched_includes(a, user) {
             d.push(Diagnostic::error(
                 Some(file),
                 format!("trk_tools.include: there is no tool '{miss}'"),
             ));
         }
-        let tools = agent_tools(a, &user.check);
+        let tools = agent_tools(a, user);
         let ends = |n: &str| tools.iter().any(|t| t.name == n);
         if !ends("close") && !ends("wait") && !ends("hand_back") {
             d.push(Diagnostic::error(
@@ -127,12 +127,12 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
                 "the agent has none of close, wait, hand_back: it could never end a session",
             ));
         }
-        let issue = sample_issue();
+        let issue = sample_issue(user);
         let input = PromptInput {
             issue: &issue,
             project_root: std::path::Path::new("/tmp/project"),
             config: user,
-            issue_type: "code-change",
+            issue_type: &user.issues.default_type,
             type_description: "Sample type description",
             agent: a,
             tools: &tools,

@@ -30,6 +30,8 @@ pub struct StoreOpts {
     pub max_wakes: u32,
     /// Prefix of new issue ids: `<prefix>-<base32>`.
     pub prefix: String,
+    /// Type assigned to issues created without an explicit type.
+    pub default_type: String,
 }
 
 impl Default for StoreOpts {
@@ -40,6 +42,7 @@ impl Default for StoreOpts {
             check_interval: jiff::SignedDuration::from_mins(5),
             max_wakes: 5,
             prefix: "trk".into(),
+            default_type: crate::seed::DEFAULT_TYPE.into(),
         }
     }
 }

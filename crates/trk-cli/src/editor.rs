@@ -13,23 +13,12 @@ pub fn is_tty() -> bool {
 }
 
 /// The authored fields of an issue, as edited.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Doc {
     pub title: String,
     pub priority: String,
     pub issue_type: String,
     pub description: String,
-}
-
-impl Default for Doc {
-    fn default() -> Self {
-        Self {
-            title: String::new(),
-            priority: String::new(),
-            issue_type: "code-change".into(),
-            description: String::new(),
-        }
-    }
 }
 
 fn toml_str(s: &str) -> String {

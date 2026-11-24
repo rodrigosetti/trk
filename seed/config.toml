@@ -9,6 +9,8 @@
 # New issue ids are <prefix>-<base32>, e.g. {{PREFIX}}-4kq. Branches and
 # worktrees made by `trk run` are named after the id.
 prefix = "{{PREFIX}}"
+# Type used when creating an issue without --type; must have a types/<name>.toml.
+default_type = "{{DEFAULT_TYPE}}"
 
 [claims]
 # Lease for agent claims. The MCP server renews it while running. A stopped MCP

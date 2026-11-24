@@ -20,6 +20,9 @@ mod gc;
 #[path = "cli/type_install.rs"]
 mod type_install;
 
+#[path = "cli/default_type.rs"]
+mod default_type;
+
 #[path = "cli/base.rs"]
 mod base;
 
@@ -1793,6 +1796,13 @@ fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
 #[test]
 fn mcp_server_over_stdio() {
     let e = Env::new();
+    e.set_config("default_type = \"code-change\"", "default_type = \"task\"");
+    std::fs::write(
+        e.trk_dir().join("types/task.toml"),
+        "name = \"task\"\ndescription = \"Project task\"\nagent = \"implementer\"\n",
+    )
+    .unwrap();
+    std::fs::remove_file(e.trk_dir().join("types/code-change.toml")).unwrap();
     assert!(
         StdCommand::new("git")
             .current_dir(e.repo())
@@ -1862,6 +1872,16 @@ fn mcp_server_over_stdio() {
         "{rules}"
     );
     let tools = req("tools/list", json!({}));
+    let followup_tool = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "report_followup")
+        .unwrap();
+    assert_eq!(
+        followup_tool["inputSchema"]["properties"]["type"]["description"],
+        "Work type for the new issue; default task"
+    );
     let names: Vec<&str> = tools["result"]["tools"]
         .as_array()
         .unwrap()
@@ -1895,7 +1915,7 @@ fn mcp_server_over_stdio() {
     assert_eq!(v["task"]["state"], "claimed");
     let (err, task) = call(&mut req, "get_task", json!({}));
     assert!(!err, "{task}");
-    assert_eq!(task["type"], "code-change");
+    assert_eq!(task["type"], "task");
     assert_eq!(task["routing"]["agent"], "implementer");
     let (err, v) = call(&mut req, "close", json!({"reason": "merged", "note": "x"}));
     assert!(err);
@@ -1907,6 +1927,14 @@ fn mcp_server_over_stdio() {
     );
     assert!(!err, "{v}");
     let followup = v["result"]["created"].as_str().unwrap().to_string();
+    let (err, defaulted) = call(
+        &mut req,
+        "report_followup",
+        json!({"title": "Use the default type", "description": "Project policy."}),
+    );
+    assert!(!err, "{defaulted}");
+    let defaulted = defaulted["result"]["created"].as_str().unwrap();
+    assert_eq!(e.ok(&["show", defaulted])["type"], "task");
     let res = req("resources/read", json!({"uri": "trk://task"}));
     assert!(
         res["result"]["contents"][0]["text"]

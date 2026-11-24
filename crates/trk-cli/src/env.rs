@@ -247,6 +247,7 @@ impl Env {
             check_interval: parse_duration(&self.user.check.interval)?,
             max_wakes: self.user.check.max_wakes,
             prefix: self.user.issues.prefix.clone(),
+            default_type: self.user.issues.default_type.clone(),
         })
     }
 

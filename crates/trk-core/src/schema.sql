@@ -41,6 +41,7 @@ CREATE TABLE issue (
   title            TEXT NOT NULL CHECK (length(title) > 0),
   description      TEXT NOT NULL DEFAULT '',
   priority         TEXT NOT NULL DEFAULT 'P2' CHECK (priority IN ('P0', 'P1', 'P2', 'P3')),
+  -- Legacy SQL fallback is inert: Ctx::create always supplies the configured type.
   type             TEXT NOT NULL DEFAULT 'code-change'   -- routes the issue to an agent
                    CHECK (length(trim(type)) > 0),
   close_reason     TEXT CHECK (close_reason IN ('done', 'abandoned')),
