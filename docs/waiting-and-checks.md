@@ -56,6 +56,13 @@ trk check --no-gc         # run checks without automatic cleanup (also works wit
 trk list state=waiting    # what is waiting, on what, and when it is checked next
 ```
 
+Human-readable check output, including `--watch`, uses cyan issue IDs and activity/waiting
+labels, green successes, yellow warnings/skips, and red failures. Status text and glyphs
+remain visible without color. Styling follows the CLI's terminal detection: `NO_COLOR`
+(even empty), `--no-color`, or redirected stdout disables it. JSON/JSONL remain unstyled;
+`--watch` retains its human-readable progress stream even with a JSON format selected.
+Previewed shell commands and paths are not colored.
+
 Without a check, the human can close the issue if nothing remains, reopen it for a new
 session, run `trk resume <ID> -m "<your decision>"` to continue the live waiting
 session, or reply in that same session's chat for the agent to report through MCP

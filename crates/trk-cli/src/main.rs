@@ -490,7 +490,7 @@ fn main() {
         };
         std::process::exit(code);
     }
-    match dispatch(&g, cli.cmd, completed) {
+    match dispatch(&g, cli.cmd, completed, &r) {
         Ok(out) => r.emit(out),
         Err(e) => {
             r.error(&e);
@@ -548,7 +548,7 @@ fn show_one(env: &Env, store: &trk_core::Store, id: &str) -> Result<Out> {
     ))
 }
 
-fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
+fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer) -> Result<Out> {
     if let Cmd::Install {
         force,
         prefix,
@@ -822,6 +822,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
                 no_gc,
             },
             completed,
+            r,
         ),
         Cmd::Note {
             id,

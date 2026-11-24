@@ -16,6 +16,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Native draggable list/details split in the Herdr dashboard, retaining pane sizes while browsing issues.
 - Theme-colored issue-type badges in Herdr dashboard rows and details, with readable labels and stable colors for custom types.
 - Aligned Herdr dashboard issue IDs, type badges, and text across sections, with wrapped titles and custom type names that stay within narrow list panes.
+- Semantic terminal colors for `trk check` and `--watch`: highlighted issue IDs, check activity, successes, waiting/retries, warnings, and failures, respecting existing color-disable and JSON behavior.
 
 ### Beta compatibility and upgrades
 
