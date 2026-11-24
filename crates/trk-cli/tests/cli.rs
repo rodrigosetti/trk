@@ -2165,6 +2165,96 @@ esac
 }
 
 #[test]
+fn send_uses_configured_attempts_with_zero_and_legacy_defaults() {
+    for (retries, expected) in [(Some(0), 1), (Some(3), 3), (None, 10)] {
+        let ui = WaitingUi::new();
+        ui.e.set_config(
+            r#"send       = ["hc", "send", "{name}", "{text}"]"#,
+            r#"send = ["sh", "-c", "echo attempt >> \"$TRK_TEST_UI/attempts\"; echo refused >&2; exit 9"]"#,
+        );
+        ui.e.set_config(
+            "send_retries = 10",
+            &retries
+                .map(|n| format!("send_retries = {n}"))
+                .unwrap_or_default(),
+        );
+        ui.e.set_config(
+            "send_retry_delay = 3",
+            if retries.is_some() {
+                "send_retry_delay = 0"
+            } else {
+                ""
+            },
+        );
+        let id = ui.waiting("exit 75", false);
+        let out = ui
+            .cmd()
+            .args(["--json", "send", &id, "hello"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        let response: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(response["error"]["code"], "internal");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("refused")
+        );
+        assert_eq!(ui.text("attempts").lines().count(), expected, "{retries:?}");
+    }
+}
+
+#[test]
+fn briefing_resume_and_check_delivery_use_configured_attempts() {
+    for delivery in ["briefing", "resume", "wake", "notification"] {
+        let ui = WaitingUi::new();
+        ui.e.set_config(
+            r#"send       = ["hc", "send", "{name}", "{text}"]"#,
+            r#"send = ["sh", "-c", "echo attempt >> \"$TRK_TEST_UI/attempts\"; exit 9"]"#,
+        );
+        ui.e.set_config("send_retries = 10", "send_retries = 2");
+        ui.e.set_config("send_retry_delay = 3", "send_retry_delay = 0");
+        if delivery == "briefing" {
+            ui.e.set_config("herdr      = true", "herdr = false");
+            ui.e.set_config(
+                r#"start      = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]"#,
+                r#"start = ["sh", "-c", "exit 0"]"#,
+            );
+            ui.e.set_config("send_delay = 5", "send_delay = 0");
+            ui.e.set_config("[harness.omp]", "[harness.omp]\nbriefing = \"send\"");
+            ui.e.set_config("command = \"omp\"", "command = \"sh\"");
+            let id = ui.e.create(&["Briefing delivery"]);
+            let result = resume::success(ui.cmd(), &["run", &id, "--harness", "omp"]);
+            assert_eq!(result["briefing_sent"], false);
+        } else {
+            let check = if delivery == "notification" {
+                "exit 0"
+            } else {
+                "exit 1"
+            };
+            let id = ui.waiting(check, false);
+            if delivery == "resume" {
+                let out = ui
+                    .cmd()
+                    .args(["--json", "resume", &id, "-m", "continue"])
+                    .output()
+                    .unwrap();
+                assert_eq!(out.status.code(), Some(1));
+                assert_eq!(ui.e.ok(&["show", &id])["state"], "open");
+            } else {
+                let result = ui.check(&id, "");
+                assert_eq!(
+                    result["state"],
+                    if delivery == "wake" { "open" } else { "closed" }
+                );
+            }
+        }
+        assert_eq!(ui.text("attempts").lines().count(), 2, "{delivery}");
+    }
+}
+
+#[test]
 fn waiting_sessions_accept_send_and_attach_and_runs_labels_both_states() {
     let ui = WaitingUi::new();
     let waiting = ui.waiting("exit 75", false);

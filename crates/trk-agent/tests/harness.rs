@@ -61,8 +61,20 @@ fn seed_profiles_preserve_complete_legacy_launch_specs() {
         current.keys().collect::<Vec<_>>(),
         legacy.keys().collect::<Vec<_>>()
     );
-    for level in ["default", "read-only"] {
-        let agent = agent(level);
+    for (level, configured) in ["default", "read-only", "none"]
+        .into_iter()
+        .flat_map(|level| [false, true].map(|configured| (level, configured)))
+    {
+        let mut agent = agent(level);
+        if configured {
+            agent.harness.model = Some(trk_agent::agent::AgentModel::Shared("chosen-model".into()));
+            for name in current.keys() {
+                agent
+                    .harness
+                    .args
+                    .insert(name.clone(), vec!["--extra".into(), "{{ issue }}".into()]);
+            }
+        }
         for (name, profile) in &current {
             let actual = launch(profile, name, &agent).unwrap();
             let expected = launch(&legacy[name], name, &agent).unwrap();
@@ -92,6 +104,132 @@ fn seed_profiles_preserve_complete_legacy_launch_specs() {
             }
         }
     }
+}
+
+#[test]
+fn builtin_argument_markers_expand_at_the_requested_position_or_fall_back() {
+    let cases: &[(&[&str], &[&str], usize)] = &[
+        (
+            &["{builtin_tools_args}", "run", "--", "{{ briefing }}"],
+            &["test", "run", "--", BRIEFING],
+            1,
+        ),
+        (
+            &["run", "--", "{builtin_tools_args}", "{{ briefing }}"],
+            &["test", "run", "--", BRIEFING],
+            3,
+        ),
+        (
+            &["run", "{{ briefing }}", "--", "{builtin_tools_args}"],
+            &["test", "run", BRIEFING, "--"],
+            4,
+        ),
+        (
+            &["run", "--", "{{ briefing }}"],
+            &["test", "run", "--", BRIEFING],
+            3,
+        ),
+        (&["run", "--"], &["test", "run", "--"], 3),
+        (
+            &["run", "{builtin_tools_args}", "--"],
+            &["test", "run", "--"],
+            2,
+        ),
+    ];
+    for level in ["default", "none", "read-only"] {
+        for &(args, base, position) in cases {
+            let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+            profile.args = args.iter().map(|s| (*s).into()).collect();
+            profile.builtin_tools = BTreeMap::from([
+                ("default".into(), vec!["must not be used".into()]),
+                ("none".into(), vec![]),
+                (
+                    "read-only".into(),
+                    vec!["--tools".into(), "{{ issue }} read only".into(), "".into()],
+                ),
+            ]);
+            let mut expected = base.to_vec();
+            if level == "read-only" {
+                expected.splice(position..position, ["--tools", "proj-abc read only", ""]);
+            }
+            let spec = launch(&profile, "test", &agent(level)).unwrap();
+            assert_eq!(spec.argv, expected, "{level}, {args:?}");
+        }
+    }
+}
+
+#[test]
+fn model_and_agent_argument_markers_expand_optional_groups_in_place() {
+    for marker in ["{model_args}", "{agent_args}"] {
+        for enabled in [false, true] {
+            for position in [0, 2, 3] {
+                let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+                profile.args = vec!["run".into(), "--".into(), "{{ briefing }}".into()];
+                profile.args.insert(position, marker.into());
+                profile.model_args = vec!["--model".into(), "{{ model }}".into()];
+                let mut agent = agent("default");
+                let mut expected = vec!["test", "run", "--", BRIEFING];
+                if enabled {
+                    let group = if marker == "{model_args}" {
+                        profile.model = Some("chosen model".into());
+                        ["--model", "chosen model"]
+                    } else {
+                        agent
+                            .harness
+                            .args
+                            .insert("test".into(), vec!["--extra".into(), "{{ issue }}".into()]);
+                        ["--extra", "proj-abc"]
+                    };
+                    expected.splice(position + 1..position + 1, group);
+                }
+                assert_eq!(
+                    launch(&profile, "test", &agent).unwrap().argv,
+                    expected,
+                    "{marker}, enabled={enabled}, position={position}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn marked_groups_do_not_move_unmarked_groups_or_reexpand_rendered_values() {
+    let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+    profile.args_json = Some(r#"["{builtin_tools_args}"]"#.into());
+    profile.args = vec![
+        "{agent_args}".into(),
+        "run".into(),
+        "{{ briefing }}".into(),
+        "--".into(),
+        "{builtin_tools_args}".into(),
+    ];
+    profile.model = Some("literal {builtin_tools_args}".into());
+    profile.model_args = vec!["--model".into(), "{{ model }}".into()];
+    profile.builtin_tools.insert(
+        "read-only".into(),
+        vec!["--tools".into(), "{{ issue }}".into()],
+    );
+    let mut agent = agent("read-only");
+    agent
+        .harness
+        .args
+        .insert("test".into(), vec!["--extra".into(), "{{ issue }}".into()]);
+    assert_eq!(
+        launch(&profile, "test", &agent).unwrap().argv,
+        [
+            "test",
+            "{builtin_tools_args}",
+            "--extra",
+            "proj-abc",
+            "run",
+            "--model",
+            "literal {builtin_tools_args}",
+            BRIEFING,
+            "--",
+            "--tools",
+            "proj-abc",
+        ]
+    );
 }
 
 #[test]
