@@ -70,7 +70,8 @@ pub fn snapshot(store: &Store, env: &Env) -> Result<Dashboard> {
             &|profile, host, terminal| {
                 terminal.filter(|terminal| !terminal.trim().is_empty())?;
                 match crate::launcher::for_claim(env, profile) {
-                    Ok(launcher) => run::session_alive(&launcher, host, terminal),
+                    Ok(Some(launcher)) => run::session_alive(&launcher, host, terminal),
+                    Ok(None) => None,
                     Err(error) => {
                         *config_error.borrow_mut() = Some(error);
                         None

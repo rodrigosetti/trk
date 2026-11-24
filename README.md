@@ -389,8 +389,10 @@ claimed or waiting issues, and serializes cleanup with the check queue and lifec
 All historical claims are considered, but only resources on this host are eligible.
 
 Sessions use each historical claim's pinned launcher, never today's selection order.
-GC invokes its optional `close` operation; Herdr finds the exact recorded terminal and
-closes its containing space, protecting your current space and other issues' active or
+Terminals without a recorded launcher profile are skipped, including during
+`trk check --watch` sweeps; their independently owned Git resources remain eligible.
+GC invokes the profile's optional `close` operation; Herdr finds the exact recorded
+terminal and closes its containing space, protecting your current space and other issues' active or
 waiting sessions. Legacy claims recording the primary checkout as their working directory
 do not establish ownership of a disposable worktree or branch; their sessions remain
 eligible, and they do not block cleanup of actual issue worktrees recorded by other claims.
@@ -486,10 +488,13 @@ waiting sessions with `state: "waiting"` (their displayed lease is historical), 
 `trk reap` skips them. Closing, reopening or claiming the issue for a replacement ends
 the old session's access.
 
-Session liveness comes from the recorded terminal, not the MCP process. A known claim
-host matching this machine and a nonblank terminal are required; otherwise liveness is
-unknown. The Herdr driver discovers exact terminals; other profiles use optional
-`exists` argv: exit 0 means live, a nonzero exit means gone, and command errors or a
+Session liveness comes from the recorded terminal, not the MCP process. A recorded
+launcher profile, a known claim host matching this machine and a nonblank terminal
+are required; otherwise liveness is unknown. Unnamed historical or non-launcher claims
+remain visible, but cannot be attached to, sent to, resumed or automatically woken;
+trk never assigns them today's launcher. The Herdr driver discovers exact terminals;
+other profiles use optional `exists` argv: exit 0 means live, a nonzero exit means gone,
+and command errors or a
 missing/empty operation mean unknown. Unknown sessions are neither woken/resumed nor
 reaped; a failed check instead reopens. Wakes and manual resume require the pinned
 profile's `send`.

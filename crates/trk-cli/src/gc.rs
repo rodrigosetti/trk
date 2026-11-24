@@ -140,7 +140,12 @@ fn session(
             "terminal belongs to another or unknown host",
         ));
     }
-    let launcher = crate::launcher::for_claim(env, claim.launcher.as_deref())?;
+    let Some(launcher) = crate::launcher::for_claim(env, claim.launcher.as_deref())? else {
+        return Ok(Resource::new(
+            "skipped",
+            "terminal has no named launcher profile",
+        ));
+    };
     let terminal = claim.terminal.as_deref().expect("filtered terminal");
     if launcher.is_herdr() {
         return herdr::close_session(terminal, protected, dry_run, closed_spaces);

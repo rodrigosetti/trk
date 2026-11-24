@@ -3131,6 +3131,7 @@ fn launcher_configuration_errors_name_the_invalid_setting() {
     for (from, to, key) in [
         ("use = [\"herdr\"]", "", "launcher.use"),
         ("use = [\"herdr\"]", "use = \"herdr\"", "launcher.use"),
+        ("use = [\"herdr\"]", "use = [\"\"]", "launcher profile name"),
         (
             "use = [\"herdr\"]",
             "use = [\"missing\"]",

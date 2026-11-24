@@ -366,3 +366,102 @@ fn named_attach_falls_back_to_attach_when_focus_is_missing() {
     tmux.ok(&["attach", &id]);
     assert_eq!(tmux.text("attachments"), "attach-session\n$41\n");
 }
+
+#[test]
+fn unnamed_claims_remain_visible_without_controlling_or_reaping_the_terminal() {
+    for launcher in [None, Some("")] {
+        for (check, result, state) in [("exit 0", "passed", "closed"), ("exit 1", "failed", "open")]
+        {
+            let tmux = Tmux::new();
+            let id = tmux.launch();
+            // A pre-profile claim, with an address that still exists today.
+            let store = trk_core::Store::open(
+                &tmux.e.trk_dir().join("trk.db"),
+                trk_core::StoreOpts::default(),
+            )
+            .unwrap();
+            store
+                .conn()
+                .execute(
+                    "UPDATE claim SET launcher = ?1 WHERE issue_id = ?2",
+                    (launcher, id.as_str()),
+                )
+                .unwrap();
+            tmux.pin_to_other_selection();
+
+            for waiting in [false, true] {
+                if waiting {
+                    tmux.e.ok(&["wait", &id, "--force", "-c", check]);
+                }
+                let snapshot = tmux.ok(&["dashboard"]);
+                let issue = snapshot["issues"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|issue| issue["id"] == id)
+                    .unwrap();
+                assert!(issue["session"]["alive"].is_null(), "{issue}");
+                assert_eq!(issue["session"]["terminal"], "$41");
+                assert_eq!(issue["session"]["active"], !waiting);
+                let runs = tmux.ok(&["runs"]);
+                assert_eq!(runs[0]["issue"], id);
+                assert!(runs[0]["session_alive"].is_null(), "{runs}");
+                assert_eq!(tmux.ok(&["reap"]), json!([]));
+
+                let mut operations = vec![
+                    vec!["attach", id.as_str()],
+                    vec!["send", id.as_str(), "do not deliver"],
+                ];
+                if waiting {
+                    operations.push(vec!["resume", id.as_str(), "-m", "do not restore"]);
+                }
+                for args in operations {
+                    let out = tmux.cmd().arg("--json").args(&args).output().unwrap();
+                    assert!(!out.status.success(), "{args:?}");
+                    let response: Value = serde_json::from_slice(&out.stdout).unwrap();
+                    assert_eq!(response["error"]["code"], "invalid_state", "{response}");
+                }
+                assert_eq!(
+                    tmux.e.ok(&["show", &id])["state"],
+                    if waiting { "waiting" } else { "claimed" }
+                );
+            }
+
+            assert_eq!(tmux.ok(&["check", &id])["results"][0]["result"], result);
+            assert_eq!(tmux.e.ok(&["show", &id])["state"], state);
+            if state == "open" {
+                tmux.e.ok(&["close", &id]);
+            }
+            let gc = tmux.ok(&["gc", &id]);
+            assert!(gc.get("errors").is_none(), "{gc}");
+            assert_eq!(gc["issues"][0]["session"]["status"], "skipped", "{gc}");
+            assert!(tmux.e.dir.path().join("sessions/$41").exists());
+            for operation in ["attachments", "messages", "renames", "closes"] {
+                assert_eq!(tmux.text(operation), "", "{operation}");
+            }
+            let claims = tmux.e.ok(&["show", &id, "--with", "claims"]);
+            assert_eq!(claims["claims"][0]["launcher"], json!(launcher));
+        }
+    }
+}
+
+#[test]
+fn named_missing_claim_profile_is_still_a_configuration_error() {
+    let tmux = Tmux::new();
+    let id = tmux.launch();
+    tmux.e.set_config("[launcher.tmux]", "[launcher.removed]");
+    for operation in ["dashboard", "runs"] {
+        let out = tmux.cmd().args(["--json", operation]).output().unwrap();
+        assert!(!out.status.success());
+        let response: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(response["error"]["code"], "config_invalid", "{response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("launcher.tmux"),
+            "{response}"
+        );
+    }
+    assert_eq!(tmux.e.ok(&["show", &id])["claim"]["launcher"], "tmux");
+}

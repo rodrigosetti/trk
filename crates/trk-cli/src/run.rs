@@ -476,8 +476,11 @@ fn claim_session_alive(env: &Env, claim: &Value) -> Result<Option<bool>> {
     else {
         return Ok(None);
     };
+    let Some(launcher) = launcher::for_claim(env, claim["launcher"].as_str())? else {
+        return Ok(None);
+    };
     Ok(session_alive(
-        &launcher::for_claim(env, claim["launcher"].as_str())?,
+        &launcher,
         claim["host"].as_str(),
         Some(terminal),
     ))
@@ -525,8 +528,8 @@ pub fn runs(env: &Env) -> Result<Out> {
     Ok(Out::Text(text, Value::Array(runs)))
 }
 
-fn terminal_of(env: &Env, id: &str) -> Result<(String, Claim)> {
-    env.store()?.read(None, |c| {
+fn terminal_of(env: &Env, id: &str) -> Result<(String, Claim, Launcher)> {
+    let (id, claim) = env.store()?.read(None, |c| {
         let id = c.resolve_id(id)?;
         let claim = c
             .session_claim(&id)?
@@ -543,26 +546,31 @@ fn terminal_of(env: &Env, id: &str) -> Result<(String, Claim)> {
                 )
             })?;
         Ok((id, claim))
-    })
+    })?;
+    let launcher = launcher::for_claim(env, claim.launcher.as_deref())?.ok_or_else(|| {
+        Error::new(
+            Code::InvalidState,
+            format!("{id}: session has no named launcher profile"),
+        )
+        .with_issue(&id)
+        .with_hint("this terminal cannot be controlled by trk; open it directly, or start a replacement session with `trk run` once the issue is open")
+    })?;
+    Ok((id, claim, launcher))
 }
 
 pub fn attach(env: &Env, id: &str) -> Result<Out> {
-    let (id, claim) = terminal_of(env, id)?;
+    let (id, claim, l) = terminal_of(env, id)?;
     let name = claim.terminal.as_deref().expect("filtered terminal");
-    let l = launcher::for_claim(env, claim.launcher.as_deref())?;
     if !l.focus(name)?
         && let Some((false, _)) = l.operation(l.attach.as_deref(), name, None, true)?
     {
-        return Err(
-            Error::new(Code::Internal, format!("attach to {name} failed")).with_issue(&id),
-        );
+        return Err(Error::new(Code::Internal, format!("attach to {name} failed")).with_issue(&id));
     }
     Ok(Out::Silent(json!({"issue": id, "terminal": name})))
 }
 
 pub fn send(env: &Env, id: &str, text: &str) -> Result<Out> {
-    let (id, claim) = terminal_of(env, id)?;
-    let l = launcher::for_claim(env, claim.launcher.as_deref())?;
+    let (id, claim, l) = terminal_of(env, id)?;
     let name = claim.terminal.expect("filtered terminal");
     let Some(tmpl) = l.send.as_deref().filter(|tmpl| !tmpl.is_empty()) else {
         return Ok(Out::Silent(
@@ -629,11 +637,9 @@ pub fn resume(env: &Env, id: &str, message: &str) -> Result<Out> {
         {
             return Err(unavailable());
         }
-        let session = live_waiting_session(
-            &previous,
-            launcher::for_claim(env, previous.launcher.as_deref())?,
-        )
-        .ok_or_else(unavailable)?;
+        let launcher =
+            launcher::for_claim(env, previous.launcher.as_deref())?.ok_or_else(unavailable)?;
+        let session = live_waiting_session(&previous, launcher).ok_or_else(unavailable)?;
         let claim = store.write(&actor, false, |c| {
             c.resume(&id, previous.id, revision, message)
         })?;
@@ -725,10 +731,10 @@ pub fn waiting_session(env: &Env, issue: &str) -> Result<Option<WaitingSession>>
     {
         return Ok(None);
     }
-    Ok(live_waiting_session(
-        &claim,
-        launcher::for_claim(env, claim.launcher.as_deref())?,
-    ))
+    let Some(launcher) = launcher::for_claim(env, claim.launcher.as_deref())? else {
+        return Ok(None);
+    };
+    Ok(live_waiting_session(&claim, launcher))
 }
 
 /// Best-effort UI update and notification to the session that left an issue waiting.
@@ -746,7 +752,9 @@ pub fn notify_waiting_session(env: &Env, issue: &str, text: &str, closed: bool) 
     else {
         return Ok(());
     };
-    let launcher = launcher::for_claim(env, claim.launcher.as_deref())?;
+    let Some(launcher) = launcher::for_claim(env, claim.launcher.as_deref())? else {
+        return Ok(());
+    };
     // Renaming is independent of agent liveness and message delivery.
     if closed {
         let title = env.store()?.read(None, |c| Ok(c.issue(issue)?.title))?;

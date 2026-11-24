@@ -988,6 +988,21 @@ fn check_gc_watch_sweeps_each_pass_and_keeps_skipped_resources_quiet() {
     let (skipped, skipped_path) = fixture.closed("done", "missing-terminal");
     std::fs::write(skipped_path.join("dirty"), "keep this work").unwrap();
     let skipped_notes = fixture.notes(&skipped);
+    let mut unnamed = Vec::new();
+    for (terminal, launcher) in [("term-active", None), ("term-decoy", Some(""))] {
+        let id = fixture.e.create(&["Historical terminal without a profile"]);
+        fixture.claim(&id, None, terminal, &fixture.host);
+        fixture
+            .store_at("2026-11-20T10:00:00Z")
+            .conn()
+            .execute(
+                "UPDATE claim SET launcher = ?1 WHERE issue_id = ?2",
+                (launcher, id.as_str()),
+            )
+            .unwrap();
+        fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
+        unnamed.push(id);
+    }
     fixture.e.waiting(
         "Watch heartbeat",
         "echo pass >> \"$TRK_REPO/watch-passes\"; exit 75",
@@ -1037,6 +1052,15 @@ fn check_gc_watch_sweeps_each_pass_and_keeps_skipped_resources_quiet() {
     assert_eq!(output.matches(&first).count(), 1, "{output}");
     assert_eq!(output.matches(&second).count(), 1, "{output}");
     assert_eq!(output.matches(&skipped).count(), 1, "{output}");
+    for id in unnamed {
+        assert_eq!(output.matches(&id).count(), 1, "{output}");
+    }
+    assert!(!output.contains("will retry"), "{output}");
+    let stderr = std::fs::read_to_string(stderr_path).unwrap();
+    assert!(!stderr.contains("claim.launcher"), "{stderr}");
+    let mut closed = fixture.closed_spaces();
+    closed.sort();
+    assert_eq!(closed, ["history", "target"]);
     assert!(skipped_path.exists());
     assert!(fixture.branch_exists(&skipped));
     assert_eq!(fixture.notes(&skipped), skipped_notes);

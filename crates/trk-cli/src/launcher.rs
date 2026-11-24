@@ -39,10 +39,17 @@ fn invalid(reason: impl std::fmt::Display) -> Error {
     )
 }
 
-pub fn for_claim(env: &Env, name: Option<&str>) -> Result<Launcher> {
-    let name = name
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| invalid("claim.launcher must name a launcher profile"))?;
+/// An unnamed claim has no known launcher ownership, not a default profile.
+pub fn for_claim(env: &Env, name: Option<&str>) -> Result<Option<Launcher>> {
+    name.filter(|name| !name.is_empty())
+        .map(|name| profile(env, name))
+        .transpose()
+}
+
+fn profile(env: &Env, name: &str) -> Result<Launcher> {
+    if name.is_empty() {
+        return Err(invalid("launcher profile name must not be empty"));
+    }
     let root = env
         .user
         .launcher
@@ -105,7 +112,7 @@ pub fn choose(env: &Env) -> Result<Launcher> {
         .try_into()
         .map_err(|error| invalid(format!("launcher.use: {error}")))?;
     for name in &names {
-        let profile = for_claim(env, Some(name))?;
+        let profile = profile(env, name)?;
         if profile.is_available() {
             if !profile.is_herdr() && profile.start.as_ref().is_none_or(|start| start.is_empty()) {
                 return Err(invalid(format!(
