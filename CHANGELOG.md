@@ -22,6 +22,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 ### Fixed
 
 - Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
+- Human unclaim permission errors now include the issue-specific `trk unclaim <ID> --force` recovery command; Herdr shows CLI error hints in a wrapping status footer.
 
 ### Beta compatibility and upgrades
 

@@ -160,7 +160,8 @@ export default class Trk extends View {
     try { out = JSON.parse(r.stdout); } catch { /* not JSON: reported below */ }
     if (out?.ok) return out;
     const err = out?.error;
-    throw new Error((typeof err === "string" ? err : err?.message) || r.stderr.trim() || r.stdout.trim() || `trk exited ${r.code}`);
+    const message = (typeof err === "string" ? err : err?.message) || r.stderr.trim() || r.stdout.trim() || `trk exited ${r.code}`;
+    throw new Error(err?.hint ? `${message}\n${err.hint}` : message);
   }
 
   /** Follows the shown space. What is on screen stays until the new place answers. */
@@ -722,9 +723,9 @@ export default class Trk extends View {
       .children(rows);
 
     const footer = this.busy || this.status
-      ? h_flex().h(26).flex_none().px(12).gap(8).items_center().border_t(1).border_color(t.border).text_size(11.5)
+      ? h_flex().min_h(26).flex_none().px(12).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(11.5)
         .when(Boolean(this.busy), (el) => el.child(svg("mods/trk/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)))
-        .child(div().flex_1().min_w(0).truncate().text_color(this.status?.level === "error" ? t.blocked : t.muted).child(this.busy ? `${this.busy}…` : this.status.text))
+        .child(div().flex_1().min_w(0).whitespace_normal().text_color(this.status?.level === "error" ? t.blocked : t.muted).child(this.busy ? `${this.busy}…` : this.status.text))
       : null;
 
     // Native pane sizes belong to this stable group, not the selected issue.

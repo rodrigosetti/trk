@@ -57,9 +57,10 @@ async function dashboard(state) {
       },
       exec: async (command, args, options) => {
         executions.push({ command, args, options });
-        return { code: 0, stdout: JSON.stringify({ ok: true, data: {} }), stderr: "" };
+        return state.output ?? { code: 0, stdout: JSON.stringify({ ok: true, data: {} }), stderr: "" };
       },
-      agents() {}, terminals() {}, theme() {}, settings() {}, notify() {}, checking() {}, shared() {},
+      agents: () => [], terminals: () => [], theme: () => ({}), settings: () => ({}),
+      notify() {}, checking() {}, shared() {},
       setShared() {}, setBadge() {}, setAgentOrder() {}, nextCommand() {}, watchFolder() {}, layout() {},
     },
   };
@@ -170,5 +171,40 @@ test("working rows prefix the title once and omit empty metadata without losing 
     issue.session.agent = "omp";
     assert.deepEqual(content(view.row({}, issue, Date.now(), columns)),
       ["P2", issue.id, issue.type, issue.title, label]);
+  }
+});
+
+test("unclaim failures show the CLI recovery hint in the dashboard status", async () => {
+  const state = spaceState();
+  const message = "orch-123 is claimed by agent:omp:s1; only the claimant may unclaim it";
+  const hint = "run `trk unclaim orch-123 --force` to override (recorded)";
+  state.output = {
+    code: 5, stderr: "",
+    stdout: JSON.stringify({ ok: false, error: { code: "not_claimant", message, hint } }),
+  };
+  const { view } = await dashboard(state);
+  let pending;
+  const cx = { notify() {}, spawn: (run) => { pending = run(cx); } };
+  view.act(cx, "unclaim orch-123", ["unclaim", "orch-123"]);
+  await pending;
+  assert.equal(view.status.level, "error");
+  assert.equal(view.busy, null);
+  view.data = { issues: [] };
+  view.folded = new Set();
+  assert.ok(content(view.render()).includes(`unclaim orch-123: ${message}\n${hint}`));
+});
+
+test("CLI errors without hints retain their message and fallback diagnostics", async () => {
+  const state = spaceState();
+  const { view } = await dashboard(state);
+  for (const [stdout, stderr, expected] of [
+    [JSON.stringify({ ok: false, error: { message: "not claimed" } }), "", "not claimed"],
+    [JSON.stringify({ ok: false, error: "legacy error" }), "", "legacy error"],
+    ["", "permission denied\n", "permission denied"],
+    ["invalid output\n", "", "invalid output"],
+    ["", "", "trk exited 5"],
+  ]) {
+    state.output = { code: 5, stdout, stderr };
+    await assert.rejects(view.trk(["unclaim", "orch-123"]), { message: expected });
   }
 });

@@ -209,7 +209,7 @@ impl Ctx<'_> {
             if force && !self.actor().is_agent() {
                 return Ok(true);
             }
-            return Err(Error::new(
+            let error = Error::new(
                 Code::NotClaimant,
                 format!(
                     "{} is claimed by {}; only the claimant may {what} it",
@@ -217,8 +217,15 @@ impl Ctx<'_> {
                 ),
             )
             .with_issue(&issue.id)
-            .with_detail("claimant", c.actor.clone())
-            .with_hint("pass --force to override (recorded)"));
+            .with_detail("claimant", c.actor.clone());
+            return Err(if what == "unclaim" && !self.actor().is_agent() {
+                error.with_hint(format!(
+                    "run `trk unclaim {} --force` to override (recorded)",
+                    issue.id
+                ))
+            } else {
+                error.with_hint("pass --force to override (recorded)")
+            });
         }
         Ok(false)
     }

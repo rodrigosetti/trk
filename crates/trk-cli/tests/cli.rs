@@ -993,7 +993,39 @@ fn errors_and_exit_codes() {
     e.ok(&["claim", &id, "--as", "agent:omp:s1"]);
     let err = e.err(&["claim", &id], 5, "claimed_by_other");
     assert_eq!(err["claimant"], "agent:omp:s1");
-    e.err(&["close", &id], 5, "not_claimant");
+    let err = e.err(&["close", &id], 5, "not_claimant");
+    assert!(!err["hint"].as_str().unwrap().contains("trk unclaim"));
+    let err = e.err(
+        &["unclaim", id.strip_prefix("orch-").unwrap()],
+        5,
+        "not_claimant",
+    );
+    assert_eq!(err["issue"], id);
+    assert_eq!(err["claimant"], "agent:omp:s1");
+    assert!(
+        err["hint"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("trk unclaim {id} --force"))
+    );
+    let err = e.err(
+        &["unclaim", &id, "--force", "--as", "agent:omp:s2"],
+        5,
+        "not_permitted",
+    );
+    assert!(err.get("hint").is_none());
+    assert_eq!(e.ok(&["show", &id])["claim"]["actor"], "agent:omp:s1");
+    e.ok(&["unclaim", &id, "--force"]);
+    assert_eq!(e.ok(&["show", &id])["state"], "open");
+    let log = e.ok(&["log", &id]);
+    let release = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["op"] == "release")
+        .unwrap();
+    assert_eq!(release["payload"]["forced"], true);
+    e.ok(&["claim", &id, "--as", "agent:omp:s1"]);
     e.err(
         &["note", &id, "x", "--as", "agent:omp:s2"],
         5,
