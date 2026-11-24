@@ -89,22 +89,20 @@ pub fn choose(env: &Env) -> Result<(Launcher, Option<crate::herdr::Placement>)> 
     let names = env.user.launcher.as_ref().and_then(|v| v.get("use"));
     if let Some(names) = names {
         let names: Vec<String> = names.clone().try_into().map_err(invalid)?;
-        for name in names {
-            let profile = for_claim(env, Some(&name))?;
-            let usable = if let Some(probe) = &profile.available {
-                profile
-                    .operation(Some(probe), "", None, false)
-                    .is_ok_and(|out| out.is_some_and(|out| out.0))
-            } else if profile.is_herdr() {
-                crate::herdr::available().is_ok()
-            } else {
-                true
-            };
-            if usable {
+        for name in &names {
+            let profile = for_claim(env, Some(name))?;
+            if profile.is_available() {
                 return Ok((profile, None));
             }
         }
-        return Err(invalid("no available launcher in use"));
+        return Err(invalid("no available launcher in use").with_hint(format!(
+            "profiles tried: {}; install one of these launchers (Herdr, hc, or tmux), edit [launcher] use in config.toml, or run `trk run --fg`",
+            if names.is_empty() {
+                "(none; [launcher] use is empty)".to_owned()
+            } else {
+                names.join(", ")
+            }
+        )));
     }
     let mut profile = for_claim(env, None)?;
     if profile.is_herdr()
@@ -118,6 +116,17 @@ pub fn choose(env: &Env) -> Result<(Launcher, Option<crate::herdr::Placement>)> 
 }
 
 impl Launcher {
+    pub fn is_available(&self) -> bool {
+        if let Some(probe) = &self.available {
+            self.operation(Some(probe), "", None, false)
+                .is_ok_and(|out| out.is_some_and(|out| out.0))
+        } else if self.is_herdr() {
+            crate::herdr::available().is_ok()
+        } else {
+            true
+        }
+    }
+
     pub fn terminal_name(&self, vars: &[(&str, &str)]) -> String {
         let template = self.name_template.as_deref().unwrap_or("trk-{id}");
         let allowed = self.name_chars.as_deref().unwrap_or("a-z0-9_-");

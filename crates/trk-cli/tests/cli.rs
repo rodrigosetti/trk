@@ -35,6 +35,8 @@ mod verify;
 #[path = "cli/user_config.rs"]
 mod user_config;
 
+#[path = "cli/install_detection.rs"]
+mod install_detection;
 #[path = "cli/skill.rs"]
 mod skill;
 
@@ -78,9 +80,22 @@ send_retry_delay = 3
         e
     }
 
-    /// Install the actual named-profile seed, without the legacy test fixture.
+    /// Seed profiles with deterministic preferences, independent of host tools.
     fn named() -> Env {
-        Self::with_install(false)
+        let e = Self::with_install(false);
+        let config: toml::Value =
+            toml::from_str(&std::fs::read_to_string(e.trk_dir().join("config.toml")).unwrap())
+                .unwrap();
+        for (section, key, value) in [
+            ("launcher", "use", "[\"herdr\", \"hc\"]"),
+            ("harness", "prefer", "[\"omp\", \"claude-code\"]"),
+        ] {
+            e.set_config(
+                &format!("{key} = {}", config[section][key]),
+                &format!("{key} = {value}"),
+            );
+        }
+        e
     }
 
     fn with_install(minimal: bool) -> Env {
