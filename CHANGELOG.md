@@ -14,6 +14,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Added the `ops` type and full-shell `operator` agent to both presets for recorded, verified running-service operations without worktrees or landing recipes. Destructive/irreversible work requires direct in-session approval; repository fixes become follow-up `change` issues.
 - Configuration reference links and user-layer guidance in installed config and skill files, plus a manual link in CLI help.
 - Native draggable list/details split in the Herdr dashboard, retaining pane sizes while browsing issues.
+- Theme-colored issue-type badges in Herdr dashboard rows and details, with readable labels and stable colors for custom types.
 
 ### Beta compatibility and upgrades
 

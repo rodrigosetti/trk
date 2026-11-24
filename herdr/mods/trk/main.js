@@ -26,6 +26,11 @@ const GROUPS = [
   { id: "blocked", label: "Blocked", color: "dim" },
 ];
 const PRIORITIES = ["P0", "P1", "P2", "P3"];
+const TYPE_TONES = new Map([
+  ["change", "working"], ["code-change", "working"], ["bug", "blocked"],
+  ["research", "done"], ["ops", "accent"],
+]);
+const CUSTOM_TYPE_TONES = ["working", "blocked", "done", "accent", "ansi5", "ansi6"];
 const PROMPTS = {
   create: { label: "New issue", placeholder: "Title", submit: "Create" },
   note: { label: "Note", placeholder: "What happened", submit: "Add note" },
@@ -456,6 +461,22 @@ export default class Trk extends View {
       .child(id);
   }
 
+  typeBadge(t, type) {
+    let tone = TYPE_TONES.get(type);
+    if (!tone) {
+      // Stable across sessions and projects, independent of the types currently shown.
+      let hash = 0;
+      for (let i = 0; i < type.length; i++) hash = (Math.imul(hash, 31) + type.charCodeAt(i)) >>> 0;
+      tone = CUSTOM_TYPE_TONES[hash % CUSTOM_TYPE_TONES.length];
+    }
+    const color = t[tone];
+    // Keep the text in theme foreground; the tint and edge carry the type color.
+    return h_flex().flex_none().max_w(140).h(18).px(5).items_center().rounded(4)
+      .border_l(2).border_color(color).bg(color + "1a")
+      .text_size(10.5).font_medium().text_color(t.foreground).tooltip(type)
+      .child(div().min_w(0).truncate().child(type));
+  }
+
   /** A link the issue carries (a pull request, a preview): click opens it in the browser. */
   link(t, issue, n, place) {
     const l = issue.links[n];
@@ -495,7 +516,7 @@ export default class Trk extends View {
       .on_click((_e, cx) => this.select(issue.id, cx))
       .child(div().w(18).flex_none().text_size(10.5).font_semibold().text_color(urgent).child(issue.priority))
       .child(this.issueId(t, issue.id, "row"))
-      .child(div().flex_none().text_size(10).text_color(t.dim).child(issue.type))
+      .child(this.typeBadge(t, issue.type))
       .child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : issue.group === "blocked" ? t.muted : t.foreground).child(issue.title))
       .when(Boolean(issue.links?.length), (el) => el.child(this.link(t, issue, 0, "row")))
       .when((issue.links?.length ?? 0) > 1, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(`+${issue.links.length - 1}`)))
@@ -557,7 +578,8 @@ export default class Trk extends View {
         .child(this.button(t, "hide-detail", "Hide details", (cx) => this.hideDetail(cx), { tip: "Hide details and expand the issue list (Esc)" })))
       .child(h_flex().gap(6).items_center().flex_wrap()
         .child(this.issueId(t, issue.id, "detail", t.dim))
-        .child(div().text_size(11).text_color(t.dim).child(`· ${issue.type} · ${issue.state} · updated ${ago(issue.updated_at, now)} ago`))
+        .child(this.typeBadge(t, issue.type))
+        .child(div().text_size(11).text_color(t.dim).child(`· ${issue.state} · updated ${ago(issue.updated_at, now)} ago`))
         .child(div().flex_1())
         .children(PRIORITIES.map((p) => div().id(`prio-${issue.id}-${p}`).px(5).h(18).flex().items_center().rounded(5).text_size(10.5).font_semibold()
           .text_color(p === issue.priority ? t.accent_foreground : t.dim).when(p === issue.priority, (el) => el.bg(t.accent))

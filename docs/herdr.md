@@ -11,7 +11,9 @@ trk herdr open                   # the panel for this project, as a tab in this 
 trk herdr open --split right     # beside this terminal's pane instead (or: down)
 ```
 
-Each issue row shows its type immediately after its ID, including `code-change`.
+Each issue row and detail header shows a colored type badge, including `code-change`.
+Built-in types use consistent theme colors; custom types get a stable color from their name.
+The type text stays readable in the theme's foreground color; long names have a full-name tooltip.
 
 That is the whole setup. Herdr mods are machine-wide and a space shows one once a pane or tab
 there holds it, so `open` does both steps: it installs or refreshes the mod when needed, then
