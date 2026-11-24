@@ -33,6 +33,14 @@ pub const FILES: &[(&str, &str)] = &[
         include_str!("../../../seed/prompts/_rules.md.j2"),
     ),
     (
+        "prompts/_landing.merge.md.j2",
+        include_str!("../../../seed/prompts/_landing.merge.md.j2"),
+    ),
+    (
+        "prompts/_landing.pr.md.j2",
+        include_str!("../../../seed/prompts/_landing.pr.md.j2"),
+    ),
+    (
         "prompts/briefing.md.j2",
         include_str!("../../../seed/prompts/briefing.md.j2"),
     ),

@@ -25,6 +25,16 @@ pub fn sample_issue() -> Value {
 
 pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
     let mut d = vec![];
+    let landing = format!("prompts/_landing.{}.md.j2", user.run.landing);
+    if !cfg.path.join(&landing).is_file() {
+        d.push(Diagnostic::error(
+            Some("config.toml"),
+            format!(
+                "run.landing '{}': template '{landing}' does not exist",
+                user.run.landing
+            ),
+        ));
+    }
     let mut agents: BTreeMap<String, AgentDef> = BTreeMap::new();
     for p in cfg.files_in("agents", "toml") {
         let file = format!("agents/{}", p.file_name().unwrap().to_string_lossy());

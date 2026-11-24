@@ -1,7 +1,7 @@
 use super::*;
 
 fn recipe() -> &'static str {
-    include_str!("../../../../seed/prompts/_rules.md.j2")
+    include_str!("../../../../seed/prompts/_landing.merge.md.j2")
         .split_once("Merge your branch")
         .unwrap()
         .1

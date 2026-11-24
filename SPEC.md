@@ -376,6 +376,7 @@ Both templates receive this MiniJinja context in `trk run`, the MCP server and
 | `config.check.max_wakes` | Numeric configured automatic wake cap |
 | `config.claims.agent_lease` | Configured lease duration string |
 | `config.run.worktrees` | Configured directory string, without tilde expansion or root resolution |
+| `config.run.landing` | Landing recipe name, default `"merge"` |
 | `agent.name`, `agent.description` | Selected agent metadata |
 | `tools` | Available tools as `{name, description}` objects |
 | `worktree` | Session worktree path or null |
@@ -575,7 +576,7 @@ Everything is in `<project root>/.trk/`, created by `trk install`:
 
 `config.toml` is explicit: `trk install` writes the settings. Missing settings are errors except
 for optional `[launcher] alive`, compatibility defaults such as `[check] verify`, `max_wakes`,
-`gc`, `gc_grace`, and the detected `[run] base`. Types, agents and prompts are read when routing is resolved.
+`gc`, `gc_grace`, `[run] landing` (default `"merge"`), and the detected `[run] base`. Types, agents and prompts are read when routing is resolved.
 
 `[run] base` configures the base branch (for example, `base = "develop"`). When writing
 a new config, `trk install` detects the branch named by `origin/HEAD`, then the current
@@ -583,6 +584,18 @@ branch of the primary checkout, then falls back to `main`. At runtime an explici
 `base` wins; older configs that omit it use the same detection order. The resolved
 branch is used for new issue branches, prompt-template `{{ base }}` and waiting-check
 `TRK_BASE`.
+
+`[run] landing` is a string selecting `prompts/_landing.<value>.md.j2`, exposed as
+`config.run.landing` in instruction and briefing templates. It defaults to `"merge"`
+when omitted. The seed includes `_landing.merge.md.j2` (verified local merge into the
+primary checkout) and `_landing.pr.md.j2` (GitHub pull request targeting the resolved
+base branch and a merge/CI/conflict check). Only `implementer.instructions.md.j2`
+includes the selected landing template. `_rules.md.j2` contains generic tracker and
+waiting rules shared with the researcher and reviewer, without either landing recipe.
+Custom values are not an enum: for example, `landing = "gitlab"` selects a
+project-provided `prompts/_landing.gitlab.md.j2` without a code change.
+`trk agent check` emits a configuration error if the selected template does not exist,
+even when no agent includes it; included templates are also rendered for validation.
 
 | Check setting | Default, also when omitted | Meaning |
 | --- | --- | --- |

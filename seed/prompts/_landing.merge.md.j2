@@ -1,0 +1,14 @@
+Merge your branch into `{{ base }}` in the main checkout only after verifying the merged result in your issue worktree (checks run one at a time, so merges never race). Call `wait` with this check:
+
+```sh
+cd "$TRK_WORKTREE" || exit 1
+git merge --no-edit "$TRK_BASE" || { git merge --abort 2>/dev/null; exit 1; }
+if [ -n "$TRK_VERIFY" ]; then
+  sh -c "$TRK_VERIFY" || exit 1
+fi
+cd "$TRK_REPO" || exit 1
+[ "$(git branch --show-current)" = "$TRK_BASE" ] || exit 1
+git merge --ff-only "$TRK_BRANCH" || exit 1
+```
+
+`[check] verify` is an opaque shell command, exposed to templates as `verify`; empty means skip verification, not skip the worktree merge. Include dependency setup in the command when needed. Verification shares `[check] timeout` (configured `{{ config.check.timeout }}`) with the whole check and holds the serialized queue: use a fast subset or raise the timeout for slow suites. A failed verification, even exit 75, is a failure, not a retry. This local gate applies only when the issue type uses an issue worktree and branch; a type opting out has no issue branch to merge or test. The primary checkout receives only the verified result by fast-forward.
