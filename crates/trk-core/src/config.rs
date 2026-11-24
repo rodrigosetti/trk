@@ -177,6 +177,9 @@ pub struct RunSection {
     /// older configs; the CLI detects the repository's default branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
+    /// Selects `prompts/_landing.<landing>.md.j2` for implementer instructions.
+    #[serde(default = "default_landing")]
+    pub landing: String,
 }
 
 impl Default for RunSection {
@@ -184,8 +187,13 @@ impl Default for RunSection {
         RunSection {
             worktrees: ".trk/worktrees".into(),
             base: None,
+            landing: default_landing(),
         }
     }
+}
+
+fn default_landing() -> String {
+    "merge".into()
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

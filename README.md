@@ -33,15 +33,52 @@ cd ~/src/orch && trk install
 
 `trk install` creates `.trk/` in the project root (in a git repository, the root of the primary
 checkout): the database, the default config with every setting written out, and a `.gitignore`
-that keeps all of it out of git. It also installs the agent skill (see below). Every other
-command fails with `not_installed` until a project has been installed. Commands find the project
-from any subdirectory and from any of its git worktrees.
+that keeps all of it out of git. It also installs the agent skill (see below). Commands find
+the project from any subdirectory and from any of its git worktrees. Other project commands
+fail with `not_installed` until it has been installed.
+
+Choose the configuration seed with these install options:
+
+```sh
+trk install --list-presets              # default and minimal; no installation or writes
+trk install --preset default            # implicit default: all three agents and issue types
+trk install --preset minimal            # implementer + code-change, with their common prompts
+trk install --from /path/to/team-seed   # use only this directory's files, recursively
+trk install --minimal                  # project settings only; inherit shared user resources
+```
+
+The built-in `seed/` directory is embedded recursively at build time, so adding or changing
+a seed file is picked up by the next build without maintaining a file list. Common files
+(`config.toml`, `prompts/_rules.md.j2`, and `prompts/briefing.md.j2`) live at the seed root;
+the installer also supplies the built-in `.gitignore`. `seed/presets/default/` adds the
+implementer, researcher and reviewer agents,
+the code-change, research and review types, and their instruction prompts.
+`seed/presets/minimal/` adds only implementer, code-change and the implementer's instructions.
+A preset's files replace common files at matching paths.
+
+`--from DIR` instead copies a fully resolved install layout directly into `.trk/`, including
+nested and binary files, with no built-in fallback or preset selection. Only regular files
+and directories are accepted; symlinks and special entries are rejected. Supply your own
+`.gitignore` if wanted. A `presets/` directory inside a custom source is ordinary content.
+`--from`, `--preset`, and `--minimal` cannot be combined. Unlike `--preset minimal`,
+`--minimal` writes no agents, types, or prompts and relies on the user layer.
+`--list-presets` cannot be combined with install modifiers. Listing works outside a project;
+its JSON data is `{"presets":["default","minimal"]}`.
+
+Only `config.toml` substitutes install-time markers: `{{EMAIL_LINE}}` becomes the human email
+setting (or a commented example), `{{PREFIX}}` becomes `--prefix` or the detected project
+prefix, and `{{BASE}}` becomes the TOML-quoted detected base branch. Other files are copied
+unchanged, including template markers.
 
 To upgrade after changing or pulling this checkout, run `./install.sh` again, then `trk install`
-in each project: it applies schema migrations, refreshes the agent skill, keeps your config
-files, and lists the ones that differ from the new defaults. `trk install --force` rewrites the
-config with the defaults. `trk --version` prints the commit the binary was built from. Running
-agent sessions keep the binary they started with.
+in each project, passing the same `--minimal`, `--preset` or `--from` used for its installation.
+trk does not remember that selection. It applies schema migrations, refreshes the agent skill, keeps
+existing configuration files, and lists the ones that differ from the selected seed.
+For `config.toml`, only harness-profile differences count as drift, not project identity
+or formatting. `trk install --force` rewrites files supplied by the selected seed but does
+not prune other files; switching to `--preset minimal` does not remove previously installed agents
+or types. `trk --version` prints the commit the binary was built from. Running agent
+sessions keep the binary they started with.
 
 The research and review type defaults now set `worktree = false`. Existing installations
 keep their type files; `trk install` lists `types/research.toml` and `types/review.toml`
@@ -439,6 +476,12 @@ optional `[launcher] alive` argv template, substituting `{name}`: exit 0 means l
 Unknown sessions are neither woken/resumed nor reaped; a failed check instead reopens.
 Wakes and manual resume still require `[launcher] send`.
 
+`[launcher] send_delay` waits before the initial briefing (default 5 seconds).
+All sends—briefings, `trk send`, resume, and check wakes/notifications—use
+`send_retries` total attempts (default 10; `0` means one attempt), with
+`send_retry_delay` seconds between failed attempts (default 3).
+Older configs without these keys retain those defaults.
+
 `trk runs` and the dashboard distinguish terminal/session liveness from MCP liveness.
 A live terminal with a stopped MCP server is **dormant**, not a dead session; it can
 receive a wake or human-authorized resume. Restart its MCP connection with the same
@@ -560,6 +603,8 @@ the lower layer. Named `[harness.<name>]` profiles and `[views.<name>]` views th
 inherit unspecified keys. Project `[user]` identity and `[issues] prefix` take precedence;
 when absent they can inherit from the user layer. Built-in defaults fill absent settings,
 but do not supply agent/type/template files or harness profiles.
+Compatibility defaults also apply to `[launcher] send_retries`, `send_retry_delay`,
+`[check] max_wakes`, `gc`, `gc_grace`, and `[run] landing` (default `"merge"`).
 `[issues] prefix` names new issues (`<prefix>-<base32>`); normal installation writes the
 directory name, or `trk install --prefix NAME`. Changing it later only affects new issues.
 
@@ -580,6 +625,7 @@ first. Minimal installation does not delete existing project resources.
 ```toml
 [run]
 base = "develop"
+landing = "merge"
 ```
 
 When writing a new config, `trk install` detects the branch named by `origin/HEAD`,
@@ -587,6 +633,16 @@ then the current branch of the primary checkout, and finally falls back to `main
 Older configs that omit `base` use the same detection at runtime. An explicit `base`
 takes precedence. Waiting checks receive the resolved branch as `TRK_BASE`; instruction
 and briefing prompt templates can use `{{ base }}`.
+
+`[run] landing` selects `prompts/_landing.<value>.md.j2`. The seed provides `"merge"`
+for verified local landing into the base branch in the primary checkout, and `"pr"`
+for opening a GitHub pull request against that branch and waiting on its merge.
+It defaults to `"merge"`, including in older configs that omit it. Only the implementer
+includes the selected recipe; researchers and reviewers receive the generic tracker rules.
+Both built-in install presets (`default` and `minimal`) use this setting.
+To add another workflow, create a template such as `.trk/prompts/_landing.gitlab.md.j2`
+and set `landing = "gitlab"`—no code change or edit to shared rules is needed.
+`trk agent check` reports a configured landing value with no matching template.
 
 | Check setting | Default, also when omitted | Meaning |
 | --- | --- | --- |
@@ -627,7 +683,7 @@ harness names to argument lists; only the selected harness's list is used.
 # .trk/config.toml
 [harness.omp]
 command = "omp"
-args = ["--config", "{{ session_dir }}/omp.yml", "{{ briefing }}"]
+args = ["--config", "{{ session_dir }}/omp.yml", "{builtin_tools_args}", "{model_args}", "{agent_args}", "{{ briefing }}"]
 model = "openai-codex/gpt-6-luna"
 model_args = ["--model", "{{ model }}"]
 ```
@@ -637,9 +693,13 @@ when a model resolves. Set `model_args` to the harness's model-selection flags.
 All seeded profiles provide it; only omp sets a default model. Older installed
 configs need these keys added manually, replacing any literal model flags in `args`.
 `{{ model }}` expands to the resolved model (or an empty string if unset) in profile
-arguments, environment and files, and agent arguments. Optional arguments are inserted
-in this order: built-in tool restrictions, `model_args`, agent `args`, then the first
-argument using `briefing`. Without a briefing argument, they are appended.
+arguments, environment and files, and agent arguments.
+Standalone `args` elements `{builtin_tools_args}`, `{model_args}`, and `{agent_args}`
+expand in place to zero or more argv entries. Place them before a subcommand or
+after `--` as the harness requires. These markers are not deprecated placeholders.
+Each group without a marker keeps its legacy position: before the first argument
+using `briefing`, or at the end when none does. Unmarked groups retain the order
+of built-in tool restrictions, model arguments, then agent arguments.
 Arguments remain separate argv entries; they are not shell-split.
 
 `trk run --dry-run --json` includes the resolved `model` (or null) and `argv`.
@@ -657,6 +717,7 @@ the MCP server and `trk agent preview`:
 | `type.name`, `type.description` | Resolved `types/<type>.toml` metadata, even with an agent override |
 | `config.check.interval`, `config.check.timeout`, `config.check.max_wakes` | Configured check durations and numeric wake cap |
 | `config.claims.agent_lease`, `config.run.worktrees` | Configured lease duration and worktree directory |
+| `config.run.landing` | Landing recipe name, used by the implementer's dynamic template include |
 | `agent.name`, `agent.description` | Selected agent metadata |
 | `tools` | List of available tools, each with `name` and `description` |
 | `worktree`, `actor`, `harness` | Session worktree path, actor and harness name; worktree/harness may be null |
@@ -715,7 +776,7 @@ args_json = '''[
 {% endfor %}
 {% endfor %}
 ]'''
-args = ["{{ briefing }}"]
+args = ["{builtin_tools_args}", "{model_args}", "{agent_args}", "{{ briefing }}"]
 model_args = ["--model", "{{ model }}"]
 builtin_tools = { read-only = ["--sandbox", "read-only"] }
 ```

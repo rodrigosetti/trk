@@ -24,6 +24,10 @@ pub struct Launcher {
     pub alive: Option<Vec<String>>,
     #[serde(default)]
     pub send_delay: Option<u64>,
+    /// Total send attempts; zero still attempts once. Defaults to 10.
+    pub send_retries: Option<u64>,
+    /// Seconds between send attempts. Defaults to 3.
+    pub send_retry_delay: Option<u64>,
     /// Launch directly in a new Herdr space when its UI is available.
     #[serde(default)]
     pub herdr: bool,
@@ -70,12 +74,18 @@ fn run_template(
     Ok((out.status.success(), text))
 }
 
-/// A session that is still starting may refuse input; retry for ~30s.
-fn send_with_retry(tmpl: &[String], vars: &BTreeMap<&str, String>) -> Result<(bool, String)> {
+/// A session that is still starting may refuse input.
+fn send_with_retry(
+    tmpl: &[String],
+    vars: &BTreeMap<&str, String>,
+    retries: Option<u64>,
+    retry_delay: Option<u64>,
+) -> Result<(bool, String)> {
     let mut last = (false, String::new());
-    for attempt in 0..10 {
+    let delay = std::time::Duration::from_secs(retry_delay.unwrap_or(3));
+    for attempt in 0..retries.unwrap_or(10).max(1) {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(3));
+            std::thread::sleep(delay);
         }
         last = run_template(tmpl, vars, false)?;
         if last.0 {
@@ -424,7 +434,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     {
         std::thread::sleep(std::time::Duration::from_secs(l.send_delay.unwrap_or(5)));
         vars.insert("text", spec.briefing.clone());
-        let (ok, out) = send_with_retry(send, &vars)?;
+        let (ok, out) = send_with_retry(send, &vars, l.send_retries, l.send_retry_delay)?;
         if !ok {
             eprintln!("warning: sending the briefing failed: {out}");
         }
@@ -581,7 +591,7 @@ pub fn send(env: &Env, id: &str, text: &str) -> Result<Out> {
     let mut vars = BTreeMap::new();
     vars.insert("name", name.clone());
     vars.insert("text", text.to_string());
-    let (ok, out) = send_with_retry(&tmpl, &vars)?;
+    let (ok, out) = send_with_retry(&tmpl, &vars, l.send_retries, l.send_retry_delay)?;
     if !ok {
         return Err(
             Error::new(Code::Internal, format!("send to {name} failed: {out}")).with_issue(&id),
@@ -670,6 +680,8 @@ pub struct WaitingSession {
     pub claim: i64,
     terminal: String,
     send: Vec<String>,
+    send_retries: Option<u64>,
+    send_retry_delay: Option<u64>,
 }
 
 impl WaitingSession {
@@ -677,7 +689,8 @@ impl WaitingSession {
         let mut vars = BTreeMap::new();
         vars.insert("name", self.terminal.clone());
         vars.insert("text", text.to_string());
-        let (ok, out) = send_with_retry(&self.send, &vars)?;
+        let (ok, out) =
+            send_with_retry(&self.send, &vars, self.send_retries, self.send_retry_delay)?;
         if !ok {
             return Err(Error::new(
                 Code::Internal,
@@ -706,6 +719,8 @@ fn live_waiting_session(claim: &Claim, launcher: Launcher) -> Option<WaitingSess
         claim: claim.id,
         terminal: name.clone(),
         send: launcher.send?,
+        send_retries: launcher.send_retries,
+        send_retry_delay: launcher.send_retry_delay,
     })
 }
 

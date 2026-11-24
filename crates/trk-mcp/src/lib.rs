@@ -355,6 +355,25 @@ mod tests {
     const ACTOR: &str = "agent:omp:waiting-session";
     const HUMAN: &str = "human:test@example.com";
 
+    fn write_seed(root: &std::path::Path) {
+        for (path, content) in trk_core::seed::preset("default").unwrap() {
+            let rendered = (path == "config.toml").then(|| {
+                std::str::from_utf8(content)
+                    .unwrap()
+                    .replace("{{EMAIL_LINE}}", "email = \"test@example.com\"")
+                    .replace("{{PREFIX}}", "trk")
+                    .replace("{{BASE}}", "\"main\"")
+            });
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(
+                path,
+                rendered.as_deref().map(str::as_bytes).unwrap_or(content),
+            )
+            .unwrap();
+        }
+    }
+
     fn active_claim(store: &Store, issue: &str) -> Option<Claim> {
         store.read(None, |c| c.active_claim(issue)).unwrap()
     }
@@ -407,11 +426,7 @@ mod tests {
             ] {
                 let dir = tempfile::tempdir().unwrap();
                 let seed = dir.path().join("seed");
-                for (path, content) in trk_core::seed::FILES {
-                    let path = seed.join(path);
-                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                    std::fs::write(path, content).unwrap();
-                }
+                write_seed(&seed);
                 let db = dir.path().join("trk.db");
                 let opts = StoreOpts {
                     now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
@@ -440,7 +455,7 @@ mod tests {
                     .unwrap();
                 let mut server = TrkServer::new(McpArgs {
                     db,
-                    config: ConfigDir::new(&seed),
+                    config: ConfigDir::with_user_dir(&seed, None),
                     project_root: dir.path().to_path_buf(),
                     user: UserConfig::default(),
                     opts,
@@ -527,11 +542,7 @@ mod tests {
     fn stopped_mcp_restarts_after_failed_check_with_restored_actor_and_lease() {
         let dir = tempfile::tempdir().unwrap();
         let seed = dir.path().join("seed");
-        for (path, content) in trk_core::seed::FILES {
-            let path = seed.join(path);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, content).unwrap();
-        }
+        write_seed(&seed);
         std::fs::write(
             seed.join("prompts/implementer.instructions.md.j2"),
             "claim={{ issue.claim.claimed_at }};state={{ issue.state }};actor={{ actor }}",
@@ -564,7 +575,7 @@ mod tests {
             .unwrap();
         let args = |opts| McpArgs {
             db: db.clone(),
-            config: ConfigDir::new(&seed),
+            config: ConfigDir::with_user_dir(&seed, None),
             project_root: dir.path().to_path_buf(),
             user: UserConfig::default(),
             opts,

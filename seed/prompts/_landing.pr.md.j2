@@ -1,0 +1,31 @@
+Open a pull request targeting `{{ base }}` and call `wait` with a check for its merge. trk closes the issue when it merges; fix reported base-branch conflicts and failed head-commit CI unattended when woken. Do not resolve review threads or merge the PR unless a person asks.
+
+Wait for a pull request (here number 12) to merge, waking only for base-branch conflicts, failed CI on the head commit, or closure without merging (query/authentication errors also fail). This uses `gh`'s built-in jq filter; `statusCheckRollup` contains the head commit's check runs and commit statuses:
+
+```sh
+result=$(gh pr view 12 --json state,baseRefName,mergeable,headRefOid,statusCheckRollup --jq '
+  if .state == "MERGED" then "merged"
+  elif .state == "CLOSED" then "PR closed without merging"
+  elif .mergeable == "CONFLICTING" then "PR conflicts with base branch \(.baseRefName)"
+  else
+    .headRefOid as $head |
+    [.statusCheckRollup[]? |
+      select(
+        (.__typename == "CheckRun" and .status == "COMPLETED" and
+          (.conclusion | IN("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"))) or
+        (.__typename == "StatusContext" and (.state | IN("FAILURE", "ERROR")))
+      ) |
+      "\(.name // .context): \(.conclusion // .state) \(.detailsUrl // .targetUrl // "")"
+    ] |
+    if length > 0 then "CI failed on head \($head):\n" + join("\n")
+    else "waiting" end
+  end
+') || exit "$?"
+case "$result" in
+  merged) exit 0 ;;
+  waiting) exit 75 ;;
+  *) printf "%s\n" "$result"; exit 1 ;;
+esac
+```
+
+CI pending, awaiting review, unresolved threads, approved but not merged, and unknown mergeability all remain waiting (75) unless a failure above is present. Review threads and merging belong to the human unless they ask you to handle them.

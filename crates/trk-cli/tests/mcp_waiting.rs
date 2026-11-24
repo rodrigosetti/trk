@@ -20,10 +20,21 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        for (path, content) in trk_core::seed::FILES {
+        for (path, content) in trk_core::seed::preset("default").unwrap() {
+            let rendered = (path == "config.toml").then(|| {
+                std::str::from_utf8(content)
+                    .unwrap()
+                    .replace("{{EMAIL_LINE}}", "email = \"alice@example.com\"")
+                    .replace("{{PREFIX}}", "orch")
+                    .replace("{{BASE}}", "\"main\"")
+            });
             let path = dir.path().join("seed").join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, content).unwrap();
+            std::fs::write(
+                path,
+                rendered.as_deref().map(str::as_bytes).unwrap_or(content),
+            )
+            .unwrap();
         }
         let opts = StoreOpts {
             now: Some("2026-11-20T10:00:00Z".parse().unwrap()),

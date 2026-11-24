@@ -109,6 +109,11 @@ fn templates_cross_layers_for_includes_imports_and_inheritance_and_report_source
     let user = dir.path().join("user");
     put(
         &user,
+        "prompts/_landing.merge.md.j2",
+        include_str!("../../../seed/prompts/_landing.merge.md.j2"),
+    );
+    put(
+        &user,
         "agents/personal.toml",
         "name = 'personal'\ninstructions = 'prompts/instructions.j2'\nbriefing = 'prompts/briefing.j2'\n",
     );
@@ -192,11 +197,16 @@ fn global_harness_preferences_are_inherited_but_explicit_lists_replace_them() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("project");
     let user = dir.path().join("user");
+    put(
+        &user,
+        "prompts/_landing.pr.md.j2",
+        include_str!("../../../seed/prompts/_landing.pr.md.j2"),
+    );
     put(&project, "config.toml", "");
     put(
         &user,
         "config.toml",
-        "[harness]\nprefer = ['z']\n[harness.a]\ncommand = '/bin/sh'\n[harness.z]\ncommand = '/bin/sh'\n",
+        "[run]\nlanding = 'pr'\n[harness]\nprefer = ['z']\n[harness.a]\ncommand = '/bin/sh'\n[harness.z]\ncommand = '/bin/sh'\n",
     );
     put(&user, "agents/inherited.toml", "name = 'inherited'\n");
     put(

@@ -54,6 +54,10 @@ worktree = false
             "USER BRIEFING {{ issue.id }} {% include \"prompts/rules.md.j2\" %}",
         ),
         ("prompts/rules.md.j2", "USER RULES"),
+        (
+            "prompts/_landing.merge.md.j2",
+            include_str!("../../../../seed/prompts/_landing.merge.md.j2"),
+        ),
     ] {
         write_file(user, path, content);
     }

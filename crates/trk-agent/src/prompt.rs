@@ -48,7 +48,10 @@ impl PromptInput<'_> {
                     "max_wakes": self.config.check.max_wakes,
                 },
                 "claims": {"agent_lease": self.config.claims.agent_lease},
-                "run": {"worktrees": self.config.run.worktrees},
+                "run": {
+                    "worktrees": self.config.run.worktrees,
+                    "landing": self.config.run.landing,
+                },
             },
             "agent": {"name": self.agent.name, "description": self.agent.description},
             "tools": self.tools.iter().map(|t| json!({"name": t.name, "description": t.description})).collect::<Vec<_>>(),
