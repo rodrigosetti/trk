@@ -63,9 +63,9 @@ pub struct UserConfig {
     pub claims: ClaimsSection,
     pub check: CheckSection,
     pub run: RunSection,
-    /// Absent in older configs: the CLI detects the legacy skill locations.
+    /// CLI skill locations; absent settings use the standard path without links.
     #[serde(default)]
-    pub skill: Option<SkillSection>,
+    pub skill: SkillSection,
     /// Launcher templates; parsed by trk-cli.
     #[serde(default)]
     pub launcher: Option<toml::Value>,
@@ -86,6 +86,15 @@ pub struct SkillSection {
     /// Relative to the project root, or absolute. Empty disables installation.
     pub path: String,
     pub links: Vec<String>,
+}
+
+impl Default for SkillSection {
+    fn default() -> Self {
+        Self {
+            path: ".agents/skills/trk".into(),
+            links: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -191,8 +200,7 @@ pub struct RunSection {
     /// Where `trk run` creates worktrees: absolute, `~/…`, or relative to the
     /// project root.
     pub worktrees: String,
-    /// Branch new issue branches start from and checks land on. Missing in
-    /// older configs; the CLI detects the repository's default branch.
+    /// Branch new issue branches start from and checks land on; detected when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
     /// Selects `prompts/_landing.<landing>.md.j2` for implementer instructions.
@@ -420,14 +428,6 @@ pub fn fmt_duration(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn legacy_issues_config_uses_builtin_default_type() {
-        let issues: IssuesSection = toml::from_str("prefix = \"legacy\"").unwrap();
-        assert_eq!(issues.prefix, "legacy");
-        assert_eq!(issues.default_type, "code-change");
-        assert_eq!(issues.default_type, IssuesSection::default().default_type);
-    }
 
     #[test]
     fn issues_config_preserves_configured_default_type() {

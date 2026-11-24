@@ -97,7 +97,7 @@ fn project_files_override_user_files_and_both_layers_are_enumerated() {
     assert!(load_agent(&cfg, "shared").unwrap().description.is_none());
     assert_eq!(load_agent(&cfg, "personal").unwrap().name, "personal");
 
-    // The legacy single-agent fast path must not read an unrelated broken file.
+    // Loading one agent must not read an unrelated broken file.
     put(&project, "agents/broken.toml", "not valid toml");
     assert_eq!(load_agent(&cfg, "personal").unwrap().name, "personal");
 }
@@ -340,7 +340,7 @@ fn harness_preference_setting_is_validated_as_a_string_array_not_a_profile() {
 }
 
 #[test]
-fn absent_user_layer_preserves_project_only_loading_and_legacy_name_lookup() {
+fn absent_user_layer_preserves_project_only_loading() {
     let dir = tempfile::tempdir().unwrap();
     put(
         dir.path(),
@@ -352,7 +352,6 @@ fn absent_user_layer_preserves_project_only_loading_and_legacy_name_lookup() {
         "agents/local.toml",
         "name = 'local'\ninstructions = 'prompts/local.j2'\n",
     );
-    put(dir.path(), "agents/alias.toml", "name = 'legacy'\n");
     put(
         dir.path(),
         "types/change.toml",
@@ -360,9 +359,9 @@ fn absent_user_layer_preserves_project_only_loading_and_legacy_name_lookup() {
     );
     put(dir.path(), "prompts/local.j2", "local");
     let cfg = ConfigDir::with_user_dir(dir.path(), None);
-    assert_eq!(load_agent(&cfg, "legacy").unwrap().name, "legacy");
+    assert_eq!(load_agent(&cfg, "local").unwrap().name, "local");
     assert_eq!(
-        load_agent(&cfg, "legacy")
+        load_agent(&cfg, "local")
             .unwrap()
             .harness
             .prefer

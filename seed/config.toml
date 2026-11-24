@@ -45,6 +45,10 @@ base = {{BASE}}
 # Built-ins: "merge" (local checkout), "pr" (GitHub pull request).
 landing = "merge"
 
+[skill]
+path = ".agents/skills/trk"
+links = []
+
 # Launchers are tried in order; tmux is opt-in with use = ["tmux"].
 # Commands are argv arrays, not shell strings. Placeholders: {name}, {cwd},
 # {shell_command} (cd + env + harness argv), {text}, {title}.
@@ -99,11 +103,9 @@ rename = ["tmux", "rename-session", "-t", "{name}", "{title}"]
 # instructions_file mcp_json_file trk_command. Lists/maps: trk_args trk_env
 # trk_tools mcp_servers (name/command/args/env, trk first).
 # Filters: tojson (compact JSON), toml (inline TOML); map/join are available.
-# Values are rendered once, never recursively. Legacy single-brace placeholders
-# remain supported but deprecated, including {mcp_json}, {opencode_json},
-# {trk_args_toml}, {trk_env_toml} and {trk_tools:PREFIX}.
+# Values are rendered once, never recursively.
 # Standalone args elements {builtin_tools_args}, {model_args}, {agent_args}
-# expand in place to zero or more argv entries (not deprecated placeholders).
+# expand in place to zero or more argv entries.
 # A group without a marker goes before the first briefing argument, or at the
 # end if none; unmarked groups keep builtin/model/agent order. No shell splitting.
 #   files                = files written before launch (relative to the worktree)

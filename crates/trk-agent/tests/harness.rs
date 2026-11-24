@@ -53,17 +53,11 @@ fn launch(
 }
 
 #[test]
-fn seed_profiles_preserve_complete_legacy_launch_specs() {
+fn seed_profiles_build_complete_launch_specs() {
     let current = harness::profiles(&seed_config()).unwrap();
-    let fixture: toml::Table =
-        toml::from_str(include_str!("fixtures/harness-legacy.toml")).unwrap();
-    let mut legacy = seed_config();
-    legacy.harness = fixture["harness"].clone().try_into().unwrap();
-    let legacy = harness::profiles(&legacy).unwrap();
-    assert_eq!(current.len(), 5);
     assert_eq!(
-        current.keys().collect::<Vec<_>>(),
-        legacy.keys().collect::<Vec<_>>()
+        current.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["claude-code", "codex", "omp", "opencode", "pi"]
     );
     for (level, configured) in ["default", "read-only", "none"]
         .into_iter()
@@ -87,13 +81,25 @@ fn seed_profiles_preserve_complete_legacy_launch_specs() {
                 continue;
             }
             let actual = launch(profile, name, &agent).unwrap();
-            let expected = launch(&legacy[name], name, &agent).unwrap();
-            // Compare strings too: embedded MCP JSON key order and shell quoting matter.
-            assert_eq!(
-                serde_json::to_string(&actual).unwrap(),
-                serde_json::to_string(&expected).unwrap(),
-                "{name}, {level}"
-            );
+            let command = match name.as_str() {
+                "claude-code" => "claude",
+                name => name,
+            };
+            assert_eq!(actual.argv[0], command);
+            if configured {
+                assert!(
+                    actual
+                        .argv
+                        .windows(2)
+                        .any(|args| args == ["--model", "chosen-model"])
+                );
+                assert!(
+                    actual
+                        .argv
+                        .windows(2)
+                        .any(|args| args == ["--extra", "proj-abc"])
+                );
+            }
             let mcp = r#"{"mcpServers":{"trk":{"command":"/bin/trk","args":["mcp","--issue","proj-abc","--actor","agent:reviewer:session","--agent","reviewer"],"env":{"TRK_DIR":"/project/.trk"}}}}"#;
             if name == "omp" {
                 assert_eq!(actual.files["/work/proj-abc/.omp/mcp.json"], mcp);
@@ -336,8 +342,8 @@ fn structured_context_and_filters_render_every_launch_field() {
 }
 
 #[test]
-fn legacy_and_jinja_inserted_briefings_are_never_reexpanded() {
-    for template in ["{briefing}", "{{ briefing }}"] {
+fn inserted_briefings_are_never_reexpanded() {
+    for template in ["{{ briefing }}", "{{ briefing | string }}"] {
         let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
         profile.args = vec![template.into()];
         profile.env.insert("BRIEFING".into(), template.into());
@@ -395,7 +401,7 @@ fn malformed_templates_in_each_renderable_field_are_config_invalid() {
 }
 
 #[test]
-fn agent_check_warns_for_legacy_placeholders_in_every_profile_field() {
+fn agent_check_rejects_malformed_templates_in_every_profile_field() {
     let dir = tempfile::tempdir().unwrap();
     let config = ConfigDir::with_user_dir(dir.path(), None);
     for field in [
@@ -410,26 +416,26 @@ fn agent_check_warns_for_legacy_placeholders_in_every_profile_field() {
     ] {
         let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
         match field {
-            "command" => profile.command = "{issue}".into(),
-            "args" => profile.args.push("{briefing}".into()),
-            "args_json" => profile.args_json = Some(r#"["{issue}"]"#.into()),
-            "model_args" => profile.model_args.push("{model}".into()),
+            "command" => profile.command = "{{ broken".into(),
+            "args" => profile.args.push("{{ broken".into()),
+            "args_json" => profile.args_json = Some(r#"["{{ broken"]"#.into()),
+            "model_args" => profile.model_args.push("{{ broken".into()),
             "env" => {
-                profile.env.insert("OLD".into(), "{agent}".into());
+                profile.env.insert("BAD".into(), "{{ broken".into());
             }
             "path" => {
                 profile
                     .files
-                    .insert("{session_dir}/file".into(), "content".into());
+                    .insert("{{ broken/file".into(), "content".into());
             }
             "content" => {
-                profile.files.insert("file".into(), "{mcp_json}".into());
+                profile.files.insert("file".into(), "{{ broken".into());
             }
             // No agent uses this level: checking must still inspect it.
             "builtin_tools" => {
                 profile
                     .builtin_tools
-                    .insert("none".into(), vec!["{trk_tools:mcp__trk_}".into()]);
+                    .insert("none".into(), vec!["{{ broken".into()]);
             }
             _ => unreachable!(),
         }
@@ -438,40 +444,27 @@ fn agent_check_warns_for_legacy_placeholders_in_every_profile_field() {
         user.harness
             .insert("test".into(), toml::Value::try_from(profile).unwrap());
         let diagnostics = trk_agent::check::check_agents(&config, &user);
-        assert!(diagnostics.iter().any(|d| d.level == Level::Warning && d.message.to_lowercase().contains("deprecat")), "{field}: {diagnostics:#?}");
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.level == Level::Error
+                    && d.message.contains("[harness.test]")
+                    && d.message.contains("harness template")
+            }),
+            "{field}: {diagnostics:#?}"
+        );
     }
-    let mut user = seed_config();
-    user.harness.clear();
-    user.harness.insert(
-        "test".into(),
-        toml::from_str::<toml::Value>(
-            r#"
-command = "test"
-args = ['{{ briefing }}', '{"ordinary": "json"}', '{{ trk_env | tojson }}']
-files = { "{{ session_dir }}/file" = '{{ {"key": issue} | tojson }}' }
-"#,
-        )
-        .unwrap(),
-    );
-    let diagnostics = trk_agent::check::check_agents(&config, &user);
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|d| d.level == Level::Warning && d.message.to_lowercase().contains("deprecat")),
-        "{diagnostics:#?}"
-    );
 }
 
 #[test]
-fn jinja_literals_comments_and_raw_blocks_are_not_legacy_tokens() {
+fn jinja_literals_comments_and_raw_blocks_preserve_literal_braces() {
     let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
     profile.args = vec![
         r#"{{ {"a": {"b": 1}} | tojson }}|{{ "{issue}" }}|{{ "}}" }}|{issue}"#.into(),
         "{# {issue} #}{% raw %}{issue} {{ {% ' {% endraw %}|{issue}".into(),
     ];
     let spec = launch(&profile, "test", &agent("default")).unwrap();
-    assert_eq!(spec.argv[1], r#"{"a":{"b":1}}|{issue}|}}|proj-abc"#);
-    assert_eq!(spec.argv[2], "{issue} {{ {% ' |proj-abc");
+    assert_eq!(spec.argv[1], r#"{"a":{"b":1}}|{issue}|}}|{issue}"#);
+    assert_eq!(spec.argv[2], "{issue} {{ {% ' |{issue}");
 }
 
 #[test]

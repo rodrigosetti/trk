@@ -51,6 +51,7 @@ fn original_claim(ui: &WaitingUi, id: &str, terminal: Option<&str>) -> trk_core:
                     host: Some(host.clone()),
                     agent: Some("implementer".into()),
                     terminal: terminal.map(str::to_owned),
+                    launcher: Some("herdr".into()),
                     ..Default::default()
                 },
             )?;

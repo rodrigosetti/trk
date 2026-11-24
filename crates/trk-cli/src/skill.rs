@@ -6,14 +6,13 @@
 //! paths are added to `.git/info/exclude`, so sessions in `trk run` worktrees
 //! reach trk through MCP only.
 
-use std::borrow::Cow;
 use std::path::Path;
 
 use serde_json::{Value, json};
 use trk_core::config::SkillSection;
 use trk_core::error::Result;
 
-use crate::env::{git, git_exclude, home};
+use crate::env::{git, git_exclude};
 
 /// The skill's files, relative to its directory.
 pub const FILES: &[(&str, &str)] = &[
@@ -23,21 +22,6 @@ pub const FILES: &[(&str, &str)] = &[
         include_str!("../../../skills/trk/references/reference.md"),
     ),
 ];
-
-/// Resolve old configs using the original harness detection. Once installed,
-/// the explicit section is authoritative, even if another harness appears.
-pub fn settings<'a>(root: &Path, configured: Option<&'a SkillSection>) -> Cow<'a, SkillSection> {
-    configured.map(Cow::Borrowed).unwrap_or_else(|| {
-        Cow::Owned(SkillSection {
-            path: ".agents/skills/trk".into(),
-            links: if home().join(".claude").is_dir() || root.join(".claude").is_dir() {
-                vec![".claude/skills/trk".into()]
-            } else {
-                vec![]
-            },
-        })
-    })
-}
 
 /// No locations are active when the skill is disabled.
 pub fn paths(config: &SkillSection) -> impl Iterator<Item = &str> {

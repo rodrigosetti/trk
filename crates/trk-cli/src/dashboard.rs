@@ -64,15 +64,25 @@ fn open_url(url: &str) -> std::io::Result<()> {
 
 pub fn snapshot(store: &Store, env: &Env) -> Result<Dashboard> {
     store.read(None, |c| {
-        c.dashboard(
+        let config_error = std::cell::RefCell::new(None);
+        let dashboard = c.dashboard(
             ACTIVITY,
             &|profile, host, terminal| {
-                crate::launcher::for_claim(env, profile)
-                    .ok()
-                    .and_then(|launcher| run::session_alive(&launcher, host, terminal))
+                terminal.filter(|terminal| !terminal.trim().is_empty())?;
+                match crate::launcher::for_claim(env, profile) {
+                    Ok(launcher) => run::session_alive(&launcher, host, terminal),
+                    Err(error) => {
+                        *config_error.borrow_mut() = Some(error);
+                        None
+                    }
+                }
             },
             &run::mcp_alive,
-        )
+        )?;
+        match config_error.into_inner() {
+            Some(error) => Err(error),
+            None => Ok(dashboard),
+        }
     })
 }
 

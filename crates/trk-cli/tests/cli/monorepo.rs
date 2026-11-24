@@ -42,15 +42,11 @@ fn project_workflow(relative: &str, external: bool) {
         ],
     );
     // Explicit installation allows a project below an existing root project.
-    std::fs::create_dir_all(e.dir.path().join("home/.claude")).unwrap();
-    if relative.is_empty() {
-        // This project was already installed before Claude appeared.
-        e.set_config("links = []", "links = [\".claude/skills/trk\"]");
-    }
     success(e.cmd(), &project, &["--dir", ".trk", "install"]);
     let trk = project.join(".trk");
     let config = trk.join("config.toml");
     let mut text = std::fs::read_to_string(&config).unwrap();
+    text = text.replace("links = []", "links = [\".claude/skills/trk\"]");
     if external {
         let outside = e.dir.path().canonicalize().unwrap().join("external-worktrees");
         text = text.replace(
@@ -61,9 +57,10 @@ fn project_workflow(relative: &str, external: bool) {
     text.push_str(
         "\n[harness.cwd-proof]\ncommand = 'sh'\n\
          args = ['-c', 'pwd > \"{{session_dir}}/observed-cwd\"']\n\
-         files = { '.omp/mcp.json' = '{mcp_json}' }\n",
+         files = { '.omp/mcp.json' = '{{ mcp_servers | tojson }}' }\n",
     );
     std::fs::write(config, text).unwrap();
+    success(e.cmd(), &project, &["--dir", ".trk", "install"]);
     for path in [".agents/skills/trk/SKILL.md", ".claude/skills/trk"] {
         git(&project, &["check-ignore", path]);
     }

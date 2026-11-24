@@ -82,10 +82,6 @@ not prune other files; switching to `--preset minimal` does not remove previousl
 or types. `trk --version` prints the commit the binary was built from. Running agent
 sessions keep the binary they started with.
 
-The research and review type defaults now set `worktree = false`. Existing installations
-keep their type files; `trk install` lists `types/research.toml` and `types/review.toml`
-as differing until you add that setting yourself or overwrite defaults with `--force`.
-
 ### Active sessions during upgrades
 
 Opening the shared database with a newer trk can apply forward schema migrations. An older,
@@ -310,7 +306,7 @@ subset or increase the timeout for slow suites.
 A failed check restores the original session's claim with a fresh lease when its terminal
 is confirmed live on the claim's known local host, its pinned launcher provides `send`,
 and its wake count is below `[check] max_wakes`. MCP liveness is not a prerequisite.
-The cap defaults to `5`, including in existing configs that omit it; `0` disables waking.
+The cap defaults to `5`; `0` disables waking.
 Each restored claim increments the session's persistent count, even if sending fails.
 Entering or updating `wait` preserves it. A fresh explicit claim (including `--steal`)
 resets it to zero; repeating a claim as its current owner does not.
@@ -373,12 +369,6 @@ automatically; zombie processes do not block recovery. `trk whoami` shows
 `check_running.pid`, `.host` and `.pgid`. A different/unknown host or unavailable
 process information prevents automatic takeover. Inspect/stop surviving checks on
 the owning host before retrying; never delete the lock while a check can still run.
-
-Upgrading a database with an existing, untracked check marks its group as `0`
-(unknown), preventing automatic recovery. Stop pre-upgrade runners and their checks,
-verify none remain, then clear only that legacy lock with
-`sqlite3 .trk/trk.db 'DELETE FROM check_lock WHERE pgid = 0'` in the primary checkout
-(use the actual database path if overridden).
 
 A check is written by an agent and runs later, unattended, as you. `trk show` always prints it in
 full, and `trk check --dry-run` shows the queue before anything runs.
@@ -502,13 +492,12 @@ unknown. The Herdr driver discovers exact terminals; other profiles use optional
 `exists` argv: exit 0 means live, a nonzero exit means gone, and command errors or a
 missing/empty operation mean unknown. Unknown sessions are neither woken/resumed nor
 reaped; a failed check instead reopens. Wakes and manual resume require the pinned
-profile's `send`. Legacy `alive` retains exit 0/live, 1/gone, other/unknown behavior.
+profile's `send`.
 
 `[launcher] send_delay` waits before the initial briefing (default 5 seconds).
 All sends—briefings, `trk send`, resume, and check wakes/notifications—use
 `send_retries` total attempts (default 10; `0` means one attempt), with
 `send_retry_delay` seconds between failed attempts (default 3).
-Older configs without these keys retain those defaults.
 
 `trk runs` and the dashboard distinguish terminal/session liveness from MCP liveness.
 A live terminal with a stopped MCP server is **dormant**, not a dead session; it can
@@ -553,16 +542,12 @@ or `failed`). Observation timeout warns without ending the session. An uncertain
 creation response retains the claim and never starts a duplicate session. When
 Herdr is unavailable, the seed selects `hc` before attempting a launch.
 
-Existing flat `[launcher] start/attach/send` configurations remain supported,
-including `herdr = true` and the `alive` alias for `exists`. Claims without a named
-profile continue using that flat configuration, not the current `use` order.
-
 ## Agent skill
 
 `trk install` also installs a skill (from [`skills/trk/`](skills/trk/SKILL.md), embedded in the
-binary) that teaches your interactive agent sessions to use the trk CLI: `.agents/skills/trk`
-(omp, Codex), linked from `.claude/skills/trk` when Claude Code is in use. `trk whoami` reports
-whether the installed copy matches the binary; run `trk install` again to refresh it.
+binary) that teaches your interactive agent sessions to use the trk CLI at `.agents/skills/trk`.
+Configure links for other harnesses explicitly. `trk whoami` reports whether the installed
+copy matches the binary; run `trk install` again to refresh it.
 
 Configure its locations in `.trk/config.toml`:
 
@@ -577,11 +562,6 @@ can point to the installed directory. Installation, git excludes, tracked-path w
 and `whoami` follow this section; a disabled skill reports `"disabled"` and adds no excludes
 or warnings. Changing the section does not remove previously installed files, links, or excludes.
 Install JSON reports symlinks in `skill.links` as `{path, linked}` entries.
-
-When the section is absent, older configs use the original locations and detect Claude Code
-from `~/.claude` or `<project>/.claude`. `trk install` writes these detected defaults once;
-later installs follow the saved config, without detecting harnesses again. This also applies
-to custom `--from` sources without a `[skill]` section.
 
 Sessions started by `trk run` should reach trk only through their MCP server (see SPEC.md). That is
 why the skill is kept out of git with `.git/info/exclude`: the worktrees `trk run` creates do not
@@ -677,16 +657,12 @@ the lower layer. Named `[harness.<name>]` profiles and `[views.<name>]` views th
 inherit unspecified keys. Project `[user]` identity and `[issues] prefix` take precedence;
 when absent they can inherit from the user layer. Built-in defaults fill absent settings,
 but do not supply agent/type/template files or harness profiles.
-Compatibility defaults also apply to `[launcher] send_retries`, `send_retry_delay`,
-`[issues] default_type`, `[check] max_wakes`, `gc`, `gc_grace`, and `[run] landing` (default `"merge"`).
-Launcher operations are optional.
-Normal installs also pin legacy `[skill]` detection (see Agent skill); minimal installs
-leave absent skill settings inherited from the user layer or compatibility defaults.
+Launcher operations are optional. Omitted skill settings use `.agents/skills/trk` without links.
 `[issues] prefix` names new issues (`<prefix>-<base32>`); normal installation writes the
 directory name, or `trk install --prefix NAME`. Changing it later only affects new issues.
 `[issues] default_type` selects the type for CLI and editor creation and MCP follow-ups
-when no explicit type is supplied; `trk whoami` reports it. Install writes `code-change`,
-also the fallback for older configs. Set it to your project's type name (for example,
+when no explicit type is supplied; `trk whoami` reports it. The default is `code-change`.
+Set it to your project's type name (for example,
 `default_type = "task"` with `types/task.toml`) before removing or renaming the seed type.
 
 Agents, types, and prompts resolve by filename, **project first, then user**, without
@@ -711,14 +687,14 @@ landing = "merge"
 
 When writing a new config, `trk install` detects the branch named by `origin/HEAD`,
 then the current branch of the primary checkout, and finally falls back to `main`.
-Older configs that omit `base` use the same detection at runtime. An explicit `base`
+When `base` is omitted, runtime uses the same repository detection. An explicit `base`
 takes precedence. Waiting checks receive the resolved branch as `TRK_BASE`; instruction
 and briefing prompt templates can use `{{ base }}`.
 
 `[run] landing` selects `prompts/_landing.<value>.md.j2`. The seed provides `"merge"`
 for verified local landing into the base branch in the primary checkout, and `"pr"`
 for opening a GitHub pull request against that branch and waiting on its merge.
-It defaults to `"merge"`, including in older configs that omit it. Only the implementer
+It defaults to `"merge"`. Only the implementer
 includes the selected recipe; researchers and reviewers receive the generic tracker rules.
 Both built-in install presets (`default` and `minimal`) use this setting.
 To add another workflow, create a template such as `.trk/prompts/_landing.gitlab.md.j2`
@@ -781,14 +757,13 @@ model_args = ["--model", "{{ model }}"]
 
 `model` is optional; `model_args` defaults to an empty list and is inserted only
 when a model resolves. Set `model_args` to the harness's model-selection flags.
-All seeded profiles provide it; only omp sets a default model. Older installed
-configs need these keys added manually, replacing any literal model flags in `args`.
+All seeded profiles provide it; only omp sets a default model.
 `{{ model }}` expands to the resolved model (or an empty string if unset) in profile
 arguments, environment and files, and agent arguments.
 Standalone `args` elements `{builtin_tools_args}`, `{model_args}`, and `{agent_args}`
 expand in place to zero or more argv entries. Place them before a subcommand or
-after `--` as the harness requires. These markers are not deprecated placeholders.
-Each group without a marker keeps its legacy position: before the first argument
+after `--` as the harness requires.
+Each group without a marker goes before the first argument
 using `briefing`, or at the end when none does. Unmarked groups retain the order
 of built-in tool restrictions, model arguments, then agent arguments.
 Arguments remain separate argv entries; they are not shell-split.
@@ -877,12 +852,6 @@ from the seed, ignoring project identity and formatting. Existing config is kept
 unless `--force` is explicitly requested; copy the profile above to update Codex
 without replacing project settings.
 
-Single-brace harness placeholders remain supported but deprecated: use
-`{{ briefing }}` instead of `{briefing}`, and likewise for scalar names.
-Legacy `{mcp_json}`, `{opencode_json}`, `{trk_args_toml}`, `{trk_env_toml}` and
-`{trk_tools:PREFIX}` also remain supported; replace them with server loops,
-`toml` filtering and tool-name loops as shown in `seed/config.toml`.
-`trk agent check` warns when a profile uses deprecated placeholders.
 Launcher templates retain their existing single-brace syntax.
 
 There is no cross-project view: `trk list`, `trk runs` and `trk check --watch` act on the
@@ -910,7 +879,7 @@ project of the working directory, so each project needs its own `trk check --wat
   It keeps `write` available even with a restricted `--tools` list, so `builtin_tools = "read-only"`
   is not fully enforced there.
 - **Unverified harness profiles**: the Claude Code, Codex, OpenCode and pi profiles were not run live.
-- **Session liveness** comes from the local claim's terminal via its pinned launcher's `exists` operation or Herdr driver (legacy `alive` is still supported).
+- **Session liveness** comes from the local claim's terminal via its pinned launcher's `exists` operation or Herdr driver.
   MCP pid, host and exit metadata in `actor.meta` report MCP status separately, not session death.
 - **`trk check` lock**: a row holding the pid and host of the running pass. A holder whose process
   is gone on this machine is replaced; a holder on another host is never replaced automatically.

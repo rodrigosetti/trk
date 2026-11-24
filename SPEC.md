@@ -469,9 +469,9 @@ Named profiles live at `[launcher.<name>]`. `use` is an ordered list; each profi
 
 Optional argv arrays are `available`, `start`, `attach`, `send`, `exists`, `focus`, `close` and `rename`. Missing operations are skipped, not replaced with a different profile's operation. Arguments are never shell-split. Substitutions are `{name}` (session address), `{cwd}`, `{shell_command}`, `{text}` and `{title}`. The first stdout line from `start` replaces the generated name; empty stdout retains it. Stderr is diagnostic output only. The tmux seed prints a stable session ID with `new-session -P -F '#{session_id}'`, uses `has-session` for existence, `rename-session`, `kill-session`, `attach-session` and `send-keys` for the corresponding operations.
 
-The selected profile name is persisted on claims, copied through resume/check wakes, and used for attach/focus, send, liveness, notifications and GC regardless of later changes to `use`. Keep historical profiles configured. Root send delay/retry settings are inherited unless a profile overrides them. Existing flat `[launcher]` templates remain supported, including `herdr = true` and `alive` as an alias of `exists`; claims without a profile name resolve only the legacy flat configuration.
+The selected profile name is persisted on claims, copied through resume/check wakes, and used for attach/focus, send, liveness, notifications and GC regardless of later changes to `use`. Keep profiles referenced by claims configured. Root send delay/retry settings are inherited unless a profile overrides them. Claims require a named launcher profile.
 
-Session liveness requires a known claim host matching this machine and a nonblank recorded terminal. The Herdr driver discovers exact terminals. Other profiles use optional `exists` argv: exit 0 means live, nonzero means gone; command errors or a missing/empty operation mean unknown. Legacy `alive` retains exit 0/live, 1/gone, other/unknown semantics. Unknown liveness never authorizes a wake, manual resume or reap; a failed check without a confirmed live session reopens instead. Wakes and resume also require the pinned profile's `send`.
+Session liveness requires a known claim host matching this machine and a nonblank recorded terminal. The Herdr driver discovers exact terminals. Other profiles use optional `exists` argv: exit 0 means live, nonzero means gone; command errors or a missing/empty operation mean unknown. Unknown liveness never authorizes a wake, manual resume or reap; a failed check without a confirmed live session reopens instead. Wakes and resume also require the pinned profile's `send`.
 
 A stopped MCP server with a live terminal is **dormant**, not a dead session. Terminal liveness controls wake/resume eligibility and reap, independently of MCP process metadata. The session can receive instructions while dormant, but must restart its MCP connection with the same identity to use tools and renew leases again. Renewal stops while MCP is stopped, so active claims can still expire through the normal lease sweep; terminal liveness does not prevent expiry.
 
@@ -535,15 +535,8 @@ with each server's `type = "local"`, command list `[server.command] + server.arg
 `trk_args` and `trk_env` through `toml`. `mcp_json_file` always refers to generic
 pretty JSON regardless of the harness.
 
-Legacy single-brace harness placeholders are supported but deprecated, including
-scalar placeholders such as `{briefing}`, and `{mcp_json}`, `{opencode_json}`,
-`{trk_args_toml}`, `{trk_env_toml}` and `{trk_tools:PREFIX}`. Use MiniJinja scalar
-expressions, server loops, `toml` and tool-name loops instead; see
-`seed/config.toml`. Compatibility expansion is not recursive and does not expand
-placeholder-looking text supplied by a context value. Launcher templates are
-unchanged and retain single-brace placeholders.
-`trk agent check` warns on deprecated placeholders anywhere in a profile,
-including inactive `builtin_tools` levels.
+Harness profiles use MiniJinja expressions and loops; launcher templates use
+single-brace placeholders. Rendered context values are never expanded recursively.
 
 Profile `model` is an optional default string. `model_args` defaults to an empty
 list and is included only when a model resolves. `{{ model }}` expands to that
@@ -551,11 +544,9 @@ model, or an empty string when unset. Optional argument lists are inserted in
 order: the agent's `builtin_tools` level arguments, conditional profile
 `model_args`, then agent `harness.args`. They precede the first profile argument
 using `briefing`, or are appended when none uses it (including send mode).
-All optional arguments support the same MiniJinja context and legacy placeholders.
+All optional arguments support the same MiniJinja context.
 All seeded profiles have `model_args = ["--model", "{{ model }}"]`; only omp has
-a default `model`. Seed agents are unchanged. Existing installed configurations
-are not rewritten; move literal model flags out of profile `args` and into these
-keys to enable overrides.
+a default `model`.
 
 | Harness | MCP attachment | Confidence |
 | --- | --- | --- |
@@ -627,16 +618,15 @@ replace lower-layer values. `[harness.<name>]` profiles and `[views.<name>]` vie
 by name and then by key. Project `[issues] prefix` and `[user]` identity win over the
 user layer; absent keys inherit. Typed built-in defaults fill settings absent from both
 layers; there are no runtime built-in resource files or harness profiles.
-Compatibility defaults include `[check] verify`, `max_wakes`, `gc`, `gc_grace`,
-`[run] landing` (default `"merge"`), and the detected `[run] base`.
-Launcher operation arrays are optional.
+Launcher operation arrays are optional. Omitted skill settings use
+`.agents/skills/trk` without links; harness detection does not change skill settings.
 Normal `trk install` writes complete project settings and all resource files, so the
 project remains self-contained. Types, agents and prompts are read when routing is resolved.
 
 `[run] base` configures the base branch (for example, `base = "develop"`). When writing
 a new config, `trk install` detects the branch named by `origin/HEAD`, then the current
 branch of the primary checkout, then falls back to `main`. At runtime an explicit
-`base` wins; older configs that omit it use the same detection order. The resolved
+`base` wins; when omitted, runtime uses the same detection order. The resolved
 branch is used for new issue branches, prompt-template `{{ base }}` and waiting-check
 `TRK_BASE`.
 
@@ -694,7 +684,7 @@ All install modes preserve existing config unless `--force` is passed.
 - Each mutating command is exactly one `BEGIN IMMEDIATE` transaction: sweep expired leases, validate, check claims, write rows, append events, commit. A command either happens fully or not at all.
 - A check runs outside any transaction; taking the lock, registering/clearing its process group and recording the result are separate transactions. A spawned shell waits for authorization over a pipe until its group is durably registered; EOF before authorization cannot execute the check.
   The runner owns the shell/group and queue lock together. Shell exit, timeout and INT/TERM/HUP terminate remaining group members (TERM, then KILL after two seconds), reap the shell, then clear group ownership. Cleanup failures retain the lock. Runner interruption stops the queue/watch loop and leaves the interrupted issue waiting without recording a partial result.
-  Crash recovery replaces a same-host holder only after both its runner and all live group members are gone; zombies do not count. Unknown hosts/liveness fail closed. Migrated pre-group holders use `pgid = 0` for unknown ownership and require manual recovery after all old checks have stopped. Checks must not escape their process group; they are not sandboxed.
+  Crash recovery replaces a same-host holder only after both its runner and all live group members are gone; zombies do not count. Unknown hosts/liveness fail closed. Checks must not escape their process group; they are not sandboxed.
 - Read commands use deferred transactions, so they never wait on writers under WAL.
 - Expired claim leases are swept at the start of every write transaction: one indexed `UPDATE`, so no daemon is needed.
 - The schema is applied on open, keyed on SQLite's `user_version`. `trk backup <path>` uses `VACUUM INTO` to write a consistent copy.

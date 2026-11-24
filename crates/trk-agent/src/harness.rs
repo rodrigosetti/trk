@@ -1,7 +1,7 @@
 //! Harness profiles and the launch spec. A profile says how to run an agent in
 //! one harness: command, arguments, environment, files, and how MCP servers
 //! and instructions are passed. Profiles render against a structured session
-//! context; deprecated single-brace placeholders remain supported.
+//! context using MiniJinja templates.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -110,13 +110,12 @@ impl HarnessProfile {
             .chain(self.builtin_tools.values().flatten().map(String::as_str))
     }
 
-    pub(crate) fn legacy_placeholders(&self) -> Result<std::collections::BTreeSet<String>> {
+    pub(crate) fn validate_templates(&self) -> Result<()> {
         let renderer = Renderer::new();
-        let mut names = std::collections::BTreeSet::new();
         for source in self.strings() {
-            names.extend(renderer.validate(source)?);
+            renderer.validate(source)?;
         }
-        Ok(names)
+        Ok(())
     }
 }
 
@@ -419,7 +418,7 @@ pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
         .position(|source| uses_briefing(source))
         .unwrap_or(input.profile.args.len());
     for index in 0..=input.profile.args.len() {
-        // Each unmarked group retains its legacy position and ordering.
+        // Each unmarked group retains its default position and ordering.
         if index == pos {
             for source in fallback_groups.into_iter().flatten().flatten() {
                 argv.push(render(source)?);

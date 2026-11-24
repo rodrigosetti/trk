@@ -457,7 +457,7 @@ fn dry_run_reports_only_templates_loaded_by_the_selected_harness_folding_mode() 
 }
 
 #[test]
-fn minimal_install_inherits_skill_settings_but_normal_install_pins_them() {
+fn minimal_install_inherits_skill_settings_and_normal_install_writes_seed_settings() {
     let e = Env::with_install(true);
     let repo = e.repo().canonicalize().unwrap();
     let config_path = e.trk_dir().join("config.toml");
@@ -480,7 +480,7 @@ fn minimal_install_inherits_skill_settings_but_normal_install_pins_them() {
         toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
     assert_eq!(
         project["skill"]["path"].as_str(),
-        Some("shared/skills/second")
+        Some(".agents/skills/trk")
     );
     std::fs::remove_dir_all(e.user_dir()).unwrap();
     assert_eq!(e.ok(&["whoami"])["skill"], "current");
