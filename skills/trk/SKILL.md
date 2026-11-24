@@ -5,7 +5,7 @@ description: Use when the user tracks work with trk, the local issue tracker and
 
 # trk
 
-trk keeps a project's work in a local database inside the project, in `.trk/`. An issue has a title, a description, notes, a priority, a required type (default `code-change`) and one of four states. Use the `trk` CLI.
+trk keeps a project's work in a local database inside the project, in `.trk/`. An issue has a title, a description, notes, a priority, a required type (default from `[issues] default_type`, initially `code-change`) and one of four states. Use the `trk` CLI.
 
 ```
 open → claimed → closed
@@ -55,6 +55,8 @@ trk create "Review the lease change" --json --type review --blocks orch-9xa
 ```
 
 `--blocked-by ID` and `--blocks ID` add blocker edges at creation. Types route work to agents: `code-change` → `implementer`, `research` → `researcher`, `review` → `reviewer`. Change a type with `trk edit <ID> --type research --json`; query with `trk list 'type=review' --json`. Types do not change lifecycle rules.
+
+Create and type edits accept only names defined in the project's `.trk/types/*.toml`. Unknown types return `invalid_field` with allowed names in `allowed` and a hint pointing to `.trk/types/`; do not guess a type. The editor and MCP `report_followup` enforce the same rule; the MCP schema lists the project types and their descriptions. Removing a definition does not prevent listing, showing or editing other fields of existing issues. `trk agent check` reports a configured `default_type` without a matching definition.
 
 ## Work an issue yourself
 

@@ -16,6 +16,7 @@ fn store_at(dir: &tempfile::TempDir, now: &str) -> Store {
     let opts = StoreOpts {
         now: Some(ts(now)),
         prefix: "orch".into(),
+        known_types: vec!["code-change".into(), "research".into(), "review".into()],
         ..Default::default()
     };
     Store::install(&dir.path().join("trk.db"), opts).unwrap()
@@ -142,6 +143,7 @@ fn configured_default_type_and_explicit_override() {
     let dir = tempfile::tempdir().unwrap();
     let opts = StoreOpts {
         default_type: "investigation".into(),
+        known_types: vec!["investigation".into(), "documentation".into()],
         ..Default::default()
     };
     let mut s = Store::install(&dir.path().join("trk.db"), opts).unwrap();
@@ -1289,9 +1291,10 @@ fn counts_and_dry_run() {
 }
 
 #[test]
-fn issue_types_are_required_authored_fields() {
+fn issue_types_must_be_known_when_set() {
     let (_dir, mut s) = setup();
-    for invalid in ["", " \n "] {
+    s.opts.known_types.push("investigation".into());
+    for invalid in ["", " \n ", "reserch"] {
         let error = s
             .write(HUMAN, false, |c| {
                 c.create(NewIssue {
@@ -1301,6 +1304,11 @@ fn issue_types_are_required_authored_fields() {
             })
             .unwrap_err();
         assert_eq!(error.code(), Code::InvalidField);
+        assert_eq!(
+            error.to_json()["allowed"],
+            serde_json::json!(s.opts.known_types)
+        );
+        assert!(error.hint().unwrap().contains(".trk/types/"));
     }
     let id = s
         .write(HUMAN, false, |c| {
@@ -1324,7 +1332,7 @@ fn issue_types_are_required_authored_fields() {
         .unwrap();
     assert_eq!(changes["type"]["from"], "review");
     assert_eq!(changes["type"]["to"], "investigation");
-    for invalid in ["", " \n "] {
+    for invalid in ["", " \n ", "reserch"] {
         let error = s
             .write(HUMAN, false, |c| {
                 c.edit(
@@ -1337,6 +1345,11 @@ fn issue_types_are_required_authored_fields() {
             })
             .unwrap_err();
         assert_eq!(error.code(), Code::InvalidField);
+        assert_eq!(
+            error.to_json()["allowed"],
+            serde_json::json!(s.opts.known_types)
+        );
+        assert!(error.hint().unwrap().contains(".trk/types/"));
     }
     assert_eq!(
         s.read(None, |c| c.issue(&id)).unwrap().issue_type,
@@ -1348,6 +1361,39 @@ fn issue_types_are_required_authored_fields() {
     let serialized = serde_json::to_value(s.read(None, |c| c.issue(&id)).unwrap()).unwrap();
     assert_eq!(serialized["type"], "investigation");
     assert!(serialized.get("agent").is_none());
+    // Removing a definition must not invalidate reads or unrelated edits.
+    s.opts.known_types.retain(|name| name != "investigation");
+    assert_eq!(ids(&s, "type=investigation"), [id.clone()]);
+    assert_eq!(
+        s.read(None, |c| c.show(&id, With::default())).unwrap()["type"],
+        "investigation"
+    );
+    s.write(HUMAN, false, |c| {
+        c.edit(
+            &id,
+            Edit {
+                title: Some("Still editable".into()),
+                ..Default::default()
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        s.read(None, |c| c.issue(&id)).unwrap().title,
+        "Still editable"
+    );
+    let error = s
+        .write(HUMAN, false, |c| {
+            c.edit(
+                &id,
+                Edit {
+                    issue_type: Some("investigation".into()),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap_err();
+    assert_eq!(error.code(), Code::InvalidField);
     assert!(
         s.conn()
             .execute("UPDATE issue SET type = '' WHERE id = ?1", [&id])

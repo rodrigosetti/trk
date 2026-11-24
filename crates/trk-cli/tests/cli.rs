@@ -1973,9 +1973,14 @@ fn mcp_server_over_stdio() {
         .find(|tool| tool["name"] == "report_followup")
         .unwrap();
     assert_eq!(
-        followup_tool["inputSchema"]["properties"]["type"]["description"],
-        "Work type for the new issue; default task"
+        followup_tool["inputSchema"]["properties"]["type"]["enum"],
+        json!(["research", "review", "task"])
     );
+    let type_description = followup_tool["inputSchema"]["properties"]["type"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(type_description.contains("default task"));
+    assert!(type_description.contains("task: Project task"));
     let names: Vec<&str> = tools["result"]["tools"]
         .as_array()
         .unwrap()

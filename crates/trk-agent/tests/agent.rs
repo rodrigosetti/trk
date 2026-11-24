@@ -110,6 +110,30 @@ fn sample_issue_uses_the_configured_default_type() {
 }
 
 #[test]
+fn check_reports_a_missing_default_type_definition() {
+    let (_dir, seed) = seed();
+    let mut user = user_config();
+    user.issues.default_type = "reserch".into();
+    let diagnostics = trk_agent::check::check_agents(&seed, &user);
+    assert!(diagnostics.iter().any(|d| {
+        d.level == Level::Error
+            && d.file.as_deref() == Some("config.toml")
+            && d.message.contains("issues.default_type 'reserch'")
+            && d.message.contains(".trk/types/reserch.toml")
+    }));
+    std::fs::write(
+        seed.path.join("types/reserch.toml"),
+        "description = \"Custom research\"\nagent = \"researcher\"\n",
+    )
+    .unwrap();
+    assert!(
+        trk_agent::check::check_agents(&seed, &user)
+            .iter()
+            .all(|d| d.level != Level::Error)
+    );
+}
+
+#[test]
 fn landing_selection_only_changes_implementer_instructions() {
     for preset in ["default", "minimal"] {
         let (_dir, seed) = seed_preset(preset);
