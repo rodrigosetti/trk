@@ -19,6 +19,12 @@ pub struct HarnessProfile {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Default model; omitted leaves model selection to the harness.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Added only when a model resolves, with `{model}` substituted.
+    #[serde(default)]
+    pub model_args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// Files written before launch: path (relative to the working directory,
@@ -43,6 +49,17 @@ fn yes() -> bool {
 }
 
 impl HarnessProfile {
+    pub fn resolve_model<'a>(
+        &'a self,
+        agent: &'a AgentDef,
+        harness: &str,
+        explicit: Option<&'a str>,
+    ) -> Option<&'a str> {
+        explicit
+            .or_else(|| agent.harness.model_for(harness))
+            .or(self.model.as_deref())
+    }
+
     pub fn sends_briefing(&self) -> bool {
         match self.briefing.as_deref() {
             Some("send") => true,
@@ -119,6 +136,7 @@ pub struct LaunchSpec {
     pub on_behalf_of: Option<String>,
     pub terminal: String,
     pub cwd: String,
+    pub model: Option<String>,
     pub worktree: Option<String>,
     pub session_dir: String,
     pub argv: Vec<String>,
@@ -142,6 +160,8 @@ pub struct LaunchInput<'a> {
     pub terminal: &'a str,
     pub cwd: &'a str,
     pub worktree: Option<&'a str>,
+    /// One-run model override; otherwise use the agent or profile model.
+    pub model: Option<&'a str>,
     pub session_dir: &'a str,
     /// Absolute path of the trk binary the MCP server is started with.
     pub trk_bin: &'a str,
@@ -238,6 +258,9 @@ pub fn trk_mcp_args(issue: &str, actor: &str, agent: &str) -> Vec<String> {
 }
 
 pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
+    let model = input
+        .profile
+        .resolve_model(input.agent, input.harness, input.model);
     let trk_args = trk_mcp_args(input.issue, input.actor, &input.agent.name);
     let others: Vec<&McpServer> = input.agent.mcp.iter().collect();
 
@@ -287,6 +310,7 @@ pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
     let mut vars: BTreeMap<&str, String> = BTreeMap::new();
     vars.insert("name", input.terminal.to_string());
     vars.insert("issue", input.issue.to_string());
+    vars.insert("model", model.unwrap_or_default().to_string());
     vars.insert("actor", input.actor.to_string());
     vars.insert("agent", input.agent.name.clone());
     vars.insert("harness", input.harness.to_string());
@@ -329,36 +353,36 @@ pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
     );
 
     let level = input.agent.harness.builtin_tools.as_str();
-    let extra: Vec<String> = if level == "default" {
-        vec![]
-    } else {
-        input
-            .profile
-            .builtin_tools
-            .get(level)
-            .cloned()
-            .unwrap_or_default()
-    };
-    let extra: Vec<String> = extra
-        .iter()
-        .map(|x| expand_tool_lists(x, &input.tools))
-        .collect();
-    let mut argv = vec![subst(&input.profile.command, &vars)];
+    let builtin_args = (level != "default")
+        .then(|| input.profile.builtin_tools.get(level))
+        .flatten();
+    let agent_args = input.agent.harness.args.get(input.harness);
+    let model_args = model.map(|_| &input.profile.model_args);
+    let mut argv = Vec::with_capacity(
+        1 + input.profile.args.len()
+            + builtin_args.map_or(0, Vec::len)
+            + model_args.map_or(0, Vec::len)
+            + agent_args.map_or(0, Vec::len),
+    );
+    argv.push(subst(&input.profile.command, &vars));
     let pos = input
         .profile
         .args
         .iter()
         .position(|a| a.contains("{briefing}"))
         .unwrap_or(input.profile.args.len());
-    for (i, a) in input.profile.args.iter().enumerate() {
-        if i == pos {
-            argv.extend(extra.iter().map(|x| subst(x, &vars)));
+    let expand = |arg: &String| {
+        if arg.contains("{trk_tools:") {
+            subst(&expand_tool_lists(arg, &input.tools), &vars)
+        } else {
+            subst(arg, &vars)
         }
-        argv.push(subst(a, &vars));
+    };
+    argv.extend(input.profile.args[..pos].iter().map(|a| subst(a, &vars)));
+    for args in [builtin_args, model_args, agent_args].into_iter().flatten() {
+        argv.extend(args.iter().map(expand));
     }
-    if pos == input.profile.args.len() {
-        argv.extend(extra.iter().map(|x| subst(x, &vars)));
-    }
+    argv.extend(input.profile.args[pos..].iter().map(|a| subst(a, &vars)));
 
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     env.insert("TRK_ACTOR".into(), input.actor.to_string());
@@ -399,6 +423,7 @@ pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
         issue: input.issue.to_string(),
         agent: input.agent.name.clone(),
         harness: input.harness.to_string(),
+        model: model.map(String::from),
         actor: input.actor.to_string(),
         on_behalf_of: input.on_behalf_of.map(String::from),
         terminal: input.terminal.to_string(),

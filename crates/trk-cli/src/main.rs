@@ -11,6 +11,7 @@ mod render;
 mod run;
 mod skill;
 
+use std::collections::BTreeMap;
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 
@@ -283,6 +284,9 @@ enum Cmd {
         agent: Option<String>,
         #[arg(long)]
         harness: Option<String>,
+        /// Override the agent or harness profile model for this run
+        #[arg(long)]
+        model: Option<String>,
         /// Run the harness in this terminal
         #[arg(long)]
         fg: bool,
@@ -331,6 +335,8 @@ enum Cmd {
         #[arg(long)]
         agent: String,
     },
+    /// List agent definitions and their effective models
+    Agents,
     /// Inspect agent definitions
     Agent {
         #[command(subcommand)]
@@ -843,6 +849,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
             id,
             agent,
             harness,
+            model,
             fg,
             print,
             dry_run,
@@ -852,6 +859,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
                 id,
                 agent,
                 harness,
+                model,
                 fg,
                 print,
                 dry_run,
@@ -867,6 +875,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
         Cmd::Reap => run::reap(&env),
         Cmd::Mcp { .. } => unreachable!(),
         Cmd::Agent { cmd } => agent_cmd(&env, cmd),
+        Cmd::Agents => agent_cmd(&env, AgentCmd::List),
         Cmd::Whoami => whoami(&env),
         Cmd::Backup { path } => {
             let store = env.store()?;
@@ -1106,6 +1115,7 @@ fn create(env: &Env, new: NewIssue, dry_run: bool, run: bool) -> Result<Out> {
                 id: Some(id.to_string()),
                 agent: None,
                 harness: None,
+                model: None,
                 fg: false,
                 print: false,
                 dry_run: false,
@@ -1219,24 +1229,36 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             let cfg = local_config();
             let agents = cfg.agents()?;
             let types = cfg.types()?;
+            let profiles = trk_agent::harness::profiles(&env.user)?;
             let mut items = vec![];
             let mut text = String::new();
             for resolved in agents.values() {
                 let a = &resolved.agent;
+                let models: BTreeMap<_, _> = profiles
+                    .iter()
+                    .map(|(name, profile)| (name, profile.resolve_model(a, name, None)))
+                    .collect();
+                let model_text = models
+                    .iter()
+                    .map(|(name, model)| format!("{name}={}", model.unwrap_or("(harness default)")))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let tools: Vec<String> = trk_agent::agent_tools(a)
                     .into_iter()
                     .map(|t| t.name)
                     .collect();
                 text.push_str(&format!(
-                    "{:<12} {}\n             harness: {}  builtin_tools: {}\n             tools: {}\n",
+                    "{:<12} {}\n             harness: {}  builtin_tools: {}\n             model: {}\n             tools: {}\n",
                     a.name,
                     a.description.clone().unwrap_or_default(),
                     a.harness.prefer.join(" > "),
                     a.harness.builtin_tools,
+                    model_text,
                     tools.join(", "),
                 ));
                 items.push(json!({"name": a.name, "description": a.description,
                                   "tools": tools,
+                                  "model": a.harness.model, "models": models, "args": a.harness.args,
                                   "source": resolved.config.path.join("agents").join(format!("{}.toml", a.name)),
                                   "prompt_directory": resolved.config.path,
                                   "types": types.values().filter(|r| r.agent == a.name).collect::<Vec<_>>(),
