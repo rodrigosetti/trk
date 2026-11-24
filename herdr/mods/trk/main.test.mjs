@@ -30,7 +30,7 @@ async function dashboard(state) {
         executions.push({ command, args, options });
         return { code: 0, stdout: JSON.stringify({ ok: true, data: {} }), stderr: "" };
       },
-      agents() {}, terminals() {}, theme() {}, notify() {}, checking() {}, shared() {},
+      agents() {}, terminals() {}, theme() {}, settings() {}, notify() {}, checking() {}, shared() {},
       setShared() {}, setBadge() {}, setAgentOrder() {}, nextCommand() {}, watchFolder() {}, layout() {},
     },
   };

@@ -12,7 +12,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Input, TextView } from "gpui-base";
 import {
-  exec, spaces, panes, agents, terminals, theme, props, run, notify, checking,
+  exec, spaces, panes, agents, terminals, theme, settings, props, run, notify, checking,
   shared, setShared, setBadge, setAgentOrder, nextCommand, watchFolder, layout,
 } from "herdr";
 
@@ -97,6 +97,7 @@ export default class Trk extends View {
     this.confirm = null;
     this.prompt = null;
     this.size = null;
+    this.listWidth = null;
     this.context = null;
     this.root = null;
     this.want = null;
@@ -471,10 +472,10 @@ export default class Trk extends View {
     }
     const color = t[tone];
     // Keep the text in theme foreground; the tint and edge carry the type color.
-    return h_flex().flex_none().max_w(140).h(18).px(5).items_center().rounded(4)
+    return h_flex().flex_none().max_w(140).min_h(18).px(5).py(2).items_start().rounded(4)
       .border_l(2).border_color(color).bg(color + "1a")
-      .text_size(10.5).font_medium().text_color(t.foreground).tooltip(type)
-      .child(div().min_w(0).truncate().child(type));
+      .text_size(10.5).line_height("14px").font_medium().text_color(t.foreground).tooltip(type)
+      .child(div().min_w(0).whitespace_normal().child(type));
   }
 
   /** A link the issue carries (a pull request, a preview): click opens it in the browser. */
@@ -508,19 +509,21 @@ export default class Trk extends View {
     return div().flex_none().text_size(10.5).text_color(t.dim).child(ago(issue.updated_at, now));
   }
 
-  row(t, issue, now) {
+  row(t, issue, now, columns) {
     const on = issue.id === this.selected;
     const urgent = issue.priority === "P0" ? t.blocked : issue.priority === "P1" ? t.done : t.dim;
-    return h_flex().id(`row-${issue.id}`).h(28).px(8).gap(7).flex_none().items_center().rounded(7)
+    return h_flex().id(`row-${issue.id}`).w_full().min_w(0).min_h(28).px(8).py(5).gap(7).flex_none().items_start().rounded(7)
       .when(on, (el) => el.bg(t.selected)).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.select(issue.id, cx))
-      .child(div().w(18).flex_none().text_size(10.5).font_semibold().text_color(urgent).child(issue.priority))
-      .child(this.issueId(t, issue.id, "row"))
-      .child(this.typeBadge(t, issue.type))
-      .child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : issue.group === "blocked" ? t.muted : t.foreground).child(issue.title))
-      .when(Boolean(issue.links?.length), (el) => el.child(this.link(t, issue, 0, "row")))
-      .when((issue.links?.length ?? 0) > 1, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(`+${issue.links.length - 1}`)))
-      .child(this.badge(t, issue, now));
+      .child(div().w(18).flex_none().text_size(10.5).line_height("18px").font_semibold().text_color(urgent).child(issue.priority))
+      .child(this.issueId(t, issue.id, "row").w(columns.id).line_height("18px").whitespace_normal())
+      .child(this.typeBadge(t, issue.type).w(columns.type).max_w(columns.type))
+      .child(v_flex().flex_1().min_w(0).gap(3)
+        .child(div().whitespace_normal().line_height("18px").text_color(on ? t.foreground : issue.group === "blocked" ? t.muted : t.foreground).child(issue.title))
+        .child(h_flex().min_w(0).flex_wrap().gap(4).items_center()
+          .when(Boolean(issue.links?.length), (el) => el.child(this.link(t, issue, 0, "row").max_w_full()))
+          .when((issue.links?.length ?? 0) > 1, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(`+${issue.links.length - 1}`)))
+          .child(this.badge(t, issue, now).max_w_full())));
   }
 
   promptBox(t) {
@@ -686,6 +689,11 @@ export default class Trk extends View {
     if (props()?.focus === "agent") setAgentOrder(groups.flatMap((g) => g.members).map((i) => i.session?.terminal).filter(Boolean));
     const selected = issues.find((i) => i.id === this.selected);
     const inline = !this.wide && this.open;
+    // Share boundaries across every section. Measure the list, not the dashboard:
+    // the native divider can make this pane narrow even in a wide window.
+    // Reserve row/list padding, priority and gaps before allocating the columns.
+    const available = Math.max(0, (this.listWidth ?? this.size?.width ?? 280) - 67);
+    const columns = { id: Math.min(88, available * 0.30), type: Math.min(112, available * 0.32) };
 
     const rows = groups.flatMap((g) => {
       const open = !this.folded.has(g.id);
@@ -697,10 +705,14 @@ export default class Trk extends View {
         .child(div().flex_1())
         .when(!open, (el) => el.child(div().text_color(t.dim).child("›")));
       if (!open) return [head];
-      return [head, ...g.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now), this.detailView(t, i, now)] : [this.row(t, i, now)]))];
+      return [head, ...g.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now, columns), this.detailView(t, i, now)] : [this.row(t, i, now, columns)]))];
     });
 
-    const list = v_flex().id("trk-list").flex_1().min_w(0).min_h(0).px(6).pb(8).gap(1).overflow_y_scrollbar()
+    const list = v_flex().id("trk-list").w_full().flex_1().min_w(0).min_h(0).px(6).pb(8).gap(1).overflow_y_scrollbar()
+      .on_size_change((size, cx) => {
+        const width = size.width / Number(settings().zoom ?? 1);
+        if (this.listWidth !== width) { this.listWidth = width; cx.notify(); }
+      })
       .when(this.prompt?.kind === "create", (el) => el.child(div().pt(8).child(this.promptBox(t))))
       .when(Boolean(this.error), (el) => el.child(div().p(10).text_size(11.5).text_color(t.blocked).child(this.error)))
       .when(issues.length === 0, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Nothing open. New files an issue; `trk run` starts an agent on it.")))
@@ -716,7 +728,7 @@ export default class Trk extends View {
     const body = this.wide && this.open && selected
       ? h_resizable("trk-list-details").w_full().flex_1().min_h(0)
         .child(resizable_panel().size(380).size_range(280)
-          .child(v_flex().h_full().min_h(0).child(list)))
+          .child(v_flex().w_full().h_full().min_w(0).min_h(0).child(list)))
         .child(resizable_panel().size_range(300)
           .child(v_flex().id("trk-detail").w_full().h_full().min_w(0).min_h(0).p(10).overflow_y_scrollbar()
             .child(this.detailView(t, selected, now))))

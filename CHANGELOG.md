@@ -15,6 +15,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Configuration reference links and user-layer guidance in installed config and skill files, plus a manual link in CLI help.
 - Native draggable list/details split in the Herdr dashboard, retaining pane sizes while browsing issues.
 - Theme-colored issue-type badges in Herdr dashboard rows and details, with readable labels and stable colors for custom types.
+- Aligned Herdr dashboard issue IDs, type badges, and text across sections, with wrapped titles and custom type names that stay within narrow list panes.
 
 ### Beta compatibility and upgrades
 
