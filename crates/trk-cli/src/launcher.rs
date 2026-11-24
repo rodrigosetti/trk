@@ -13,6 +13,10 @@ use crate::env::Env;
 pub struct Launcher {
     #[serde(skip)]
     pub name: Option<String>,
+    #[serde(rename = "name")]
+    pub name_template: Option<String>,
+    pub name_max: Option<usize>,
+    pub name_chars: Option<String>,
     pub driver: Option<String>,
     pub available: Option<Vec<String>>,
     pub start: Option<Vec<String>>,
@@ -114,6 +118,39 @@ pub fn choose(env: &Env) -> Result<(Launcher, Option<crate::herdr::Placement>)> 
 }
 
 impl Launcher {
+    pub fn terminal_name(&self, vars: &[(&str, &str)]) -> String {
+        let template = self.name_template.as_deref().unwrap_or("trk-{id}");
+        let allowed = self.name_chars.as_deref().unwrap_or("a-z0-9_-");
+        let max = self.name_max.unwrap_or(32);
+        let mut name = String::with_capacity(max.min(32));
+        let mut count = 0;
+        // Expand once, streaming directly into the sanitized, bounded name.
+        for part in template.split_inclusive('}') {
+            let substitution = part
+                .strip_suffix('}')
+                .and_then(|part| part.split_once('{'))
+                .and_then(|(literal, key)| {
+                    vars.iter()
+                        .find(|(name, _)| *name == key)
+                        .map(|(_, value)| (literal, *value))
+                });
+            let (literal, value) = substitution.unwrap_or(("", part));
+            for c in literal.chars().chain(value.chars()) {
+                if count == max {
+                    return name;
+                }
+                let c = c.to_ascii_lowercase();
+                name.push(if name_char_allowed(allowed, c) {
+                    c
+                } else {
+                    '-'
+                });
+                count += 1;
+            }
+        }
+        name
+    }
+
     pub fn is_herdr(&self) -> bool {
         self.driver.as_deref() == Some("herdr")
     }
@@ -188,6 +225,26 @@ impl Launcher {
     }
 }
 
+/// Character sets contain inclusive ranges and literals; a trailing '-' is literal.
+fn name_char_allowed(spec: &str, c: char) -> bool {
+    let mut chars = spec.chars().peekable();
+    while let Some(start) = chars.next() {
+        let end = if chars.peek() == Some(&'-') {
+            chars.next();
+            match chars.next() {
+                Some(end) => end,
+                None => return c == start || c == '-',
+            }
+        } else {
+            start
+        };
+        if (start..=end).contains(&c) {
+            return true;
+        }
+    }
+    false
+}
+
 pub struct Output {
     pub success: bool,
     pub stdout: String,
@@ -237,4 +294,55 @@ pub fn run_template(
         .status()
         .map_err(|e| Error::new(Code::Internal, format!("cannot run {program}: {e}")))?;
     Ok((status.success(), String::new()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_terminal_names_preserve_legacy_bytes() {
+        let launcher = Launcher::default();
+        for (id, expected) in [
+            ("orch-4kq", "trk-orch-4kq"),
+            ("ABC_09-!é", "trk-abc_09---"),
+            (
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                "trk-abcdefghijklmnopqrstuvwxyz01",
+            ),
+        ] {
+            assert_eq!(launcher.terminal_name(&[("id", id)]), expected);
+        }
+    }
+
+    #[test]
+    fn terminal_name_limits_characters_and_honors_custom_ranges_and_literals() {
+        let launcher: Launcher = toml::from_str(
+            r#"
+name = "{project}.{id}_!"
+name_max = 9
+name_chars = "a-c0-2._é-"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            launcher.terminal_name(&[("project", "AéD"), ("id", "0123XYZ")]),
+            "aé-.012--"
+        );
+    }
+
+    #[test]
+    fn terminal_name_does_not_expand_substituted_values() {
+        let launcher: Launcher = toml::from_str(
+            r#"
+name = "{project}-{id}"
+name_chars = "a-z0-9_{}-"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            launcher.terminal_name(&[("project", "{id}"), ("id", "abc")]),
+            "{id}-abc"
+        );
+    }
 }

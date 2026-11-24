@@ -141,7 +141,7 @@ fn named_tmux_run_binds_only_first_stdout_line_and_pins_send_and_attach() {
         tmux.e.repo().canonicalize().unwrap().to_str().unwrap()
     );
     assert!(tmux.text("shell-command").contains("TRK_ACTOR"));
-    assert!(!tmux.text("generated").is_empty());
+    assert_eq!(tmux.text("generated"), format!("trk-{id}"));
 
     tmux.pin_to_other_selection();
     tmux.ok(&["attach", &id]);
@@ -165,6 +165,44 @@ fn named_start_empty_stdout_keeps_generated_name_and_ignores_stderr() {
     assert_ne!(issue["claim"]["terminal"], "diagnostic-not-an-address");
     tmux.ok(&["send", &id, "still addressable"]);
     assert!(tmux.text("messages").ends_with("still addressable\n"));
+}
+
+#[test]
+fn named_custom_template_uses_project_and_resolved_routing_and_keeps_claim_address() {
+    let tmux = Tmux::new();
+    tmux.e.set_config(
+        "[launcher.tmux]",
+        "[launcher.tmux]\nname = \"{project}.{prefix}.{agent}.{type}.{id}\"\nname_max = 64\nname_chars = \"a-z0-9_.-\"",
+    );
+    let id = tmux.e.create(&["Custom terminal name", "--type", "review"]);
+    let mut cmd = tmux.cmd();
+    cmd.env("TRK_TEST_START", "stderr-only");
+    let launched = resume::success(cmd, &["run", &id, "--harness", "omp"]);
+    let expected = format!("repo.orch.reviewer.review.{id}");
+    assert_eq!(tmux.text("generated"), expected);
+    assert_eq!(launched["terminal"], expected);
+    assert_eq!(tmux.e.ok(&["show", &id])["claim"]["terminal"], expected);
+
+    tmux.e.set_config(
+        "name = \"{project}.{prefix}.{agent}.{type}.{id}\"",
+        "name = \"changed-{id}\"",
+    );
+    tmux.ok(&["send", &id, "recorded address"]);
+    assert_eq!(
+        tmux.text("messages"),
+        format!("{expected}\nrecorded address\n")
+    );
+}
+
+#[test]
+fn named_custom_length_and_character_set_apply_before_start() {
+    let tmux = Tmux::new();
+    tmux.e.set_config(
+        "[launcher.tmux]",
+        "[launcher.tmux]\nname = \"ABC.DEF_0123456789\"\nname_max = 10\nname_chars = \"a-z._\"",
+    );
+    tmux.launch();
+    assert_eq!(tmux.text("generated"), "abc.def_--");
 }
 
 #[test]
@@ -287,6 +325,8 @@ set -eu
 case "$1" in
 ls) exit 0 ;;
 run)
+    [ "$4" = "--name" ]
+    printf '%s' "$5" > "$TRK_TEST_LAUNCHER/hc-generated"
     : > "$TRK_TEST_LAUNCHER/hc-started"
     printf 'hc-session\n'
     ;;
@@ -300,6 +340,7 @@ esac
     assert_eq!(issue["claim"]["launcher"], "hc");
     assert_eq!(issue["claim"]["terminal"], "hc-session");
     assert!(tmux.e.dir.path().join("hc-started").exists());
+    assert_eq!(tmux.text("hc-generated"), format!("trk-{id}"));
     assert_eq!(tmux.text("generated"), "");
 }
 
