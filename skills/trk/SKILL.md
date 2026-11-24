@@ -152,7 +152,7 @@ On each wake, fix only what the check reported and end the new work cycle, norma
 
 While claimed or waiting with a nonzero count, issue JSON includes top-level `wake_count` and pretty `trk show` displays a `wakes` line. Otherwise the count is omitted.
 
-Without a check, the issue waits until a human closes it, resumes its live waiting session with a decision, or reopens it. Running `trk wait` on an issue that is already waiting replaces its check, interval and reason.
+Without a check, the issue waits until a human closes it if nothing remains, reopens it for a new session, or runs `trk resume <ID> -m "<your decision>"` to continue the live waiting session with their decision. The no-check MCP `wait` result includes that exact command with the real issue id. Say plainly that a chat reply alone will not continue the work, and end your chat question with the command. If the human replies only in chat, repeat the command rather than only recording a note. Running `trk wait` on an issue that is already waiting replaces its check, interval and reason.
 
 ### Human-authorized continuation
 

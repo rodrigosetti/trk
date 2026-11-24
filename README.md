@@ -41,6 +41,11 @@ starts its agent in a dedicated worktree. Leave `trk check --watch` running in a
 terminal: it runs waiting checks and returns failures to the session when possible.
 Use `trk dashboard` for a live overview.
 
+Without a check, an issue waits for a human to close it, reopen it for a new session,
+or run `trk resume <ID> -m "<your decision>"` to continue the live waiting session.
+A chat reply alone will not continue the work; the session must hand you that command
+with the real issue id.
+
 **Safety:** agents write checks that run later, unattended, **as you**. Inspect an
 issue's full command with `trk show <ID>` or preview the queue with
 `trk check --dry-run` before running it.

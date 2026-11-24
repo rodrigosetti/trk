@@ -56,6 +56,13 @@ trk check --no-gc         # run checks without automatic cleanup (also works wit
 trk list state=waiting    # what is waiting, on what, and when it is checked next
 ```
 
+Without a check, the human can close the issue if nothing remains, reopen it for a new
+session, or run `trk resume <ID> -m "<your decision>"` to continue the live waiting
+session. The no-check MCP `wait` result includes the command with the real issue id.
+The session must say plainly that a chat reply alone will not continue the work and
+end its chat question with that command. If the human replies only in chat, the session
+repeats the command rather than only recording a note.
+
 After each non-ID pass, `trk check` automatically sweeps all eligible closed-as-done
 issues, including manual closes, under the same queue lock and safety gates as `trk gc`.
 Abandoned issues are excluded. `[check] gc = true` and `gc_grace = "1h"` are the defaults,
