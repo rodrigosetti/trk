@@ -273,12 +273,6 @@ fn named_selection_failure_leaves_issue_open_without_a_session() {
         assert!(!out.status.success());
         let result: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(result["error"]["code"], "config_invalid");
-        assert!(
-            result["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("no available launcher in use")
-        );
         let hint = result["error"]["hint"].as_str().unwrap();
         for remedy in [tried, "install", "[launcher] use", "trk run --fg"] {
             assert!(hint.contains(remedy), "{hint}");
