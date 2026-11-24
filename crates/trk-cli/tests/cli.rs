@@ -26,6 +26,9 @@ mod base;
 #[path = "cli/verify.rs"]
 mod verify;
 
+#[path = "cli/skill.rs"]
+mod skill;
+
 fn local_host() -> String {
     let output = StdCommand::new("hostname").output().unwrap();
     assert!(output.status.success());
@@ -1030,8 +1033,6 @@ fn install_writes_the_project_directory_and_the_skill() {
     assert!(installed.starts_with("---\nname: trk\n"), "{installed}");
     assert!(skill.join("references/reference.md").is_file());
     assert!(!repo.join(".claude").exists(), "no Claude Code here");
-    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
-    assert!(exclude.contains("/.agents/skills/trk/"), "{exclude}");
     let status = StdCommand::new("git")
         .current_dir(&repo)
         .args(["status", "--porcelain", "--untracked-files=all"])
@@ -1071,14 +1072,11 @@ fn install_writes_the_project_directory_and_the_skill() {
     assert!(e.create(&["New prefix"]).starts_with("other-"));
     assert_eq!(e.ok(&["show", &id])["id"], json!(id), "old ids remain");
 
-    // With Claude Code present, its skills directory links to the skill.
+    // Detection is seeded only once; a newly installed harness does not change it.
     std::fs::create_dir_all(e.dir.path().join("home/.claude")).unwrap();
     let v = e.ok(&["install"]);
-    assert_eq!(v["skill"]["claude_linked"], true);
-    assert_eq!(
-        std::fs::read_link(repo.join(".claude/skills/trk")).unwrap(),
-        PathBuf::from("../../.agents/skills/trk")
-    );
+    assert_eq!(v["skill"]["links"], json!([]));
+    assert!(!repo.join(".claude/skills/trk").exists());
 }
 
 #[test]

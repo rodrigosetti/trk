@@ -1064,10 +1064,23 @@ fn install(
         std::fs::write(&p, content)?;
         written.push(name);
     }
-    let env = Env::at(loc, g)?;
+    let mut env = Env::at(loc, g)?;
+    // Persist legacy detection once; subsequent installs only follow the config.
+    if env.user.skill.is_none() {
+        let settings = skill::settings(&root, None).into_owned();
+        let section = toml::to_string(&settings).expect("skill settings serialize");
+        let config_text = std::fs::read_to_string(&config_path)?;
+        std::fs::write(&config_path, format!("{config_text}\n[skill]\n{section}"))?;
+        env.user.skill = Some(settings);
+        if !written.iter().any(|p| p == "config.toml") {
+            kept.retain(|p| p != "config.toml");
+            written.push("config.toml".into());
+        }
+    }
     let created = !env.db.is_file();
     trk_core::Store::install(&env.db, env.store_opts()?)?;
-    let skill = skill::install(&root, env.checkout().is_some())?;
+    let settings = skill::settings(&root, env.user.skill.as_ref());
+    let skill = skill::install(&root, env.checkout().is_some(), &settings)?;
     let herdr = herdr_ui::refresh(&herdr_ui::app_home())?;
 
     let mut text = format!(
@@ -1275,6 +1288,7 @@ fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
 fn whoami(env: &Env) -> Result<Out> {
     let store = env.store()?;
     let (counts, lock) = store.read(None, |c| Ok((c.counts()?, c.check_lock()?)))?;
+    let settings = skill::settings(&env.root, env.user.skill.as_ref());
     let data = json!({
         "version": env!("TRK_VERSION"),
         "actor": env.actor,
@@ -1283,7 +1297,7 @@ fn whoami(env: &Env) -> Result<Out> {
         "db": env.db,
         "prefix": env.user.issues.prefix,
         "worktrees": env.worktrees_dir(),
-        "skill": skill::state(&env.root.join(skill::SKILL_DIR)),
+        "skill": skill::configured_state(&env.root, &settings),
         "default_type": "code-change",
         "issues": counts,
         "check_running": lock.map(|(pid, host, started, pgid)| json!({"pid": pid, "host": host, "started_at": started, "pgid": pgid})),
