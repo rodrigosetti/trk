@@ -34,6 +34,13 @@ project's installed type definitions. Discover the current schemas with MCP
 `tools/list`; do not assume every project uses the seed types.
 `trk agent preview <agent> --issue <ID>` also shows the session's tools.
 
+Without a check, `wait` returns a message containing the issue-specific command
+`trk resume <ID> -m "<your decision>"`. The human can close the issue if nothing
+remains, reopen it for a replacement session, or use that command to continue the
+live waiting session. The session must end its chat question with the real
+command and state that a chat reply alone will not continue the work. If the
+human replies only in chat, repeat the command rather than only adding a note.
+
 A check runs unattended with `sh -c` in the recorded worktree/project directory.
 It receives `TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO`, `TRK_BRANCH`, `TRK_BASE` and
 `TRK_VERIFY`. Exit 0 closes as done; exit 75 schedules another attempt; other exits

@@ -20,7 +20,7 @@ the release changes have landed on `main`; agents must not create or push the ta
 
 1. In the release checkout, ensure `main` is up to date and the working tree is clean.
    Confirm `workspace.package.version` in `Cargo.toml` is `0.1.0`.
-2. Review [CHANGELOG.md](../CHANGELOG.md), replace the pending release date with the
+2. Review [CHANGELOG.md](https://github.com/rodrigosetti/trk/blob/main/CHANGELOG.md), replace the pending release date with the
    actual release date, and commit and land that change before tagging.
 3. Run `cargo test --workspace --locked`, `cargo lint`, and
    `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs` on the release

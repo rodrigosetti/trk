@@ -214,9 +214,8 @@ consistent copy.
 
 ### Data model
 
-The initial [schema](https://github.com/rodrigosetti/trk/blob/main/crates/trk-core/src/schema.sql)
-and subsequent [migrations](https://github.com/rodrigosetti/trk/blob/main/crates/trk-core/src/store.rs)
-together define the current database:
+The baseline [schema](https://github.com/rodrigosetti/trk/blob/main/crates/trk-core/src/schema.sql)
+defines the current database:
 
 | Table | Purpose |
 | --- | --- |
