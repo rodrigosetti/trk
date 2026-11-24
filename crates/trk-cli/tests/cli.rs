@@ -1441,6 +1441,127 @@ fn agent_preview_and_run_dry_run() {
 }
 
 #[test]
+fn run_resolves_profile_agent_per_harness_and_cli_models_and_args() {
+    let e = Env::new();
+    let id = e.create(&["Review models", "--type", "review"]);
+    e.set_config(
+        "model   = \"openai-codex/gpt-6-luna\"",
+        "model   = \"profile-model\"",
+    );
+    let check = |harness: &str, model: Option<&str>, extra: &[&str], cli: Option<&str>| {
+        let mut args = vec!["run", &id, "--harness", harness, "--dry-run"];
+        if let Some(model) = cli {
+            args.extend(["--model", model]);
+        }
+        let spec = e.ok(&args);
+        assert_eq!(spec["model"], json!(model), "{spec:#}");
+        let argv: Vec<&str> = spec["argv"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect();
+        match model {
+            Some(model) => {
+                let pos = argv.iter().position(|arg| *arg == "--model").unwrap();
+                assert_eq!(argv[pos + 1], model, "{argv:?}");
+                assert_eq!(argv.iter().filter(|arg| **arg == "--model").count(), 1);
+            }
+            None => assert!(!argv.contains(&"--model"), "{argv:?}"),
+        }
+        let end = if harness == "opencode" {
+            assert_eq!(spec["send_briefing"], true);
+            argv.len()
+        } else {
+            assert_eq!(argv.last().copied(), spec["briefing"].as_str());
+            argv.len() - 1
+        };
+        assert_eq!(&argv[end - extra.len()..end], extra);
+    };
+
+    // No resolved model means no model flag or empty model argument.
+    check("omp", Some("profile-model"), &[], None);
+    for harness in ["claude-code", "codex", "opencode", "pi"] {
+        check(harness, None, &[], None);
+        check(harness, Some("one-run"), &[], Some("one-run"));
+    }
+    let agent_path = e.trk_dir().join("agents/reviewer.toml");
+    let original = std::fs::read_to_string(&agent_path).unwrap();
+    let extra = r#"
+args = { omp = ["--label", "review {issue}: {model}"], opencode = ["--label", "{model}"] }
+"#;
+    std::fs::write(
+        &agent_path,
+        format!("{original}\nmodel = \"agent-model\"\n{extra}"),
+    )
+    .unwrap();
+    let label = format!("review {id}: agent-model");
+    check("omp", Some("agent-model"), &["--label", &label], None);
+    check("claude-code", Some("agent-model"), &[], None);
+
+    std::fs::write(
+        &agent_path,
+        format!(
+            "{original}\nmodel = {{ omp = \"omp-model\", claude-code = \"claude-model\" }}\n{extra}"
+        ),
+    )
+    .unwrap();
+    let label = format!("review {id}: omp-model");
+    check("omp", Some("omp-model"), &["--label", &label], None);
+    check("claude-code", Some("claude-model"), &[], None);
+    check("codex", None, &[], None);
+    check("opencode", None, &["--label", ""], None);
+    check(
+        "opencode",
+        Some("sent-model"),
+        &["--label", "sent-model"],
+        Some("sent-model"),
+    );
+    let label = format!("review {id}: cli-model");
+    check(
+        "omp",
+        Some("cli-model"),
+        &["--label", &label],
+        Some("cli-model"),
+    );
+    let list = e.ok(&["agents"]);
+    let reviewer = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "reviewer")
+        .unwrap();
+    assert_eq!(
+        reviewer["model"],
+        json!({"omp": "omp-model", "claude-code": "claude-model"})
+    );
+    assert_eq!(reviewer["models"]["omp"], "omp-model");
+    assert_eq!(reviewer["models"]["codex"], Value::Null);
+    assert_eq!(
+        reviewer["args"]["omp"],
+        json!(["--label", "review {issue}: {model}"])
+    );
+    let pretty = e
+        .cmd()
+        .args(["--format", "pretty", "agents"])
+        .output()
+        .unwrap();
+    assert!(pretty.status.success());
+    let text = String::from_utf8(pretty.stdout).unwrap();
+    assert!(text.contains("omp=omp-model"), "{text}");
+    assert!(text.contains("claude-code=claude-model"), "{text}");
+
+    // A model table lacking the selected harness falls back to the profile.
+    std::fs::write(
+        &agent_path,
+        format!("{original}\nmodel = {{ pi = \"pi-model\" }}"),
+    )
+    .unwrap();
+    check("omp", Some("profile-model"), &[], None);
+    assert_eq!(e.ok(&["show", &id])["claim"], Value::Null);
+}
+
+#[test]
 fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
     let e = Env::new();
     let id = e.create(&["Preserve active session"]);

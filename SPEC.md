@@ -278,8 +278,8 @@ A check is written by an agent and executed later, unattended, with the user's p
 | Piece | Defines |
 | --- | --- |
 | Type | Name, description, agent routing and whether to use a worktree; no workflow or custom fields |
-| Agent | Who does the work: instructions, briefing, other MCP servers, harness preference, built-in tool level |
-| Harness profile | How to run an agent in one harness: command, arguments, environment, files, how MCP servers and instructions are passed |
+| Agent | Who does the work: instructions, briefing, other MCP servers, harness preference, model override, extra per-harness arguments, built-in tool level |
+| Harness profile | How to run an agent in one harness: command, arguments, default model, conditional model arguments, environment, files, how MCP servers and instructions are passed |
 | Launcher | Where it runs: three command templates for `hc` |
 
 ```toml
@@ -303,6 +303,8 @@ env     = { GITHUB_TOKEN = "${env:GITHUB_TOKEN}" }
 [harness]
 prefer        = ["omp", "claude-code"]   # first installed wins; `trk run --harness` overrides
 builtin_tools = "default"                # default | read-only | none
+model         = { omp = "provider/reviewer-model", claude-code = "reviewer-model" }
+args          = { omp = ["--thinking", "high"] }
 ```
 
 The agent for a run is `trk run --agent X` (a one-off override), otherwise the issue type's `agent`.
@@ -322,6 +324,16 @@ no trust gate, because `.trk/` is created by the user's own `trk install` and is
 git. An agent's `harness.prefer` orders the harnesses it may use; `trk run --harness` overrides it.
 `trk show --json` routing and `trk run --dry-run --json` expose routing provenance,
 including the resolved `worktree` boolean, before execution.
+
+An agent's optional `harness.model` is either a string for all harnesses or a table
+of harness names to model strings. Resolution is `trk run --model M`, then the
+agent's string or selected-harness entry, then the selected profile's `model`.
+A missing table entry falls back to the profile. If none resolves, the harness
+chooses its default; trk does not inject model-selection arguments.
+Agent `harness.args` is a table of harness names to extra argument lists (default
+empty); only the selected harness's list is added, without shell splitting.
+`trk agents` shows effective models by profile; JSON exposes configured `model`,
+effective `models` keyed by harness (null for harness default), and configured `args`.
 
 ### The trk MCP server
 
@@ -380,14 +392,14 @@ the configured issue prefix and settings, and sample type `code-change` with des
 ### `trk run`
 
 ```
-trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]
+trk run <ID> [--agent A] [--harness H] [--model M] [--fg] [--print] [--dry-run]
 ```
 
 1. Check the issue is ready, and resolve its agent and harness.
 2. If the type's `worktree` is true, create or reuse the worktree. New issue branches start at the resolved base: `git worktree add <worktrees>/<ID> -b <ID> <base>`. Existing issue branches are reused rather than reset to the base. The branch is always named after the issue, so a later session finds earlier work. Otherwise use the primary project root without creating a branch or worktree.
 3. Mint the actor `agent:<harness>:<uuid>`; the harness's own session id, once known, goes in `actor.meta`.
 4. Claim the issue with the actor, agent, optional worktree path and terminal name (Herdr binds its returned address after launch). A type with `worktree = false` records no claim worktree path.
-5. Render the launch spec: briefing, MCP server list (trk plus the agent's others), environment (`TRK_ACTOR`, for attribution only), files, argv.
+5. Render the launch spec: resolved `model` (string or null), briefing, MCP server list (trk plus the agent's others), environment (`TRK_ACTOR`, for attribution only), files, argv.
 6. Start in a new Herdr space when enabled and available, otherwise use the launcher's `start` template. `--print` emits the launch spec as JSON instead; `--dry-run` also skips the claim.
 
 Related commands: `trk attach <ID>` and `trk send <ID>` (only when their launcher templates are set) target the active claim's terminal, or the waiting session's terminal when there is no active claim. An active claim takes precedence even if it has no terminal; historical terminals are never a fallback once the issue leaves waiting. `trk runs` lists active and waiting agent sessions with `state` (`claimed` or `waiting`), agent, harness, terminal and claim metadata. A waiting row's lease is historical, not active. `trk reap` releases active claims whose MCP server has gone, recording the exit as a note; it leaves waiting sessions alone.
@@ -446,16 +458,19 @@ Replacing hc with tmux or a plain process is a config change: replace the templa
 [harness.claude-code]
 command = "claude"
 args    = ["--strict-mcp-config", "--mcp-config", "{{ mcp_json_file }}", "{{ briefing }}"]
+model_args = ["--model", "{{ model }}"]
 builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdit"], none = ["--tools", ""] }
 
 [harness.omp]
 command = "omp"
-args    = ["--model", "openai-codex/gpt-6-luna", "--config", "{{ session_dir }}/omp.yml", "{{ briefing }}"]
+args    = ["--config", "{{ session_dir }}/omp.yml", "{{ briefing }}"]
+model   = "openai-codex/gpt-6-luna"
+model_args = ["--model", "{{ model }}"]
 files   = { ".omp/mcp.json" = '''{"mcpServers":{{ '{' }}{% for server in mcp_servers %}{{ server.name | tojson }}:{"command":{{ server.command | tojson }},"args":{{ server.args | tojson }},"env":{{ server.env | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}}}''', "{{ session_dir }}/omp.yml" = "skills:\n  ignoredSkills: [trk]\n" }
 ```
 
 All profile command strings, arguments, environment values, file paths and
-contents, and `builtin_tools` arguments are MiniJinja templates. Each is rendered
+contents, and optional arguments are MiniJinja templates. Each is rendered
 once: braces in a substituted value are literal, not recursively expanded.
 Built-in-tool arguments are inserted before the first argument using the briefing,
 including a MiniJinja briefing expression.
@@ -465,6 +480,7 @@ The harness context (distinct from the agent prompt context) contains:
 | Variable | Value |
 | --- | --- |
 | `name`, `issue`, `actor`, `agent`, `harness` | Terminal name, issue ID, actor, agent name and harness name, all strings |
+| `model` | Resolved model string, or an empty string when unset |
 | `cwd`, `worktree`, `session_dir` | Launch directory, worktree (or `cwd` when absent) and scratch directory |
 | `briefing`, `briefing_file`, `instructions`, `instructions_file` | Rendered prompt strings and their file paths |
 | `mcp_json_file`, `trk_command` | Generic pretty MCP JSON file path and trk executable path |
@@ -493,6 +509,18 @@ placeholder-looking text supplied by a context value. Launcher templates are
 unchanged and retain single-brace placeholders.
 `trk agent check` warns on deprecated placeholders anywhere in a profile,
 including inactive `builtin_tools` levels.
+
+Profile `model` is an optional default string. `model_args` defaults to an empty
+list and is included only when a model resolves. `{{ model }}` expands to that
+model, or an empty string when unset. Optional argument lists are inserted in
+order: the agent's `builtin_tools` level arguments, conditional profile
+`model_args`, then agent `harness.args`. They precede the first profile argument
+using `briefing`, or are appended when none uses it (including send mode).
+All optional arguments support the same MiniJinja context and legacy placeholders.
+All seeded profiles have `model_args = ["--model", "{{ model }}"]`; only omp has
+a default `model`. Seed agents are unchanged. Existing installed configurations
+are not rewritten; move literal model flags out of profile `args` and into these
+keys to enable overrides.
 
 | Harness | MCP attachment | Confidence |
 | --- | --- | --- |

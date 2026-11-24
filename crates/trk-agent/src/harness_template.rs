@@ -9,6 +9,7 @@ use trk_core::error::{Code, Error, Result};
 const SCALARS: &[&str] = &[
     "name",
     "issue",
+    "model",
     "actor",
     "agent",
     "harness",

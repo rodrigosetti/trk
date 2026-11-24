@@ -33,6 +33,7 @@ fn launch(
         agent,
         harness: name,
         profile,
+        model: None,
         actor: "agent:reviewer:session",
         on_behalf_of: Some("human:a@b.c"),
         terminal: "trk-proj-abc",
@@ -219,11 +220,20 @@ fn malformed_templates_in_each_renderable_field_are_config_invalid() {
 fn agent_check_warns_for_legacy_placeholders_in_every_profile_field() {
     let dir = tempfile::tempdir().unwrap();
     let config = ConfigDir::new(dir.path());
-    for field in ["command", "args", "env", "path", "content", "builtin_tools"] {
+    for field in [
+        "command",
+        "args",
+        "env",
+        "path",
+        "content",
+        "builtin_tools",
+        "model_args",
+    ] {
         let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
         match field {
             "command" => profile.command = "{issue}".into(),
             "args" => profile.args.push("{briefing}".into()),
+            "model_args" => profile.model_args.push("{model}".into()),
             "env" => {
                 profile.env.insert("OLD".into(), "{agent}".into());
             }
@@ -310,4 +320,35 @@ fn template_trailing_newlines_survive_in_launch_strings() {
     assert_eq!(spec.argv[1], "proj-abc\n");
     assert_eq!(spec.env["TEXT"], "proj-abc\r\n");
     assert_eq!(spec.files["/work/proj-abc/newlines"], "proj-abc\n\n");
+}
+
+#[test]
+fn model_and_agent_arguments_share_single_pass_template_rendering() {
+    let model = "literal {issue} {{ {%";
+    let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+    profile.model = Some(model.into());
+    profile.model_args = vec!["--model".into(), "{{ model }}".into()];
+    profile.args = vec!["base".into(), "{{ briefing }}".into()];
+    profile
+        .builtin_tools
+        .insert("read-only".into(), vec!["{{ trk_tools|join(',') }}".into()]);
+    let mut agent = agent("read-only");
+    agent
+        .harness
+        .args
+        .insert("test".into(), vec!["label={{ model }}".into()]);
+    let spec = launch(&profile, "test", &agent).unwrap();
+    assert_eq!(spec.model.as_deref(), Some(model));
+    assert_eq!(
+        spec.argv,
+        [
+            "test",
+            "base",
+            "get_task,add_note",
+            "--model",
+            model,
+            "label=literal {issue} {{ {%",
+            BRIEFING
+        ]
+    );
 }

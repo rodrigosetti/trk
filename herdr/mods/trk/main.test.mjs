@@ -65,7 +65,7 @@ test("sidebar dashboard keeps the space's live project when its mod tab takes fo
   const state = spaceState();
   const { view, commands, executions } = await dashboard(state);
   view.openDashboard();
-  assert.deepEqual(commands, [{ name: "tab.new", args: { name: "trk", space: "current", mod: "trk" } }]);
+  assert.deepEqual(commands, [{ name: "tab.new", args: { name: "trk dashboard", space: "current", mod: "trk" } }]);
   await view.trk(["dashboard"]);
   assert.equal(executions[0].options.cwd, "/current-project");
 

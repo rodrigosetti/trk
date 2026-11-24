@@ -52,7 +52,7 @@ send       = ["hc", "send", "{name}", "{text}"]
 send_delay = 5
 
 # Harness profiles use MiniJinja in command, args, env values, file paths/content
-# and builtin_tools args. Scalars: name issue actor agent harness cwd worktree
+# and optional args. Scalars: name issue actor agent harness model cwd worktree
 # (falls back to cwd), session_dir briefing briefing_file instructions
 # instructions_file mcp_json_file trk_command. Lists/maps: trk_args trk_env
 # trk_tools mcp_servers (name/command/args/env, trk first).
@@ -61,13 +61,17 @@ send_delay = 5
 # remain supported but deprecated, including {mcp_json}, {opencode_json},
 # {trk_args_toml}, {trk_env_toml} and {trk_tools:PREFIX}.
 #   files                = files written before launch (relative to the worktree)
+#   model                = default model (agent or --model may override)
+#   model_args           = extra args added only when a model is set
 #   builtin_tools.<lvl>  = extra args enforcing an agent's builtin_tools level
 #   server_instructions  = false folds the MCP server instructions into the briefing
 #   briefing             = "arg" | "send"
 
 [harness.omp]
 command = "omp"
-args    = ["--model", "openai-codex/gpt-6-luna", "--config", "{{ session_dir }}/omp.yml", "{{ briefing }}"]
+args    = ["--config", "{{ session_dir }}/omp.yml", "{{ briefing }}"]
+model   = "openai-codex/gpt-6-luna"
+model_args = ["--model", "{{ model }}"]
 # .omp/mcp.json goes in the worktree (added to .git/info/exclude). The overlay
 # hides the `trk` skill: sessions reach trk through MCP only.
 files   = { ".omp/mcp.json" = '''{"mcpServers":{{ '{' }}{% for server in mcp_servers %}{{ server.name | tojson }}:{"command":{{ server.command | tojson }},"args":{{ server.args | tojson }},"env":{{ server.env | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}}}''', "{{ session_dir }}/omp.yml" = "skills:\n  ignoredSkills: [trk]\n" }
@@ -78,6 +82,7 @@ builtin_tools = { read-only = ["--tools", "read,grep,glob,lsp,todo,{% for tool i
 [harness.claude-code]
 command = "claude"
 args    = ["--strict-mcp-config", "--mcp-config", "{{ mcp_json_file }}", "{{ briefing }}"]
+model_args = ["--model", "{{ model }}"]
 builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdit"], none = ["--tools", ""] }
 
 [harness.codex]
@@ -86,15 +91,18 @@ args    = ["-c", "mcp_servers.trk.command={{ trk_command | toml }}",
            "-c", "mcp_servers.trk.args={{ trk_args | toml }}",
            "-c", "mcp_servers.trk.env={{ trk_env | toml }}",
            "{{ briefing }}"]
+model_args = ["--model", "{{ model }}"]
 builtin_tools = { read-only = ["--sandbox", "read-only"] }
 
 [harness.opencode]
 command  = "opencode"
+model_args = ["--model", "{{ model }}"]
 env      = { OPENCODE_CONFIG_CONTENT = '''{"$schema":"https://opencode.ai/config.json","mcp":{{ '{' }}{% for server in mcp_servers %}{{ server.name | tojson }}:{"type":"local","command":{{ ([server.command] + server.args) | tojson }},"environment":{{ server.env | tojson }},"enabled":true}{% if not loop.last %},{% endif %}{% endfor %}}}''' }
 briefing = "send"
 
 [harness.pi]
 command = "pi"
+model_args = ["--model", "{{ model }}"]
 args    = ["{{ briefing }}"]
 env     = { PI_CODING_AGENT_DIR = "{{ session_dir }}" }
 files   = { "{{ session_dir }}/mcp.json" = '''{"mcpServers":{{ '{' }}{% for server in mcp_servers %}{{ server.name | tojson }}:{"command":{{ server.command | tojson }},"args":{{ server.args | tojson }},"env":{{ server.env | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}}}''' }

@@ -145,6 +145,7 @@ fn launch_spec_for_omp() {
         agent: &a,
         harness: "omp",
         profile: &profiles["omp"],
+        model: None,
         actor: "agent:omp:u1",
         on_behalf_of: Some("human:a@b.c"),
         terminal: "trk-orch-abc",
@@ -165,6 +166,12 @@ fn launch_spec_for_omp() {
     assert_eq!(
         spec.argv[i + 1],
         "read,grep,glob,lsp,todo,mcp__trk_get_task,mcp__trk_add_note"
+    );
+    assert_eq!(spec.model.as_deref(), Some("openai-codex/gpt-6-luna"));
+    assert!(
+        spec.argv
+            .windows(2)
+            .any(|args| args == ["--model", "openai-codex/gpt-6-luna"])
     );
     let mcp = &spec.files["/wt/orch-abc/.omp/mcp.json"];
     let v: serde_json::Value = serde_json::from_str(mcp).unwrap();
@@ -220,7 +227,18 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
     let mut profile = profiles["claude-code"].clone();
     profile.command = fake_claude.to_string_lossy().into_owned();
     let (_dir, seed) = seed();
-    let agent = load_agent(&seed, "implementer").unwrap();
+    let mut agent = load_agent(&seed, "implementer").unwrap();
+    agent.harness.args.insert(
+        "claude-code".into(),
+        vec!["--label".into(), "issue {issue}: {model}".into()],
+    );
+    let model = "provider/model with 'quotes' $(echo nope)";
+    profile
+        .env
+        .insert("SELECTED_MODEL".into(), "{model}".into());
+    profile
+        .files
+        .insert("{session_dir}/model.txt".into(), "{model}".into());
     let briefing = "# issue: test\n\nQuotes: ' \" ` $HOME $(echo nope) ; & | < >\n\
                     Long detail: one two three four five six seven eight nine ten.\n";
     let spec = harness::build(LaunchInput {
@@ -228,6 +246,7 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
         agent: &agent,
         harness: "claude-code",
         profile: &profile,
+        model: Some(model),
         actor: "agent:claude-code:test-session",
         on_behalf_of: None,
         terminal: "trk-test-abc",
@@ -266,7 +285,21 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
     assert_eq!(args[0], "--strict-mcp-config");
     assert_eq!(args[1], "--mcp-config");
     assert_eq!(args[2], format!("{}/mcp.json", session.display()));
-    assert_eq!(args[3], briefing);
+    assert_eq!(
+        &args[3..7],
+        [
+            "--model",
+            model,
+            "--label",
+            &format!("issue test-abc: {model}"),
+        ]
+    );
+    assert_eq!(args[7], briefing);
+    assert_eq!(spec.env["SELECTED_MODEL"], model);
+    assert_eq!(
+        std::fs::read_to_string(session.join("model.txt")).unwrap(),
+        model
+    );
     let mcp: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&args[2]).unwrap()).unwrap();
     assert_eq!(mcp["mcpServers"]["trk"]["command"], "/bin/trk");

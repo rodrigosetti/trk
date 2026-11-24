@@ -61,6 +61,12 @@ pub struct AgentHarness {
     pub prefer: Vec<String>,
     #[serde(default = "default_level")]
     pub builtin_tools: String,
+    /// One model for every harness, or a model per harness.
+    #[serde(default)]
+    pub model: Option<AgentModel>,
+    /// Extra arguments keyed by harness name.
+    #[serde(default)]
+    pub args: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for AgentHarness {
@@ -68,6 +74,24 @@ impl Default for AgentHarness {
         AgentHarness {
             prefer: vec![],
             builtin_tools: default_level(),
+            model: None,
+            args: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum AgentModel {
+    Shared(String),
+    PerHarness(BTreeMap<String, String>),
+}
+
+impl AgentHarness {
+    pub fn model_for(&self, harness: &str) -> Option<&str> {
+        match self.model.as_ref()? {
+            AgentModel::Shared(model) => Some(model),
+            AgentModel::PerHarness(models) => models.get(harness).map(String::as_str),
         }
     }
 }
