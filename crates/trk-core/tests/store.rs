@@ -16,7 +16,7 @@ fn store_at(dir: &tempfile::TempDir, now: &str) -> Store {
     let opts = StoreOpts {
         now: Some(ts(now)),
         prefix: "orch".into(),
-        known_types: vec!["code-change".into(), "research".into(), "review".into()],
+        known_types: vec!["change".into(), "research".into(), "review".into()],
         ..Default::default()
     };
     Store::install(&dir.path().join("trk.db"), opts).unwrap()
@@ -1351,7 +1351,7 @@ fn queries_and_sorts_use_type_not_issue_agent() {
             })
         })
         .unwrap();
-    assert_eq!(ids(&s, "type=code-change"), std::slice::from_ref(&default));
+    assert_eq!(ids(&s, "type=change"), std::slice::from_ref(&default));
     assert_eq!(ids(&s, "type=review"), std::slice::from_ref(&custom));
     let sorted = s.read(None, |c| c.list("", Some("-type"), None)).unwrap();
     assert_eq!(sorted[0]["id"], custom);

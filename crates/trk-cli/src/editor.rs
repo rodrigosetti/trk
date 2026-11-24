@@ -139,7 +139,7 @@ mod tests {
         let d = Doc {
             title: "Say \"hello\"".into(),
             priority: "P1".into(),
-            issue_type: "code-change".into(),
+            issue_type: "change".into(),
             description: "Some context\n\nMore.".into(),
         };
         let text = document(&["bad priority".into()], &d);

@@ -120,9 +120,9 @@ esac
 
     fn type_worktree(&self, enabled: bool) {
         std::fs::write(
-            self.e.trk_dir().join("types/code-change.toml"),
+            self.e.trk_dir().join("types/change.toml"),
             format!(
-                "name = \"code-change\"\ndescription = \"code change\"\nagent = \"implementer\"\nworktree = {enabled}\n"
+                "name = \"change\"\ndescription = \"code change\"\nagent = \"implementer\"\nworktree = {enabled}\n"
             ),
         )
         .unwrap();

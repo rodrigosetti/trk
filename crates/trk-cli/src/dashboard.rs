@@ -801,11 +801,11 @@ mod tests {
     fn draws_groups_with_their_details_in_the_list_and_activity() {
         let (_d, s) = sample();
         let mut ui = ui_of(&s);
-        for (i, issue_type) in
-            ui.snap
-                .issues
-                .iter_mut()
-                .zip(["code-change", "bug", "feature", "task"])
+        for (i, issue_type) in ui
+            .snap
+            .issues
+            .iter_mut()
+            .zip(["change", "bug", "feature", "task"])
         {
             i.issue_type = issue_type.into();
         }
@@ -836,8 +836,12 @@ mod tests {
         for i in &ui.snap.issues {
             let prefix = format!("{} {} ", i.priority, i.id);
             let row = text.lines().find(|line| line.contains(&prefix)).unwrap();
+            let after_id = row.split_once(&i.id).unwrap().1;
+            let before_title = after_id.split_once(&i.title).unwrap().0;
             assert!(
-                row.contains(&format!("{}  {:<11}  {}", i.id, i.issue_type, i.title)),
+                before_title
+                    .split_whitespace()
+                    .any(|field| field == i.issue_type),
                 "id, type and title in order:\n{row}"
             );
         }

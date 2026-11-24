@@ -5,13 +5,13 @@ use std::os::fd::FromRawFd;
 #[test]
 fn configured_default_type_drives_create_editor_and_whoami() {
     let e = Env::new();
-    e.set_config("default_type = \"code-change\"", "default_type = \"task\"");
+    e.set_config("default_type = \"change\"", "default_type = \"task\"");
     std::fs::write(
         e.trk_dir().join("types/task.toml"),
         "name = \"task\"\ndescription = \"Project task\"\nagent = \"implementer\"\n",
     )
     .unwrap();
-    std::fs::remove_file(e.trk_dir().join("types/code-change.toml")).unwrap();
+    std::fs::remove_file(e.trk_dir().join("types/change.toml")).unwrap();
 
     assert_eq!(e.ok(&["whoami"])["default_type"], "task");
     let id = e.create(&["Use the project default"]);

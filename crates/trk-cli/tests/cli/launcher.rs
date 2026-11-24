@@ -119,7 +119,9 @@ esac
     }
 
     fn launch(&self) -> String {
-        let id = self.e.create(&["Named launcher issue", "--type", "review"]);
+        let id = self
+            .e
+            .create(&["Named launcher issue", "--type", "research"]);
         self.ok(&["run", &id, "--harness", "omp"]);
         id
     }
@@ -168,7 +170,9 @@ fn named_tmux_run_binds_only_first_stdout_line_and_pins_send_and_attach() {
 #[test]
 fn named_start_empty_stdout_keeps_generated_name_and_ignores_stderr() {
     let tmux = Tmux::new();
-    let id = tmux.e.create(&["Stderr is diagnostic", "--type", "review"]);
+    let id = tmux
+        .e
+        .create(&["Stderr is diagnostic", "--type", "research"]);
     let mut cmd = tmux.cmd();
     cmd.env("TRK_TEST_START", "stderr-only");
     resume::success(cmd, &["run", &id, "--harness", "omp"]);
@@ -189,11 +193,13 @@ fn named_custom_template_uses_project_and_resolved_routing_and_keeps_claim_addre
         "[launcher.tmux]",
         "[launcher.tmux]\nname = \"{project}.{prefix}.{agent}.{type}.{id}\"\nname_max = 64\nname_chars = \"a-z0-9_.-\"",
     );
-    let id = tmux.e.create(&["Custom terminal name", "--type", "review"]);
+    let id = tmux
+        .e
+        .create(&["Custom terminal name", "--type", "research"]);
     let mut cmd = tmux.cmd();
     cmd.env("TRK_TEST_START", "stderr-only");
     let launched = resume::success(cmd, &["run", &id, "--harness", "omp"]);
-    let expected = format!("repo.orch.reviewer.review.{id}");
+    let expected = format!("repo.orch.researcher.research.{id}");
     assert_eq!(tmux.text("generated"), expected);
     assert_eq!(launched["terminal"], expected);
     assert_eq!(tmux.e.ok(&["show", &id])["claim"]["terminal"], expected);
@@ -294,7 +300,7 @@ fn named_selection_failure_leaves_issue_open_without_a_session() {
             .set_config("use = [\"tmux\"]", &format!("use = {selection}"));
         let id = tmux
             .e
-            .create(&["No available launcher", "--type", "review"]);
+            .create(&["No available launcher", "--type", "research"]);
         let out = tmux
             .cmd()
             .args(["--json", "run", &id, "--harness", "omp"])

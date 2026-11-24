@@ -13,7 +13,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     let cfg_dir = dir.path().join(".trk");
     put(
         &cfg_dir,
-        "types/code-change.toml",
+        "types/change.toml",
         "description = 'Change code'\nagent = 'custom reviewer'\nworktree = false\n",
     );
     put(
@@ -33,11 +33,11 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     );
     put(&cfg_dir, "prompts/fragment.j2", "Project policy");
     let cfg = RoutingConfig::new(&ConfigDir::with_user_dir(&cfg_dir, None));
-    let route = cfg.resolve("code-change", None).unwrap();
+    let route = cfg.resolve("change", None).unwrap();
     assert_eq!(route.description, "Change code");
     assert_eq!(route.agent, "custom reviewer");
     assert!(!route.worktree);
-    assert_eq!(route.type_source, cfg_dir.join("types/code-change.toml"));
+    assert_eq!(route.type_source, cfg_dir.join("types/change.toml"));
     assert_eq!(
         route.agent_source,
         cfg_dir.join("agents/custom reviewer.toml")
@@ -61,11 +61,11 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     };
     assert_eq!(
         trk_agent::prompt::instructions(&resolved.config, &input).unwrap(),
-        "Project policy: code-change / code-change (Change code) / custom reviewer targeting release/stable"
+        "Project policy: change / change (Change code) / custom reviewer targeting release/stable"
     );
 
     // An explicit agent overrides the type's mapping.
-    let route = cfg.resolve("code-change", Some("other")).unwrap();
+    let route = cfg.resolve("change", Some("other")).unwrap();
     assert!(route.override_agent);
     assert!(!route.worktree);
     let resolved = cfg.load(&route).unwrap();
@@ -79,7 +79,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     };
     assert_eq!(
         trk_agent::prompt::instructions(&resolved.config, &input).unwrap(),
-        "Project policy: code-change / code-change (Change code) / other targeting release/stable"
+        "Project policy: change / change (Change code) / other targeting release/stable"
     );
 }
 
@@ -89,7 +89,7 @@ fn missing_types_and_agents_are_explicit() {
     let cfg_dir = dir.path().join(".trk");
     put(
         &cfg_dir,
-        "types/code-change.toml",
+        "types/change.toml",
         "description = 'Change code'\nagent = 'implementer'\n",
     );
     put(&cfg_dir, "types/empty.toml", "description = 'No agent'\n");
@@ -99,7 +99,7 @@ fn missing_types_and_agents_are_explicit() {
         trk_core::Code::NotFound
     );
     assert_eq!(
-        cfg.resolve("code-change", None).unwrap_err().code(),
+        cfg.resolve("change", None).unwrap_err().code(),
         trk_core::Code::NotFound
     );
     assert_eq!(

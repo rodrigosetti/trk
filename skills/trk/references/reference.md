@@ -54,7 +54,7 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | --- | --- |
 | `trk list [QUERY]`, `trk ready [QUERY]` | Query issues |
 | `trk show <ID>... [--with notes,events,deps,claims]` | Full issues with derived state |
-| `trk create [TITLE] [-d TEXT] [-p P0..P3] [--type T] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; type defaults to `[issues] default_type` (initially `code-change`) |
+| `trk create [TITLE] [-d TEXT] [-p P0..P3] [--type T] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; type defaults to `[issues] default_type` (initially `change`) |
 | `trk edit <ID> [-t TITLE] [-d TEXT] [-p P0..P3] [--type T] [--dry-run]` | Change authored fields; a set type must exist in `.trk/types/` |
 | `trk claim <ID> [--lease 30m] [--worktree PATH] [--steal]` | open → claimed |
 | `trk unclaim <ID> [-m NOTE] [--force]` | claimed → open |
@@ -72,12 +72,29 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk runs`, `trk send <ID> TEXT`, `trk reap` | List active/waiting sessions by state, steer the active or waiting terminal, release only ended active claims |
 | `trk gc [ID...] [--dry-run] [--abandoned] [--older-than DURATION]` | Collect closed issues' local sessions, worktrees and safely deletable issue-ID branches |
 | `trk agent list`, `trk agent preview <agent> [--issue ID]`, `trk agent check` | Inspect agents |
-| `trk install [--force] [--prefix P]` | Set trk up in a project: `.trk/` (database, config) and this skill; safe to repeat |
+| `trk install [--preset local or github] [--from DIR or --minimal] [--force] [--prefix P]`, `trk install --list-presets` | Install project state and skill (implicit preset `local`), or list presets without writes; source options are mutually exclusive |
 | `trk whoami`, `trk backup <PATH>` | Environment and backup |
 
 `-d` and `-c` take text, `@file`, or `@-` for stdin.
 
 Issue creation (including MCP `report_followup`) and setting a type require a project `.trk/types/<name>.toml` definition. Unknown or empty types return `invalid_field`: the core error's `detail.allowed` is serialized as `error.allowed`, listing accepted names, with a hint naming `.trk/types/`. The editor uses the same validation. `report_followup` advertises those names as an enum and includes each type's description in the field description. Existing issues whose type definition was removed remain listable, showable and editable without changing their type; leaving it unchanged in the editor is allowed, but explicitly setting an unknown type is refused. `trk agent check` reports an `[issues] default_type` with no matching type file.
+
+Both built-in presets install implementer/researcher agents and `change` (default),
+`bug`, and `research` types. Change and bug use implementer worktrees; research uses
+the researcher without a worktree. Bug guidance requires reproducing first, a
+root-cause note, and a regression test. Local selects merge landing with no review
+or approval gate; GitHub selects PR landing and requires authenticated `gh`
+(install warns when the command is missing). The config's unquoted `{{LANDING}}`
+install marker becomes the selected TOML-quoted landing value; `--from` uses
+`"merge"`. `--minimal` still installs no agents, types, or prompts.
+
+Finish sessions and back up `.trk/` before upgrading. Installing local/github adds
+missing resources without pruning, even under `--force`; existing config and
+code-change/review/reviewer resources and issues remain. Once `types/change.toml`
+exists, manually set `[issues] default_type = "change"` and choose `[run] landing`.
+Keep legacy definitions until migrating issues with `trk edit <ID> --type change`
+or custom equivalents, considering blocker dependencies. Remove legacy reviewer/review
+prompts only when unused.
 
 `trk attach <ID>` interactively takes over the same terminal as `send`; suggest it to the user rather than running it. Active claims take precedence even without a terminal. With no active claim, `send`, `attach` and inbox delivery use the latest claim only if released with reason `waiting` and the issue is still waiting. That session may add notes and report follow-ups; lifecycle changes require a restored claim. For an enabled no-check wait, it can report an actual unmarked human chat reply through MCP `resume` to restore its claim. Once the issue closes, reopens or is claimed again, the old session loses this access.
 
@@ -96,7 +113,7 @@ remain. Existing configs are not rewritten unless `--force` is given; `--from` a
 `--minimal` do not filter preferences. A launcher selection error lists profiles
 tried; install a launcher, edit `[launcher] use`, or run `trk run --fg`.
 
-`[check] verify` is an opaque shell string, default `""` even when omitted. Checks receive it as `TRK_VERIFY`; prompt templates receive `{{ verify }}`. The seed implementer instructions name it when nonempty, otherwise require the project's tests. The local recipe merges the base into the issue worktree (aborting conflicts), runs nonempty verification there, then guards the primary checkout's branch and fast-forwards it with `git merge --ff-only "$TRK_BRANCH"`. Verification failures are normalized to exit 1, including exit 75, so they cannot retry or fall through to landing. Empty verification skips only the command. This local gate applies only when the issue type uses an issue worktree and branch; a type opting out has no issue branch to merge or test. PR checks are unchanged.
+`[check] verify` is an opaque shell string, default `""` even when omitted. Checks receive it as `TRK_VERIFY`; prompt templates receive `{{ verify }}`. It is the sole local verification gate; there is no review or approval gate. The local recipe merges the base into the issue worktree (aborting conflicts), runs nonempty verification there, then guards the primary checkout's branch and fast-forwards it with `git merge --ff-only "$TRK_BRANCH"`. Verification failures are normalized to exit 1, including exit 75, so they cannot retry or fall through to landing. Empty verification skips only verification, not merging, with no fallback test command. This local gate applies only when the issue type uses an issue worktree and branch; a type opting out has no issue branch to merge or test.
 
 Include dependency setup in the command when needed, for example `verify = "npm ci && npm test"`. Verification shares the whole check's `[check] timeout` (default 10m) and holds the serialized queue. Use a fast subset or increase the timeout for slow suites.
 

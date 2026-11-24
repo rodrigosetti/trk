@@ -9,7 +9,7 @@ expression: snap
   "description": "Claims need leases.",
   "state": "waiting",
   "priority": "P1",
-  "type": "code-change",
+  "type": "change",
   "close_reason": null,
   "waiting": {
     "reason": "merge into main",
@@ -63,7 +63,7 @@ expression: snap
         "title": "Add claim leases",
         "description": "Claims need leases.",
         "priority": "P1",
-        "type": "code-change",
+        "type": "change",
         "followup_of": null
       }
     },
@@ -91,7 +91,7 @@ expression: snap
             "to": "Add leases to claims"
           },
           "type": {
-            "from": "code-change",
+            "from": "change",
             "to": "research"
           }
         }
@@ -107,7 +107,7 @@ expression: snap
         "changes": {
           "type": {
             "from": "research",
-            "to": "code-change"
+            "to": "change"
           }
         }
       }

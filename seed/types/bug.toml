@@ -1,0 +1,8 @@
+name = "bug"
+description = "bug fix"
+agent = "implementer"
+worktree = true
+guidance = """
+Reproduce the bug before changing code. Record the root cause in an issue note.
+Land a regression test that fails without the fix and passes with it.
+"""

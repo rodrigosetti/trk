@@ -16,6 +16,7 @@ fn seed_config() -> UserConfig {
                 "{{DEFAULT_TYPE}}",
                 &trk_core::config::IssuesSection::default().default_type,
             )
+            .replace("{{LANDING}}", "\"merge\"")
             .replace("{{BASE}}", "\"main\""),
     )
     .unwrap()

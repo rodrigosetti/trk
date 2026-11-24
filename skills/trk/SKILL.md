@@ -5,7 +5,7 @@ description: Use when the user tracks work with trk, the local issue tracker and
 
 # trk
 
-trk keeps a project's work in a local database inside the project, in `.trk/`. An issue has a title, a description, notes, a priority, a required type (default from `[issues] default_type`, initially `code-change`) and one of four states. Use the `trk` CLI.
+trk keeps a project's work in a local database inside the project, in `.trk/`. An issue has a title, a description, notes, a priority, a required type (default from `[issues] default_type`, initially `change`) and one of four states. Use the `trk` CLI.
 
 ```
 open → claimed → closed
@@ -49,6 +49,19 @@ unless `--force` is given; custom sources and `--minimal` shared-config installs
 not filtered. If no launcher is usable, install one, edit `[launcher] use`, or use
 `trk run --fg` in the current terminal.
 
+Built-in installs use `--preset local` implicitly; `--preset github` selects PR
+landing and requires installed, authenticated `gh` (install warns when missing).
+Both install implementer/researcher agents and change/bug/research types.
+Local landing has no review or approval gate: `[check] verify` is the sole
+verification gate, and empty skips verification, not merging. `--minimal` remains
+a shared-config install without agents, types, or prompts.
+On upgrade, finish sessions and back up `.trk/`; install adds missing files without
+pruning legacy resources, even with `--force`. After `types/change.toml` is installed,
+manually set `[issues] default_type = "change"` and choose `[run] landing = "merge"`
+or `"pr"` in the preserved config. Keep legacy code-change/review/reviewer
+definitions until issues are migrated with `trk edit <ID> --type change` or a custom
+equivalent, considering dependencies. Remove legacy prompts only when unused.
+
 ## Create
 
 Only the title is required. Write a description that lets someone start cold: what is needed, why, and how to tell it is done.
@@ -59,10 +72,10 @@ printf '%s\n' "Crashed agents must release their claims. Add a lease to agent" \
   trk create "Add claim leases" --json -p P1 -d @-
 
 trk create "Enable leases in prod" --json --blocked-by orch-4kq
-trk create "Review the lease change" --json --type review --blocks orch-9xa
+trk create "Investigate lease behavior" --json --type research --blocks orch-9xa
 ```
 
-`--blocked-by ID` and `--blocks ID` add blocker edges at creation. Types route work to agents: `code-change` → `implementer`, `research` → `researcher`, `review` → `reviewer`. Change a type with `trk edit <ID> --type research --json`; query with `trk list 'type=review' --json`. Types do not change lifecycle rules.
+`--blocked-by ID` and `--blocks ID` add blocker edges at creation. Built-in types route `change` (default) and `bug` to `implementer` in issue worktrees, and `research` to `researcher` without a worktree. Bug guidance requires reproducing first, recording the root cause in a note, and adding a regression test. Change a type with `trk edit <ID> --type research --json`; query with `trk list 'type=bug' --json`. Types do not change lifecycle rules.
 
 Create and type edits accept only names defined in the project's `.trk/types/*.toml`. Unknown types return `invalid_field` with allowed names in `allowed` and a hint pointing to `.trk/types/`; do not guess a type. The editor and MCP `report_followup` enforce the same rule; the MCP schema lists the project types and their descriptions. Removing a definition does not prevent listing, showing or editing other fields of existing issues. `trk agent check` reports a configured `default_type` without a matching definition.
 

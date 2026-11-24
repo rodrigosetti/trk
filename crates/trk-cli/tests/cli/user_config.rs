@@ -37,9 +37,9 @@ builtin_tools = "default"
 "#,
         ),
         (
-            "types/code-change.toml",
+            "types/change.toml",
             r#"
-name = "code-change"
+name = "change"
 agent = "shared"
 description = "Shared type"
 worktree = false
@@ -187,8 +187,8 @@ fn discovery_prefers_explicit_then_xdg_then_home_without_touching_process_enviro
         .env("TRK_USER_DIR", &absent)
         .env("XDG_CONFIG_HOME", &xdg);
     assert_eq!(
-        command_data(command, &["agents"]).as_array().unwrap().len(),
-        3
+        command_data(command, &["whoami"])["user_dir"],
+        json!(absent)
     );
     assert!(!absent.exists());
     // An explicit missing directory does not silently use XDG or HOME.
@@ -254,7 +254,7 @@ fn layered_resources_report_origins_in_json_and_real_pretty_output() {
         let output = pretty(&e, &args);
         for resource in [
             e.user_dir().join("agents/shared.toml"),
-            e.user_dir().join("types/code-change.toml"),
+            e.user_dir().join("types/change.toml"),
             e.trk_dir().join("prompts/rules.md.j2"),
         ] {
             assert!(
@@ -276,7 +276,7 @@ fn layered_resources_report_origins_in_json_and_real_pretty_output() {
     );
     write_file(
         &e.trk_dir(),
-        "types/code-change.toml",
+        "types/change.toml",
         "agent = \"shared\"\ndescription = \"Project type\"\nworktree = false\n",
     );
     let spec = e.ok(&["run", &id, "--harness", "test", "--dry-run"]);

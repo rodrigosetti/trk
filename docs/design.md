@@ -44,7 +44,7 @@ See [type guidance](configuration.md#type-guidance) for configuration examples.
 
 An issue has a required title, Markdown description, priority (`P0` urgent through
 `P3` low; default `P2`), and required routing type (configured default, otherwise
-`code-change`). Notes are history events, not a mutable description extension.
+`change`). Notes are history events, not a mutable description extension.
 The system owns state, close reason, waiting metadata, authorship and timestamps.
 
 IDs have the form `<prefix>-<random lowercase base32 suffix>`. New suffixes start

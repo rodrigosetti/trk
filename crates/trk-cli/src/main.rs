@@ -82,7 +82,7 @@ enum Cmd {
         /// Write only project identity and base; use shared user configuration
         #[arg(long, conflicts_with_all = ["preset", "from", "list_presets"])]
         minimal: bool,
-        /// Install common files plus a built-in preset (default: default)
+        /// Install shared agents and types with a landing preset (default: local)
         #[arg(long, value_name = "NAME", conflicts_with = "from")]
         preset: Option<String>,
         /// Install files from this directory instead of the built-in seed
@@ -567,7 +567,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
             g,
             force,
             prefix,
-            preset.as_deref().unwrap_or("default"),
+            preset.as_deref().unwrap_or("local"),
             from.as_deref(),
             minimal,
         );
@@ -1095,6 +1095,11 @@ fn install(
             .map(|(path, content)| (PathBuf::from(path), Cow::Borrowed(content)))
             .collect()
     };
+    let landing = if minimal || from.is_some() {
+        "merge"
+    } else {
+        seed::landing(preset).expect("built-in preset has a landing recipe")
+    };
     let loc = env::Location::find(g);
     let dir = loc.dir.clone();
     let root = loc.root.clone();
@@ -1134,6 +1139,10 @@ fn install(
             .replace(
                 "{{BASE}}",
                 &toml::Value::String(env::detect_base(&root)).to_string(),
+            )
+            .replace(
+                "{{LANDING}}",
+                &toml::Value::String(landing.to_owned()).to_string(),
             );
         if !minimal && from.is_none() && (!config_path.exists() || force) {
             detected = Some(detect_seed_profiles(&mut rendered));
@@ -1234,6 +1243,24 @@ fn install(
         ));
     }
     let mut warnings = skill.warnings.clone();
+    if !minimal && from.is_none() {
+        match env.user.run.landing.as_str() {
+            "merge" if env.user.check.verify.trim().is_empty() => warnings.push(
+                "local landing has no review or approval gate and [check] verify is empty: merges will skip verification; configure it before running agents".to_owned(),
+            ),
+            "pr" => {
+                warnings.push(
+                    "GitHub landing requires authenticated `gh`; run `gh auth login` before running agents".to_owned(),
+                );
+                if !trk_agent::harness::installed("gh") {
+                    warnings.push(
+                        "`gh` is not on PATH: install the GitHub CLI for pull-request landing".to_owned(),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
     if let Some(detected) = &detected {
         if detected.launchers.is_empty() {
             warnings.push(

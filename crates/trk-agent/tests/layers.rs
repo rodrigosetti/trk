@@ -119,7 +119,7 @@ fn templates_cross_layers_for_includes_imports_and_inheritance_and_report_source
     );
     put(
         &user,
-        "types/code-change.toml",
+        "types/change.toml",
         "description = 'Change code'\nagent = 'personal'\n",
     );
     put(
@@ -156,7 +156,7 @@ fn templates_cross_layers_for_includes_imports_and_inheritance_and_report_source
         issue: &issue,
         project_root: dir.path(),
         config: &config,
-        issue_type: "code-change",
+        issue_type: "change",
         type_description: "Change code",
         type_guidance: None,
         agent: &agent,
@@ -404,7 +404,7 @@ fn provenance_matches_the_harness_instruction_folding_context() {
         issue: &issue,
         project_root: dir.path(),
         config: &config,
-        issue_type: "code-change",
+        issue_type: "change",
         type_description: "Change code",
         type_guidance: None,
         agent: &agent,
@@ -433,7 +433,11 @@ fn template_inspection_uses_the_inherited_default_issue_type() {
     let project = dir.path().join("project");
     let user = dir.path().join("user");
     put(&project, "config.toml", "[issues]\nprefix = 'project'\n");
-    put(&user, "config.toml", "[issues]\ndefault_type = 'personal'\n");
+    put(
+        &user,
+        "config.toml",
+        "[issues]\ndefault_type = 'personal'\n",
+    );
     put(
         &user,
         "agents/personal.toml",

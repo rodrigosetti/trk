@@ -125,6 +125,7 @@ fn missing_user_directory_preserves_complete_project_config() {
     let text = trk_core::seed::CONFIG_TOML
         .replace("{{EMAIL_LINE}}", "email = 'project@example.com'")
         .replace("{{PREFIX}}", "project")
+        .replace("{{LANDING}}", "'merge'")
         .replace("{{BASE}}", "'main'");
     config(&project, &text);
     let expected: UserConfig = toml::from_str(&text).unwrap();

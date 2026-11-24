@@ -1,4 +1,0 @@
-name = "review"
-description = "review"
-agent = "reviewer"
-worktree = false

@@ -36,7 +36,7 @@ fn install_detects_seed_profiles_in_order_and_warns_for_each_missing_category() 
         (&[], &["omp"]),
         (&["hc"], &[]),
     ];
-    for preset in ["default", "minimal"] {
+    for preset in ["local", "github"] {
         for &(launchers, harnesses) in cases {
             let (e, bin) = isolated();
             // Installed but unusable launchers must not enter the selection.
@@ -148,4 +148,36 @@ fn install_pretty_output_reports_missing_commands_and_recovery() {
     ] {
         assert!(text.contains(expected), "{text}");
     }
+}
+
+#[test]
+fn install_landing_warnings_follow_effective_config_and_available_gh() {
+    let (e, bin) = isolated();
+    let local = install(&e, &bin, &["install", "--preset", "local"]);
+    let warnings = local["warnings"].to_string();
+    assert!(
+        warnings.contains("no review or approval gate"),
+        "{warnings}"
+    );
+    assert!(warnings.contains("skip verification"), "{warnings}");
+    e.set_config("verify = \"\"", "verify = \"true\"");
+    let verified = install(&e, &bin, &["install"]);
+    assert!(
+        !verified["warnings"]
+            .to_string()
+            .contains("skip verification")
+    );
+    e.set_config("verify = \"true\"", "verify = \"   \"");
+    let blank = install(&e, &bin, &["install"]);
+    assert!(blank["warnings"].to_string().contains("skip verification"));
+    let github = install(&e, &bin, &["install", "--preset", "github", "--force"]);
+    let warnings = github["warnings"].to_string();
+    assert!(warnings.contains("gh auth login"), "{warnings}");
+    assert!(warnings.contains("not on PATH"), "{warnings}");
+    assert!(!warnings.contains("skip verification"), "{warnings}");
+    executable(&bin, "gh", "exit 91");
+    let present = install(&e, &bin, &["install", "--preset", "github"]);
+    let warnings = present["warnings"].to_string();
+    assert!(warnings.contains("gh auth login"), "{warnings}");
+    assert!(!warnings.contains("not on PATH"), "{warnings}");
 }

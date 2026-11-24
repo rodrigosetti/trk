@@ -379,12 +379,13 @@ mod tests {
     const HUMAN: &str = "human:test@example.com";
 
     fn write_seed(root: &std::path::Path) {
-        for (path, content) in trk_core::seed::preset("default").unwrap() {
+        for (path, content) in trk_core::seed::preset("local").unwrap() {
             let rendered = (path == "config.toml").then(|| {
                 std::str::from_utf8(content)
                     .unwrap()
                     .replace("{{EMAIL_LINE}}", "email = \"test@example.com\"")
                     .replace("{{PREFIX}}", "trk")
+                    .replace("{{LANDING}}", "\"merge\"")
                     .replace("{{BASE}}", "\"main\"")
             });
             let path = root.join(path);
@@ -403,7 +404,7 @@ mod tests {
         let seed = dir.path().join("seed");
         write_seed(&seed);
         std::fs::write(
-            seed.join("types/code-change.toml"),
+            seed.join("types/change.toml"),
             "agent = 'implementer'\ndescription = 'Code change'\nworktree = false\nguidance = '''{% include \"prompts/type-guidance.md.j2\" %}'''",
         )
         .unwrap();
@@ -440,7 +441,7 @@ mod tests {
             info.instructions
                 .as_deref()
                 .unwrap()
-                .contains(&format!("GUIDANCE code-change researcher {issue}"))
+                .contains(&format!("GUIDANCE change researcher {issue}"))
         );
     }
 
@@ -570,7 +571,7 @@ mod tests {
             .write(HUMAN, false, |c| {
                 c.create(NewIssue {
                     title: "Parent issue".into(),
-                    issue_type: Some("code-change".into()),
+                    issue_type: Some("change".into()),
                     ..Default::default()
                 })
             })
@@ -634,8 +635,7 @@ mod tests {
                 .contains(".trk/types/"),
             "{out}"
         );
-        for (override_type, expected_type) in [(None, "task"), (Some("code-change"), "code-change")]
-        {
+        for (override_type, expected_type) in [(None, "task"), (Some("change"), "change")] {
             let mut args = json!({
                 "title": "Follow-up issue",
                 "description": "Work discovered during this session"

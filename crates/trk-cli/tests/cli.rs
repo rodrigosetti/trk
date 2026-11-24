@@ -286,9 +286,9 @@ sort = "-created""#,
 #[test]
 fn list_and_ready_filter_and_sort_by_type() {
     let e = Env::new();
-    let code = e.create(&["--type", "code-change", "Code change"]);
+    let code = e.create(&["--type", "change", "Code change"]);
     let research = e.create(&["--type", "research", "Research"]);
-    let review = e.create(&["--type", "review", "Review"]);
+    let review = e.create(&["--type", "bug", "Review"]);
     let ids = |rows: &Value| {
         rows.as_array()
             .unwrap()
@@ -301,21 +301,21 @@ fn list_and_ready_filter_and_sort_by_type() {
         ids(&e.ok(&["list", "type=research"])),
         vec![research.clone()]
     );
-    assert_eq!(ids(&e.ok(&["ready", "type=review"])), vec![review.clone()]);
+    assert_eq!(ids(&e.ok(&["ready", "type=bug"])), vec![review.clone()]);
     assert_eq!(
         ids(&e.ok(&["list", "--sort", "type"])),
-        vec![code.clone(), research.clone(), review.clone()]
+        vec![review.clone(), code.clone(), research.clone()]
     );
     assert_eq!(
         ids(&e.ok(&["ready", "--sort", "type"])),
-        vec![code, research, review]
+        vec![review, code, research]
     );
 }
 
 #[test]
 fn default_list_and_ready_tables_show_issue_type() {
     let e = Env::new();
-    for issue_type in ["code-change", "research", "review"] {
+    for issue_type in ["change", "research", "bug"] {
         e.create(&["--type", issue_type, issue_type]);
     }
 
@@ -333,7 +333,7 @@ fn default_list_and_ready_tables_show_issue_type() {
                 && header.find("TYPE").unwrap() < header.find("STATE").unwrap(),
             "{table}"
         );
-        for issue_type in ["code-change", "research", "review"] {
+        for issue_type in ["change", "research", "bug"] {
             assert!(table.contains(issue_type), "{table}");
         }
     }
@@ -372,16 +372,16 @@ fn redact(v: &mut Value, ids: &[(String, &str)]) {
 fn issue_lifecycle_and_json_format() {
     let e = Env::new();
     let a = e.create(&["Add claim leases", "-d", "Claims need leases.", "-p", "p1"]);
-    let b = e.create(&["-t", "Use leases", "--blocked-by", &a, "--type", "review"]);
+    let b = e.create(&["-t", "Use leases", "--blocked-by", &a, "--type", "bug"]);
     let v = e.ok(&["show", &a]);
     assert_eq!(v["state"], "open");
     assert_eq!(v["priority"], "P1");
-    assert_eq!(v["type"], "code-change");
+    assert_eq!(v["type"], "change");
     assert!(v.get("agent").is_none());
     assert_eq!(v["deps"]["blocks"][0]["id"], json!(b));
     assert_eq!(v["derived"]["ready"], true);
-    assert_eq!(e.ok(&["show", &b])["type"], "review");
-    assert_eq!(e.ok(&["list", "type=review"])[0]["id"], json!(b));
+    assert_eq!(e.ok(&["show", &b])["type"], "bug");
+    assert_eq!(e.ok(&["list", "type=bug"])[0]["id"], json!(b));
 
     // Ready is open with every blocker closed.
     let ready = e.ok(&["ready"]);
@@ -398,8 +398,8 @@ fn issue_lifecycle_and_json_format() {
         "--type",
         "research",
     ]);
-    e.ok(&["edit", &a, "--type", "code-change"]);
-    assert_eq!(e.ok(&["show", &a])["type"], "code-change");
+    e.ok(&["edit", &a, "--type", "change"]);
+    assert_eq!(e.ok(&["show", &a])["type"], "change");
     e.ok(&["note", &a, "start with the sweep"]);
     let v = e.ok(&["claim", &a]);
     assert_eq!(v["state"], "claimed");
@@ -481,7 +481,7 @@ fn issue_lifecycle_and_json_format() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2);
     let who = e.ok(&["whoami"]);
     assert_eq!(who["issues"]["closed"], 2);
-    assert_eq!(who["default_type"], "code-change");
+    assert_eq!(who["default_type"], "change");
     assert_eq!(who["prefix"], "orch");
     assert_eq!(who["skill"], "current");
     assert!(who["db"].as_str().unwrap().ends_with("/repo/.trk/trk.db"));
@@ -495,7 +495,7 @@ fn issue_agent_flags_are_rejected() {
     let id = e.create(&["Type-only issue"]);
     for args in [
         vec!["create", "Old flag", "--agent", "implementer"],
-        vec!["edit", &id, "--agent", "reviewer"],
+        vec!["edit", &id, "--agent", "implementer"],
     ] {
         let out = e.cmd().args(&args).output().unwrap();
         assert!(!out.status.success(), "{args:?}");
@@ -1106,7 +1106,7 @@ fn install_writes_the_project_directory_and_the_skill() {
         ".gitignore",
         "trk.db",
         "config.toml",
-        "types/code-change.toml",
+        "types/change.toml",
         "agents/implementer.toml",
         "prompts/briefing.md.j2",
     ] {
@@ -1375,7 +1375,7 @@ builtin_tools = { read-only = [] }
         "-d",
         "Check the edge cases.",
         "--type",
-        "review",
+        "bug",
         "-p",
         "P3",
         "--run",
@@ -1386,7 +1386,7 @@ builtin_tools = { read-only = [] }
     assert_eq!(issue["state"], "claimed");
     assert_eq!(issue["claim"]["actor"], launched["actor"]);
     assert_eq!(issue["claim"]["worktree"], launched["worktree"]);
-    assert_eq!(issue["claim"]["agent"], "reviewer");
+    assert_eq!(issue["claim"]["agent"], "implementer");
     assert!(
         launched["launcher_output"]
             .as_str()
@@ -1512,8 +1512,13 @@ fn run_releases_claim_when_briefing_template_is_broken() {
 fn agent_preview_and_run_dry_run() {
     let e = Env::new();
     let list = e.ok(&["agent", "list"]);
-    assert_eq!(list.as_array().unwrap().len(), 3);
-    assert_eq!(list[0]["name"], "implementer");
+    let names: Vec<_> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|agent| agent["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["implementer", "researcher"]);
     assert!(list[0].get("default").is_none());
     let p = e.ok(&["agent", "preview", "implementer"]);
     assert!(
@@ -1565,10 +1570,10 @@ fn agent_preview_and_run_dry_run() {
     assert_eq!(e.ok(&["show", &id])["claim"], Value::Null);
     assert!(!Path::new(spec["worktree"].as_str().unwrap()).exists());
     // The issue type selects its agent; --agent overrides that routing.
-    e.ok(&["edit", &id, "--type", "review"]);
+    e.ok(&["edit", &id, "--type", "bug"]);
     assert_eq!(
         e.ok(&["run", &id, "--harness", "omp", "--dry-run"])["agent"],
-        "reviewer"
+        "implementer"
     );
     assert_eq!(
         e.ok(&[
@@ -1582,7 +1587,7 @@ fn agent_preview_and_run_dry_run() {
         ])["agent"],
         "researcher"
     );
-    e.ok(&["edit", &id, "--type", "code-change"]);
+    e.ok(&["edit", &id, "--type", "change"]);
     // --print claims, creates the worktree on a branch named after the issue,
     // and writes the files.
     let spec = e.ok(&["run", &id, "--harness", "omp", "--print"]);
@@ -1744,18 +1749,14 @@ command = "empty-server"
 #[test]
 fn run_resolves_profile_agent_per_harness_and_cli_models_and_args() {
     let e = Env::new();
-    let id = e.create(&["Review models", "--type", "review"]);
+    let id = e.create(&["Review models", "--type", "bug"]);
     e.set_config(
         "model   = \"openai-codex/gpt-6-luna\"",
         "model   = \"profile-model\"",
     );
     // Model resolution across all profiles uses an unrestricted agent.
-    let agent_path = e.trk_dir().join("agents/reviewer.toml");
-    let original = std::fs::read_to_string(&agent_path).unwrap().replace(
-        "builtin_tools = \"read-only\"",
-        "builtin_tools = \"default\"",
-    );
-    std::fs::write(&agent_path, &original).unwrap();
+    let agent_path = e.trk_dir().join("agents/implementer.toml");
+    let original = std::fs::read_to_string(&agent_path).unwrap();
     let check = |harness: &str, model: Option<&str>, extra: &[&str], cli: Option<&str>| {
         let mut args = vec!["run", &id, "--harness", harness, "--dry-run"];
         if let Some(model) = cli {
@@ -1831,20 +1832,20 @@ args = { omp = ["--label", "review {{ issue }}: {{ model }}"], opencode = ["--la
         Some("cli-model"),
     );
     let list = e.ok(&["agents"]);
-    let reviewer = list
+    let implementer = list
         .as_array()
         .unwrap()
         .iter()
-        .find(|a| a["name"] == "reviewer")
+        .find(|a| a["name"] == "implementer")
         .unwrap();
     assert_eq!(
-        reviewer["model"],
+        implementer["model"],
         json!({"omp": "omp-model", "claude-code": "claude-model"})
     );
-    assert_eq!(reviewer["models"]["omp"], "omp-model");
-    assert_eq!(reviewer["models"]["codex"], Value::Null);
+    assert_eq!(implementer["models"]["omp"], "omp-model");
+    assert_eq!(implementer["models"]["codex"], Value::Null);
     assert_eq!(
-        reviewer["args"]["omp"],
+        implementer["args"]["omp"],
         json!(["--label", "review {{ issue }}: {{ model }}"])
     );
     let pretty = e
@@ -1983,13 +1984,13 @@ fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
 #[test]
 fn mcp_server_over_stdio() {
     let e = Env::new();
-    e.set_config("default_type = \"code-change\"", "default_type = \"task\"");
+    e.set_config("default_type = \"change\"", "default_type = \"task\"");
     std::fs::write(
         e.trk_dir().join("types/task.toml"),
         "name = \"task\"\ndescription = \"Project task\"\nagent = \"implementer\"\n",
     )
     .unwrap();
-    std::fs::remove_file(e.trk_dir().join("types/code-change.toml")).unwrap();
+    std::fs::remove_file(e.trk_dir().join("types/change.toml")).unwrap();
     assert!(
         StdCommand::new("git")
             .current_dir(e.repo())
@@ -2068,7 +2069,7 @@ fn mcp_server_over_stdio() {
         .unwrap();
     assert_eq!(
         followup_tool["inputSchema"]["properties"]["type"]["enum"],
-        json!(["research", "review", "task"])
+        json!(["bug", "research", "task"])
     );
     let type_description = followup_tool["inputSchema"]["properties"]["type"]["description"]
         .as_str()
@@ -3082,7 +3083,12 @@ fn types_without_worktrees_run_and_check_in_the_project_root() {
     )
     .unwrap();
 
-    for issue_type in ["research", "review"] {
+    std::fs::write(
+        e.trk_dir().join("types/advice.toml"),
+        "description = 'Custom advice'\nagent = 'researcher'\nworktree = false\n",
+    )
+    .unwrap();
+    for issue_type in ["research", "advice"] {
         let id = e.create(&["Read the current checkout", "--type", issue_type]);
         assert_eq!(e.ok(&["show", &id])["routing"]["worktree"], false);
         let preview = e.ok(&["run", &id, "--harness", "cwd-proof", "--dry-run"]);

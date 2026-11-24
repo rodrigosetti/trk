@@ -31,7 +31,7 @@ Launcher operations are optional. Omitted skill settings use `.agents/skills/trk
 `[issues] prefix` names new issues (`<prefix>-<base32>`); normal installation writes the
 directory name, or `trk install --prefix NAME`. Changing it later only affects new issues.
 `[issues] default_type` selects the type for CLI and editor creation and MCP follow-ups
-when no explicit type is supplied; `trk whoami` reports it. The default is `code-change`.
+when no explicit type is supplied; `trk whoami` reports it. The default is `change`.
 Set it to your project's type name (for example,
 `default_type = "task"` with `types/task.toml`) before removing or renaming the seed type.
 
@@ -64,9 +64,13 @@ and briefing prompt templates can use `{{ base }}`.
 `[run] landing` selects `prompts/_landing.<value>.md.j2`. The seed provides `"merge"`
 for verified local landing into the base branch in the primary checkout, and `"pr"`
 for opening a GitHub pull request against that branch and waiting on its merge.
-It defaults to `"merge"`. Only the implementer
-includes the selected recipe; researchers and reviewers receive the generic tracker rules.
-Both built-in install presets (`default` and `minimal`) use this setting.
+New configs select `"merge"` with the implicit `local` preset or `"pr"` with
+`--preset github`. Existing configs are preserved: switching presets does not change
+their landing setting. Only the implementer includes the selected recipe; researchers
+receive the generic tracker rules. Local landing has no review or approval gate:
+`[check] verify` is the sole verification gate, and an empty value skips verification
+while still merging. GitHub landing requires installed, authenticated `gh`; install
+warns if it is missing.
 To add another workflow, create a template such as `.trk/prompts/_landing.gitlab.md.j2`
 and set `landing = "gitlab"`—no code change or edit to shared rules is needed.
 `trk agent check` reports a configured landing value with no matching template.
@@ -83,8 +87,10 @@ report the project/user origins of agents, types and templates.
 
 ### Type guidance
 
-A type can add task-specific instructions without defining another agent. For example,
-an optional `.trk/types/bug.toml` could route bugs to the existing implementer:
+Both presets install `change` (the default) and `bug`, routed to `implementer` with
+issue worktrees, and `research`, routed to `researcher` without a worktree.
+The built-in `bug` guidance requires reproducing first, a root-cause note, and a
+regression test. A type can add task-specific instructions without another agent:
 
 ```toml
 name = "bug"
@@ -135,10 +141,10 @@ installs do not filter preferences.
 Agents can choose models and add arguments without duplicating harness profiles:
 
 ```toml
-# .trk/agents/reviewer.toml
+# .trk/agents/implementer.toml
 [harness]
 prefer = ["omp", "claude-code"]
-model = { omp = "provider/reviewer-model", claude-code = "reviewer-model" }
+model = { omp = "provider/implementer-model", claude-code = "implementer-model" }
 args = { omp = ["--thinking", "high"] }
 ```
 
@@ -234,7 +240,7 @@ and `.trk/worktrees`), without path expansion. Example: `{{ project.name }}:
 {{ type.description }}; wake cap {{ config.check.max_wakes }}`.
 `trk agent check` renders each actual routed type, including its guidance, with a
 sample issue and its resolved agent. It also retains the representative agent render
-with sample issue/type/project values (project root `/tmp/project`, type `code-change`
+with sample issue/type/project values (project root `/tmp/project`, type `change`
 with description `Sample type description`), using the project's configured settings.
 
 The `wait` tool advertises the configured check interval and wake cap; with

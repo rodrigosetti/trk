@@ -20,12 +20,13 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        for (path, content) in trk_core::seed::preset("default").unwrap() {
+        for (path, content) in trk_core::seed::preset("local").unwrap() {
             let rendered = (path == "config.toml").then(|| {
                 std::str::from_utf8(content)
                     .unwrap()
                     .replace("{{EMAIL_LINE}}", "email = \"alice@example.com\"")
                     .replace("{{PREFIX}}", "orch")
+                    .replace("{{LANDING}}", "\"merge\"")
                     .replace("{{BASE}}", "\"main\"")
             });
             let path = dir.path().join("seed").join(path);

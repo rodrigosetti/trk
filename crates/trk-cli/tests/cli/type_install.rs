@@ -1,61 +1,53 @@
 use super::*;
 
 #[test]
-fn install_reports_old_research_and_review_defaults_without_overwriting() {
+fn install_preserves_legacy_files_and_issue_types_even_when_forced() {
     let e = Env::new();
-    let old_types = [
+    let legacy = [
         (
-            "types/research.toml",
-            "name = \"research\"\ndescription = \"research\"\nagent = \"researcher\"\n",
+            "types/code-change.toml",
+            "description = 'Legacy code change'\nagent = 'implementer'\nworktree = true\n",
         ),
         (
             "types/review.toml",
-            "name = \"review\"\ndescription = \"review\"\nagent = \"reviewer\"\n",
+            "description = 'Legacy review'\nagent = 'reviewer'\nworktree = false\n",
+        ),
+        ("agents/reviewer.toml", "name = 'reviewer'\n"),
+        (
+            "prompts/reviewer.instructions.md.j2",
+            "Legacy reviewer instructions",
         ),
     ];
-    let code_change = e.trk_dir().join("types/code-change.toml");
-    let original_code_change = std::fs::read_to_string(&code_change).unwrap();
-    for (relative, old) in old_types {
-        let path = e.trk_dir().join(relative);
-        let installed = std::fs::read_to_string(&path).unwrap();
-        assert!(installed.contains("worktree = false"), "{relative}");
-        std::fs::write(path, old).unwrap();
+    for (path, content) in legacy {
+        std::fs::write(e.trk_dir().join(path), content).unwrap();
     }
-
-    let installed = e.ok(&["install"]);
-    assert_eq!(
-        installed["differ"],
-        json!(["types/research.toml", "types/review.toml"])
+    e.set_config(
+        "default_type = \"change\"",
+        "default_type = \"code-change\"",
     );
-    for (relative, old) in old_types {
-        assert!(
-            installed["kept"]
-                .as_array()
-                .unwrap()
-                .contains(&json!(relative))
-        );
-        assert!(
-            !installed["written"]
-                .as_array()
-                .unwrap()
-                .contains(&json!(relative))
-        );
-        assert_eq!(
-            std::fs::read_to_string(e.trk_dir().join(relative)).unwrap(),
-            old
-        );
+    let existing = e.create(&["Legacy issue"]);
+    for (args, expected_default) in [
+        (vec!["install"], "code-change"),
+        (vec!["install", "--force"], "change"),
+    ] {
+        e.ok(&args);
+        for (path, content) in legacy {
+            assert_eq!(
+                std::fs::read_to_string(e.trk_dir().join(path)).unwrap(),
+                content
+            );
+        }
+        assert_eq!(e.ok(&["whoami"])["default_type"], expected_default);
+        assert_eq!(e.ok(&["show", &existing])["type"], "code-change");
+        let id = e.create(&["Legacy default remains available"]);
+        assert_eq!(e.ok(&["show", &id])["type"], expected_default);
     }
-    assert_eq!(
-        std::fs::read_to_string(code_change).unwrap(),
-        original_code_change
-    );
 }
 
 const DEFAULT_FILES: &[&str] = &[
     ".gitignore",
     "agents/implementer.toml",
     "agents/researcher.toml",
-    "agents/reviewer.toml",
     "config.toml",
     "prompts/_landing.merge.md.j2",
     "prompts/_landing.pr.md.j2",
@@ -63,10 +55,9 @@ const DEFAULT_FILES: &[&str] = &[
     "prompts/briefing.md.j2",
     "prompts/implementer.instructions.md.j2",
     "prompts/researcher.instructions.md.j2",
-    "prompts/reviewer.instructions.md.j2",
-    "types/code-change.toml",
+    "types/bug.toml",
+    "types/change.toml",
     "types/research.toml",
-    "types/review.toml",
 ];
 
 fn sorted_paths(value: &Value) -> Vec<&str> {
@@ -81,60 +72,51 @@ fn sorted_paths(value: &Value) -> Vec<&str> {
 }
 
 #[test]
-fn install_explicit_default_preset_preserves_the_original_seed_set() {
-    let e = Env::with_install(false);
-    let original: Vec<_> = DEFAULT_FILES
-        .iter()
-        .map(|path| std::fs::read(e.trk_dir().join(path)).unwrap())
-        .collect();
-    std::fs::remove_dir_all(e.trk_dir()).unwrap();
-
-    let result = e.ok(&["install", "--preset", "default", "--prefix", "orch"]);
-    assert_eq!(sorted_paths(&result["written"]), DEFAULT_FILES);
-    assert_eq!(result["kept"], json!([]));
-    assert_eq!(result["differ"], json!([]));
-    assert_eq!(result["db_created"], true);
-    for (path, content) in DEFAULT_FILES.iter().zip(original) {
-        assert_eq!(
-            std::fs::read(e.trk_dir().join(path)).unwrap(),
-            content,
-            "{path}"
-        );
+fn install_presets_share_files_and_route_types_with_distinct_landings() {
+    for (preset, landing) in [("local", "merge"), ("github", "pr")] {
+        let e = Env::new();
+        std::fs::remove_dir_all(e.trk_dir()).unwrap();
+        let result = e.ok(&["install", "--preset", preset, "--prefix", "orch"]);
+        assert_eq!(sorted_paths(&result["written"]), DEFAULT_FILES);
+        assert_eq!(result["kept"], json!([]));
+        assert_eq!(result["differ"], json!([]));
+        assert_eq!(result["db_created"], true);
+        assert!(!e.trk_dir().join("landing.txt").exists());
+        assert!(!e.trk_dir().join("presets").exists());
+        let config: toml::Value =
+            toml::from_str(&std::fs::read_to_string(e.trk_dir().join("config.toml")).unwrap())
+                .unwrap();
+        assert_eq!(config["run"]["landing"].as_str(), Some(landing));
+        assert_eq!(e.ok(&["whoami"])["default_type"], "change");
+        for (kind, agent, worktree) in [
+            ("change", "implementer", true),
+            ("bug", "implementer", true),
+            ("research", "researcher", false),
+        ] {
+            let route: toml::Value = toml::from_str(
+                &std::fs::read_to_string(e.trk_dir().join(format!("types/{kind}.toml"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(route["agent"].as_str(), Some(agent));
+            assert_eq!(route["worktree"].as_bool(), Some(worktree));
+            let id = e.create(&["--type", kind, kind]);
+            assert_eq!(e.ok(&["show", &id])["type"], kind);
+            if kind == "bug" {
+                let preview = e.ok(&["agent", "preview", agent, "--issue", &id]);
+                let guidance = preview["guidance"].as_str().unwrap().to_lowercase();
+                for expected in ["reproduc", "root cause", "regression test"] {
+                    assert!(guidance.contains(expected), "{guidance}");
+                }
+            }
+        }
+        e.ok(&["agent", "check"]);
+        let id = e.create(&["Default type"]);
+        assert_eq!(e.ok(&["show", &id])["type"], "change");
+        let again = e.ok(&["install", "--preset", preset]);
+        assert_eq!(again["written"], json!([]));
+        assert_eq!(sorted_paths(&again["kept"]), DEFAULT_FILES);
+        assert_eq!(again["differ"], json!([]));
     }
-}
-
-#[test]
-fn install_minimal_preset_has_only_implementer_and_code_change() {
-    let e = Env::new();
-    std::fs::remove_dir_all(e.trk_dir()).unwrap();
-
-    let result = e.ok(&["install", "--preset", "minimal", "--prefix", "orch"]);
-    let expected = [
-        ".gitignore",
-        "agents/implementer.toml",
-        "config.toml",
-        "prompts/_landing.merge.md.j2",
-        "prompts/_landing.pr.md.j2",
-        "prompts/_rules.md.j2",
-        "prompts/briefing.md.j2",
-        "prompts/implementer.instructions.md.j2",
-        "types/code-change.toml",
-    ];
-    assert_eq!(sorted_paths(&result["written"]), expected);
-    assert_eq!(result["kept"], json!([]));
-    assert_eq!(result["differ"], json!([]));
-    for path in expected {
-        assert!(e.trk_dir().join(path).is_file(), "{path}");
-    }
-    for path in DEFAULT_FILES.iter().filter(|path| !expected.contains(path)) {
-        assert!(!e.trk_dir().join(path).exists(), "{path}");
-    }
-    let id = e.create(&["Minimal install supports its default issue type"]);
-    assert_eq!(e.ok(&["show", &id])["type"], "code-change");
-    let again = e.ok(&["install", "--preset", "minimal"]);
-    assert_eq!(again["written"], json!([]));
-    assert_eq!(sorted_paths(&again["kept"]), expected);
-    assert_eq!(again["differ"], json!([]));
 }
 
 #[test]
@@ -144,6 +126,7 @@ fn install_custom_source_is_direct_recursive_binary_and_has_no_builtin_fallback(
         .unwrap()
         .replace("email = \"alice@example.com\"", "{{EMAIL_LINE}}")
         .replace("prefix = \"orch\"", "prefix = \"{{PREFIX}}\"")
+        .replace("landing = \"merge\"", "landing = {{LANDING}}")
         .replace("base = \"main\"", "base = {{BASE}}");
     assert!(config.contains("{{EMAIL_LINE}}"));
     assert!(config.contains("{{PREFIX}}"));
@@ -151,25 +134,21 @@ fn install_custom_source_is_direct_recursive_binary_and_has_no_builtin_fallback(
     let source = e.dir.path().join("custom-seed");
     std::fs::create_dir_all(source.join("assets/nested")).unwrap();
     std::fs::create_dir_all(source.join("prompts")).unwrap();
-    std::fs::create_dir_all(source.join("presets/default")).unwrap();
+    std::fs::create_dir_all(source.join("presets/local")).unwrap();
     std::fs::write(source.join(".gitignore"), "*\n").unwrap();
     std::fs::write(source.join("config.toml"), config).unwrap();
     let binary = [0, 255, 128, 10];
     std::fs::write(source.join("assets/nested/logo.bin"), binary).unwrap();
-    let prompt = "{{EMAIL_LINE}} {{PREFIX}} {{BASE}}\n";
+    let prompt = "{{EMAIL_LINE}} {{PREFIX}} {{BASE}} {{LANDING}}\n";
     std::fs::write(source.join("prompts/custom.md.j2"), prompt).unwrap();
-    std::fs::write(
-        source.join("presets/default/ordinary.txt"),
-        "not an overlay",
-    )
-    .unwrap();
+    std::fs::write(source.join("presets/local/ordinary.txt"), "not an overlay").unwrap();
     std::fs::remove_dir_all(e.trk_dir()).unwrap();
     let source_arg = source.to_str().unwrap();
     let expected = [
         ".gitignore",
         "assets/nested/logo.bin",
         "config.toml",
-        "presets/default/ordinary.txt",
+        "presets/local/ordinary.txt",
         "prompts/custom.md.j2",
     ];
 
@@ -177,6 +156,12 @@ fn install_custom_source_is_direct_recursive_binary_and_has_no_builtin_fallback(
     assert_eq!(sorted_paths(&installed["written"]), expected);
     assert_eq!(installed["kept"], json!([]));
     assert_eq!(installed["differ"], json!([]));
+    assert!(
+        !installed["warnings"]
+            .to_string()
+            .contains("skip verification")
+    );
+    assert!(!installed["warnings"].to_string().contains("gh auth login"));
     assert_eq!(
         std::fs::read(e.trk_dir().join("assets/nested/logo.bin")).unwrap(),
         binary
@@ -187,7 +172,7 @@ fn install_custom_source_is_direct_recursive_binary_and_has_no_builtin_fallback(
         "only config.toml substitutes install markers"
     );
     assert_eq!(
-        std::fs::read_to_string(e.trk_dir().join("presets/default/ordinary.txt")).unwrap(),
+        std::fs::read_to_string(e.trk_dir().join("presets/local/ordinary.txt")).unwrap(),
         "not an overlay"
     );
     for path in DEFAULT_FILES.iter().filter(|path| !expected.contains(path)) {
@@ -197,7 +182,7 @@ fn install_custom_source_is_direct_recursive_binary_and_has_no_builtin_fallback(
         );
     }
     let installed_config = std::fs::read_to_string(e.trk_dir().join("config.toml")).unwrap();
-    for marker in ["{{EMAIL_LINE}}", "{{PREFIX}}", "{{BASE}}"] {
+    for marker in ["{{EMAIL_LINE}}", "{{PREFIX}}", "{{BASE}}", "{{LANDING}}"] {
         assert!(!installed_config.contains(marker), "{marker}");
     }
     let parsed: toml::Table = toml::from_str(&installed_config).unwrap();
@@ -216,6 +201,7 @@ fn install_custom_source_is_direct_recursive_binary_and_has_no_builtin_fallback(
             .unwrap()
             .replace("{{EMAIL_LINE}}", "email = \"alice@example.com\"")
             .replace("{{PREFIX}}", "custom")
+            .replace("{{LANDING}}", "\"merge\"")
             .replace("{{BASE}}", "\"main\""),
     )
     .unwrap();
@@ -274,7 +260,7 @@ fn install_lists_presets_outside_a_project_without_writing() {
     std::fs::create_dir(e.repo()).unwrap();
     assert_eq!(
         e.ok(&["install", "--list-presets"]),
-        json!({"presets": ["default", "minimal"]})
+        json!({"presets": ["github", "local"]})
     );
     assert_eq!(std::fs::read_dir(e.repo()).unwrap().count(), 0);
     assert_eq!(std::fs::read_dir(e.dir.path()).unwrap().count(), 1);
@@ -291,6 +277,8 @@ fn install_rejects_unknown_sources_presets_and_conflicting_options() {
     std::fs::create_dir(&empty).unwrap();
     for args in [
         vec!["install", "--preset", "unknown"],
+        vec!["install", "--preset", "default"],
+        vec!["install", "--preset", "minimal"],
         vec!["install", "--from", missing.to_str().unwrap()],
         vec!["install", "--from", file.to_str().unwrap()],
     ] {
@@ -304,18 +292,18 @@ fn install_rejects_unknown_sources_presets_and_conflicting_options() {
             "--from",
             empty.to_str().unwrap(),
             "--preset",
-            "default",
+            "local",
         ],
         vec!["install", "--list-presets", "--force"],
         vec!["install", "--list-presets", "--prefix", "orch"],
-        vec!["install", "--list-presets", "--preset", "minimal"],
+        vec!["install", "--list-presets", "--preset", "github"],
         vec![
             "install",
             "--list-presets",
             "--from",
             empty.to_str().unwrap(),
         ],
-        vec!["install", "--minimal", "--preset", "default"],
+        vec!["install", "--minimal", "--preset", "local"],
         vec!["install", "--minimal", "--from", empty.to_str().unwrap()],
         vec!["install", "--minimal", "--list-presets"],
         vec!["install", "--preset"],

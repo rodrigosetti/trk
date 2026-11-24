@@ -1,3 +1,4 @@
-name = "code-change"
+name = "change"
 description = "code change"
 agent = "implementer"
+worktree = true

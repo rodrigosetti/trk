@@ -5,7 +5,7 @@ use trk_agent::{agent_tools, load_agent};
 use trk_core::config::{ConfigDir, Level, UserConfig};
 
 fn seed() -> (tempfile::TempDir, ConfigDir) {
-    seed_preset("default")
+    seed_preset("local")
 }
 
 fn seed_preset(name: &str) -> (tempfile::TempDir, ConfigDir) {
@@ -16,7 +16,16 @@ fn seed_preset(name: &str) -> (tempfile::TempDir, ConfigDir) {
                 .unwrap()
                 .replace("{{EMAIL_LINE}}", "email = \"a@b.c\"")
                 .replace("{{PREFIX}}", "proj")
+                .replace("{{DEFAULT_TYPE}}", trk_core::seed::DEFAULT_TYPE)
                 .replace("{{BASE}}", "\"main\"")
+                .replace(
+                    "{{LANDING}}",
+                    if name == "github" {
+                        "\"pr\""
+                    } else {
+                        "\"merge\""
+                    },
+                )
         });
         let path = dir.path().join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -39,7 +48,8 @@ fn user_config() -> UserConfig {
                 "{{DEFAULT_TYPE}}",
                 &trk_core::config::IssuesSection::default().default_type,
             )
-            .replace("{{BASE}}", "\"main\""),
+            .replace("{{BASE}}", "\"main\"")
+            .replace("{{LANDING}}", "\"merge\""),
     )
     .unwrap()
 }
@@ -118,10 +128,12 @@ fn a_broken_agent_file_does_not_stop_the_others() {
 
 #[test]
 fn seed_agents_check_clean() {
-    let (_dir, seed) = seed();
-    let d = trk_agent::check::check_agents(&seed, &user_config());
-    let errors: Vec<_> = d.iter().filter(|x| x.level == Level::Error).collect();
-    assert!(errors.is_empty(), "{errors:#?}");
+    for preset in ["local", "github"] {
+        let (_dir, seed) = seed_preset(preset);
+        let d = trk_agent::check::check_agents(&seed, &seed.user_config().unwrap());
+        let errors: Vec<_> = d.iter().filter(|x| x.level == Level::Error).collect();
+        assert!(errors.is_empty(), "{preset}: {errors:#?}");
+    }
 }
 
 #[test]
@@ -157,7 +169,7 @@ fn check_reports_a_missing_default_type_definition() {
 
 #[test]
 fn landing_selection_only_changes_implementer_instructions() {
-    for preset in ["default", "minimal"] {
+    for preset in ["local", "github"] {
         let (_dir, seed) = seed_preset(preset);
         std::fs::write(
             seed.path.join("prompts/_landing.gitlab.md.j2"),
@@ -173,11 +185,7 @@ fn landing_selection_only_changes_implementer_instructions() {
                 diagnostics.iter().all(|d| d.level != Level::Error),
                 "{diagnostics:#?}"
             );
-            let agents: &[&str] = if preset == "default" {
-                &["implementer", "researcher", "reviewer"]
-            } else {
-                &["implementer"]
-            };
+            let agents: &[&str] = &["implementer", "researcher"];
             for &name in agents {
                 let agent = load_agent(&seed, name).unwrap();
                 let tools = agent_tools(&agent, &config);
@@ -185,7 +193,7 @@ fn landing_selection_only_changes_implementer_instructions() {
                     issue: &issue,
                     project_root: std::path::Path::new("/project"),
                     config: &config,
-                    issue_type: "code-change",
+                    issue_type: "change",
                     type_description: "code change",
                     type_guidance: None,
                     agent: &agent,
@@ -258,7 +266,7 @@ fn the_briefing_carries_description_notes_and_blockers() {
         issue: &issue,
         project_root: std::path::Path::new("/project"),
         config: &user_config(),
-        issue_type: "code-change",
+        issue_type: "change",
         type_description: "code change",
         type_guidance: None,
         agent: &a,
@@ -304,7 +312,7 @@ fn seed_waiting_rules_reflect_effective_check_settings() {
             issue: &issue,
             project_root: std::path::Path::new("/project"),
             config: &config,
-            issue_type: "code-change",
+            issue_type: "change",
             type_description: "code change",
             type_guidance: None,
             agent: &agent,
@@ -408,7 +416,8 @@ fn launch_spec_for_omp() {
     let user = user_config();
     let profiles = harness::profiles(&user).unwrap();
     let (_dir, seed) = seed();
-    let a = load_agent(&seed, "reviewer").unwrap();
+    let mut a = load_agent(&seed, "researcher").unwrap();
+    a.harness.builtin_tools = "read-only".into();
     let mut env = BTreeMap::new();
     env.insert("TRK_DIR".to_string(), "/proj/.trk".to_string());
     let spec = harness::build(LaunchInput {
@@ -455,7 +464,7 @@ fn launch_spec_for_omp() {
             "--actor",
             "agent:omp:u1",
             "--agent",
-            "reviewer"
+            "researcher"
         ])
     );
     assert_eq!(v["mcpServers"]["trk"]["env"]["TRK_DIR"], "/proj/.trk");
@@ -586,7 +595,7 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
 #[test]
 fn builtin_levels_are_defined_by_profiles_not_a_fixed_list() {
     let dir = tempfile::tempdir().unwrap();
-    for (path, content) in trk_core::seed::preset("minimal").unwrap() {
+    for (path, content) in trk_core::seed::preset("local").unwrap() {
         let path = dir.path().join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();

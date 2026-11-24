@@ -11,8 +11,8 @@ Config keys, seed prompts, the database schema across versions, and the Herdr mo
 may change without notice.
 
 **Upgrading:** finish active sessions first, update your source checkout, re-run
-`./install.sh`, then run `trk install` in each project. See the
-[upgrade manual](docs/install-upgrade.md), [changelog](CHANGELOG.md), and
+`./install.sh`, then run `trk install --preset local` (or `github`) in each project.
+See the [upgrade manual](docs/install-upgrade.md), [changelog](CHANGELOG.md), and
 [release steps](docs/development.md#releasing-010).
 
 ## Prerequisites
@@ -37,9 +37,9 @@ The binary goes in `~/.cargo/bin`; put that directory on `PATH`.
 
 ```sh
 cd /path/to/your/git-repo
-trk install
+trk install                            # implicit --preset local
 # Set [check] verify in .trk/config.toml to your project's test command.
-trk create "Fix the login timeout" -d "Reproduce the timeout and fix its cause." --run
+trk create "Fix the login timeout" --type bug -d "Reproduce the timeout and fix its cause." --run
 trk runs
 trk check --watch
 ```
@@ -48,6 +48,17 @@ Installation detects available launchers and harnesses. `--run` saves the issue 
 starts its agent in a dedicated worktree. Leave `trk check --watch` running in a spare
 terminal: it runs waiting checks and returns failures to the session when possible.
 Use `trk dashboard` for a live overview.
+
+The `local` preset merges into the base branch with no review or approval gate;
+`[check] verify` is its sole verification gate, and empty skips verification.
+Use `trk install --preset github` for PR landing; it requires installed,
+authenticated `gh` (installation warns if missing). Both presets provide `change`
+(default) and `bug` through the implementer in worktrees, and `research` through
+the researcher without a worktree. Bug guidance requires reproducing first,
+recording the root cause, and a regression test.
+Existing configurations and legacy types are kept; follow the
+[migration procedure](docs/install-upgrade.md#upgrading-existing-projects) to change
+the default type and landing setting manually.
 For a no-check wait on a decision, the same session can continue after reporting an
 actual human chat reply; [chat resume](docs/waiting-and-checks.md#same-session-chat-resume)
 is enabled by default and can be disabled with `[wait] chat_resume = false`.
