@@ -205,3 +205,83 @@ fn missing_skill_section_seeds_detection_once_for_old_and_new_configs() {
         }
     }
 }
+
+#[test]
+fn configured_skill_warnings_are_relative_to_the_nested_project() {
+    let e = Env::new();
+    let repo = e.repo();
+    configure(&e, "custom/trk", &[".other/skills/trk"]);
+    let project = repo.join("services/api");
+    std::fs::create_dir_all(project.join("custom/trk")).unwrap();
+    std::fs::create_dir_all(project.join(".other/skills")).unwrap();
+    std::fs::rename(e.trk_dir(), project.join(".trk")).unwrap();
+    std::fs::write(project.join("custom/trk/SKILL.md"), "tracked nested skill").unwrap();
+    std::os::unix::fs::symlink("../../custom/trk", project.join(".other/skills/trk")).unwrap();
+    for args in [
+        vec!["add", "-f", "services/api/custom", "services/api/.other"],
+        vec![
+            "-c",
+            "user.email=t@e.st",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "nested skill",
+        ],
+    ] {
+        assert!(
+            StdCommand::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let install = e
+        .cmd()
+        .current_dir(&project)
+        .args(["--json", "install"])
+        .output()
+        .unwrap();
+    assert!(
+        install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&install.stderr)
+    );
+    let installed: Value = serde_json::from_slice(&install.stdout).unwrap();
+    let create = e
+        .cmd()
+        .current_dir(&project)
+        .args(["--json", "create", "Nested skill warnings"])
+        .output()
+        .unwrap();
+    assert!(
+        create.status.success(),
+        "{}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    let created: Value = serde_json::from_slice(&create.stdout).unwrap();
+    let id = created["data"]["id"].as_str().unwrap();
+    let run = e
+        .cmd()
+        .current_dir(&project)
+        .args(["--json", "run", id, "--harness", "omp", "--print"])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    for warnings in [
+        installed["data"]["warnings"].to_string(),
+        String::from_utf8(run.stderr).unwrap(),
+    ] {
+        assert!(warnings.contains("custom/trk is tracked"), "{warnings}");
+        assert!(
+            warnings.contains(".other/skills/trk is tracked"),
+            "{warnings}"
+        );
+    }
+}
