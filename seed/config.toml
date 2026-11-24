@@ -39,6 +39,9 @@ worktrees = ".trk/worktrees"
 # Branch new issue branches start from and checks land on.
 # Detected at install: origin/HEAD, then the primary checkout's branch, then main.
 base = {{BASE}}
+# Implementer landing recipe: prompts/_landing.<landing>.md.j2.
+# Built-ins: "merge" (local checkout), "pr" (GitHub pull request).
+landing = "merge"
 
 # Launcher templates. Placeholders: {name} (terminal name), {cwd},
 # {shell_command} (cd + env + harness argv), {text}.

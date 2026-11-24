@@ -5,8 +5,12 @@ use trk_agent::{agent_tools, load_agent};
 use trk_core::config::{ConfigDir, Level, UserConfig};
 
 fn seed() -> (tempfile::TempDir, ConfigDir) {
+    seed_preset("default")
+}
+
+fn seed_preset(name: &str) -> (tempfile::TempDir, ConfigDir) {
     let dir = tempfile::tempdir().unwrap();
-    for (path, content) in trk_core::seed::preset("default").unwrap() {
+    for (path, content) in trk_core::seed::preset(name).unwrap() {
         let path = dir.path().join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
@@ -92,6 +96,100 @@ fn seed_agents_check_clean() {
     let d = trk_agent::check::check_agents(&seed, &user_config());
     let errors: Vec<_> = d.iter().filter(|x| x.level == Level::Error).collect();
     assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
+fn landing_selection_only_changes_implementer_instructions() {
+    for preset in ["default", "minimal"] {
+        let (_dir, seed) = seed_preset(preset);
+        std::fs::write(
+            seed.path.join("prompts/_landing.gitlab.md.j2"),
+            "Open a GitLab merge request targeting {{ base }} ({{ config.run.landing }}).",
+        )
+        .unwrap();
+        let issue = trk_agent::check::sample_issue();
+        for landing in ["merge", "pr", "gitlab", "legacy"] {
+            let mut config = user_config();
+            if landing == "legacy" {
+                let old = toml::to_string(&config)
+                    .unwrap()
+                    .replace("landing = \"merge\"\n", "");
+                config = toml::from_str(&old).unwrap();
+            } else {
+                config.run.landing = landing.into();
+            }
+            let diagnostics = trk_agent::check::check_agents(&seed, &config);
+            assert!(
+                diagnostics.iter().all(|d| d.level != Level::Error),
+                "{diagnostics:#?}"
+            );
+            let agents: &[&str] = if preset == "default" {
+                &["implementer", "researcher", "reviewer"]
+            } else {
+                &["implementer"]
+            };
+            for &name in agents {
+                let agent = load_agent(&seed, name).unwrap();
+                let tools = agent_tools(&agent, &config.check);
+                let input = trk_agent::prompt::PromptInput {
+                    issue: &issue,
+                    project_root: std::path::Path::new("/project"),
+                    config: &config,
+                    issue_type: "code-change",
+                    type_description: "code change",
+                    agent: &agent,
+                    tools: &tools,
+                    worktree: Some("/wt/proj-abc"),
+                    base: "develop",
+                    verify: "",
+                    actor: "agent:omp:u1",
+                    harness: Some("omp"),
+                };
+                let rules = trk_agent::prompt::instructions(&seed, &input).unwrap();
+                let implementer = name == "implementer";
+                assert_eq!(
+                    rules.matches("git merge --ff-only").count(),
+                    usize::from(implementer && matches!(landing, "merge" | "legacy")),
+                    "{name}/{landing}: {rules}"
+                );
+                assert_eq!(
+                    rules.matches("gh pr view").count(),
+                    usize::from(implementer && landing == "pr"),
+                    "{name}/{landing}: {rules}"
+                );
+                assert_eq!(
+                    rules
+                        .matches("GitLab merge request targeting develop (gitlab)")
+                        .count(),
+                    usize::from(implementer && landing == "gitlab"),
+                    "{name}/{landing}: {rules}"
+                );
+                if implementer && landing == "pr" {
+                    assert!(
+                        rules.contains("pull request targeting `develop`"),
+                        "{rules}"
+                    );
+                    assert!(!rules.contains("Merge your branch"), "{rules}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn missing_landing_template_is_reported_even_without_an_implementer() {
+    let (_dir, seed) = seed();
+    std::fs::remove_file(seed.path.join("agents/implementer.toml")).unwrap();
+    let mut config = user_config();
+    config.run.landing = "missing".into();
+    let diagnostics = trk_agent::check::check_agents(&seed, &config);
+    assert!(
+        diagnostics.iter().any(|d| d.level == Level::Error
+            && d.file.as_deref() == Some("config.toml")
+            && d.message.contains("run.landing 'missing'")
+            && d.message.contains("prompts/_landing.missing.md.j2")),
+        "{diagnostics:#?}"
+    );
 }
 
 #[test]
