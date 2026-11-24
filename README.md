@@ -541,6 +541,25 @@ binary) that teaches your interactive agent sessions to use the trk CLI: `.agent
 (omp, Codex), linked from `.claude/skills/trk` when Claude Code is in use. `trk whoami` reports
 whether the installed copy matches the binary; run `trk install` again to refresh it.
 
+Configure its locations in `.trk/config.toml`:
+
+```toml
+[skill]
+path = ".agents/skills/trk"       # "" disables skill installation
+links = [".claude/skills/trk"]    # [] disables symlink creation
+```
+
+Paths are relative to the project root (absolute paths also work). Any number of links
+can point to the installed directory. Installation, git excludes, tracked-path warnings,
+and `whoami` follow this section; a disabled skill reports `"disabled"` and adds no excludes
+or warnings. Changing the section does not remove previously installed files, links, or excludes.
+Install JSON reports symlinks in `skill.links` as `{path, linked}` entries.
+
+When the section is absent, older configs use the original locations and detect Claude Code
+from `~/.claude` or `<project>/.claude`. `trk install` writes these detected defaults once;
+later installs follow the saved config, without detecting harnesses again. This also applies
+to custom `--from` sources without a `[skill]` section.
+
 Sessions started by `trk run` should reach trk only through their MCP server (see SPEC.md). That is
 why the skill is kept out of git with `.git/info/exclude`: the worktrees `trk run` creates do not
 contain it, so those sessions do not see it. `trk install` and `trk run` warn when a repository
@@ -626,7 +645,8 @@ Everything trk keeps for a project is in `.trk/` at its root, written by `trk in
 `config.toml` is explicit: `trk install` writes the settings. Launcher operations are
 optional. Compatibility defaults include `[launcher] send_retries`, `send_retry_delay`,
 `[issues] default_type`, `[check] max_wakes`, `gc`, `gc_grace`, `[run] landing`
-(default `"merge"`), and the detected `[run] base`.
+(default `"merge"`), the detected `[run] base`, and legacy `[skill]` detection
+(see Agent skill).
 `[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory name,
 or `trk install --prefix NAME`. Changing it later only affects new issues.
 `[issues] default_type` selects the type for CLI and editor creation and MCP follow-ups

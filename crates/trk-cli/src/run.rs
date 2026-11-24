@@ -216,8 +216,13 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             ensure_worktree(co, wt, &id, &base)?;
             std::fs::create_dir_all(&cwd)?;
             // Agents reach trk through MCP only; a committed skill would reach them anyway.
-            for rel in [".agents/skills/trk", ".claude/skills/trk"] {
-                if cwd.join(rel).exists() {
+            let settings = crate::skill::settings(&env.root, env.user.skill.as_ref());
+            for rel in crate::skill::paths(&settings) {
+                let full = env.root.join(rel);
+                if let Ok(relative) = full.strip_prefix(&env.root)
+                    && git(&cwd, &["ls-files", "--", &relative.to_string_lossy()])
+                        .is_some_and(|s| !s.is_empty())
+                {
                     let w = format!(
                         "{rel} is tracked in this repo, so the session will see the trk CLI skill"
                     );

@@ -2,15 +2,15 @@
 //! CLI, installed by `trk install`. Its files are embedded in the binary, so
 //! an installed skill always matches the installed `trk`.
 //!
-//! It goes in `<project>/.agents/skills/trk` (omp, Codex), linked from
-//! `<project>/.claude/skills/trk` (Claude Code). In a git repository both
-//! paths are added to `.git/info/exclude`, so the skill is never tracked and
-//! the worktrees `trk run` creates do not contain it: sessions reach trk
-//! through MCP only.
+//! Its directory and symlinks come from `[skill]`. In a git repository these
+//! paths are added to `.git/info/exclude`, so sessions in `trk run` worktrees
+//! reach trk through MCP only.
 
-use std::path::{Path, PathBuf};
+use std::borrow::Cow;
+use std::path::Path;
 
 use serde_json::{Value, json};
+use trk_core::config::SkillSection;
 use trk_core::error::Result;
 
 use crate::env::{git, git_exclude, home};
@@ -26,8 +26,35 @@ pub const FILES: &[(&str, &str)] = &[
     ),
 ];
 
-pub const SKILL_DIR: &str = ".agents/skills/trk";
-pub const CLAUDE_LINK: &str = ".claude/skills/trk";
+/// Resolve old configs using the original harness detection. Once installed,
+/// the explicit section is authoritative, even if another harness appears.
+pub fn settings<'a>(root: &Path, configured: Option<&'a SkillSection>) -> Cow<'a, SkillSection> {
+    configured.map(Cow::Borrowed).unwrap_or_else(|| {
+        Cow::Owned(SkillSection {
+            path: ".agents/skills/trk".into(),
+            links: if home().join(".claude").is_dir() || root.join(".claude").is_dir() {
+                vec![".claude/skills/trk".into()]
+            } else {
+                vec![]
+            },
+        })
+    })
+}
+
+/// No locations are active when the skill is disabled.
+pub fn paths(config: &SkillSection) -> impl Iterator<Item = &str> {
+    std::iter::once(config.path.as_str())
+        .chain(config.links.iter().map(String::as_str))
+        .filter(|_| !config.path.is_empty())
+}
+
+pub fn configured_state(root: &Path, config: &SkillSection) -> &'static str {
+    if config.path.is_empty() {
+        "disabled"
+    } else {
+        state(&root.join(&config.path))
+    }
+}
 
 /// "missing", "current", "outdated" or "linked" (a symlink, e.g. a development copy).
 pub fn state(dir: &Path) -> &'static str {
@@ -44,7 +71,9 @@ pub fn state(dir: &Path) -> &'static str {
 }
 
 fn write_files(dir: &Path) -> Result<()> {
-    let tmp = dir.with_file_name(format!("{NAME}.new"));
+    let mut tmp_name = dir.file_name().unwrap().to_os_string();
+    tmp_name.push(".new");
+    let tmp = dir.with_file_name(tmp_name);
     let _ = std::fs::remove_dir_all(&tmp);
     for (rel, content) in FILES {
         let p = tmp.join(rel);
@@ -66,10 +95,17 @@ pub struct Installed {
 }
 
 /// Install or refresh the skill in the project at `root`.
-pub fn install(root: &Path, is_git: bool) -> Result<Installed> {
-    let dir = root.join(SKILL_DIR);
+pub fn install(root: &Path, is_git: bool, config: &SkillSection) -> Result<Installed> {
     let mut lines = vec![];
     let mut warnings: Vec<String> = vec![];
+    if config.path.is_empty() {
+        return Ok(Installed {
+            lines: vec!["disabled".into()],
+            warnings,
+            data: json!({"path": null, "state": "disabled", "links": []}),
+        });
+    }
+    let dir = root.join(&config.path);
     if dir.is_symlink() {
         lines.push(format!(
             "{} is a symlink (a development copy?); left alone",
@@ -85,30 +121,32 @@ pub fn install(root: &Path, is_git: bool) -> Result<Installed> {
             _ => format!("updated at {}", dir.display()),
         });
     }
-    // Link for Claude Code when it is installed or the project already uses it.
-    let link: Option<PathBuf> = (home().join(".claude").is_dir() || root.join(".claude").is_dir())
-        .then(|| root.join(CLAUDE_LINK));
-    if let Some(link) = &link {
+    let mut links = Vec::with_capacity(config.links.len());
+    for rel in &config.links {
+        let link = root.join(rel);
         if link.is_symlink() || !link.exists() {
             std::fs::create_dir_all(link.parent().unwrap())?;
             if link.is_symlink() {
-                std::fs::remove_file(link)?;
+                std::fs::remove_file(&link)?;
             }
-            std::os::unix::fs::symlink(PathBuf::from("../../.agents/skills").join(NAME), link)?;
-            lines.push(format!("linked {} for Claude Code", link.display()));
+            std::os::unix::fs::symlink(&dir, &link)?;
+            lines.push(format!("linked {}", link.display()));
         } else {
             warnings.push(format!(
                 "{} exists and is not a symlink; left alone",
                 link.display()
             ));
         }
+        links.push(json!({"path": link, "linked": link.is_symlink()}));
     }
     if is_git {
-        git_exclude(root, &format!("/{SKILL_DIR}/"));
-        if link.is_some() {
-            git_exclude(root, &format!("/{CLAUDE_LINK}"));
-        }
-        for rel in [SKILL_DIR, CLAUDE_LINK] {
+        for rel in paths(config) {
+            // Paths outside the project cannot be tracked or excluded here.
+            let full = root.join(rel);
+            let Ok(relative) = full.strip_prefix(root) else {
+                continue;
+            };
+            git_exclude(root, &format!("/{}", relative.display()));
             if git(root, &["ls-files", "--", rel]).is_some_and(|s| !s.is_empty()) {
                 warnings.push(format!(
                     "{rel} is tracked in git: worktrees created by `trk run` will contain it, so agent sessions will see the skill"
@@ -119,8 +157,7 @@ pub fn install(root: &Path, is_git: bool) -> Result<Installed> {
     let data = json!({
         "path": dir,
         "state": state(&dir),
-        "claude_link": link,
-        "claude_linked": link.as_ref().map(|l| l.is_symlink()),
+        "links": links,
     });
     Ok(Installed {
         lines,

@@ -43,6 +43,10 @@ fn project_workflow(relative: &str, external: bool) {
     );
     // Explicit installation allows a project below an existing root project.
     std::fs::create_dir_all(e.dir.path().join("home/.claude")).unwrap();
+    if relative.is_empty() {
+        // This project was already installed before Claude appeared.
+        e.set_config("links = []", "links = [\".claude/skills/trk\"]");
+    }
     success(e.cmd(), &project, &["--dir", ".trk", "install"]);
     let trk = project.join(".trk");
     let config = trk.join("config.toml");
