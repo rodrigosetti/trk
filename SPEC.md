@@ -417,6 +417,8 @@ trk run <ID> [--agent A] [--harness H] [--model M] [--fg] [--print] [--dry-run]
 5. Render the launch spec: resolved `model` (string or null), briefing, MCP server list (trk plus the agent's others), environment (`TRK_ACTOR`, for attribution only), files, argv.
 6. Start with the selected launcher's `start` template or driver default. `--print` emits the launch spec as JSON instead; `--dry-run` also skips the claim.
 
+Failures while preparing the launch spec, writing its files, or starting the launcher release the claim with a `launch failed: <reason>` note, leaving the issue open and ready to retry. The worktree and branch may remain. A Herdr `launch unconfirmed` error retains the claim to avoid a duplicate launch.
+
 Related commands: `trk attach <ID>` and `trk send <ID>` (only when their launcher templates are set) target the active claim's terminal, or the waiting session's terminal when there is no active claim. An active claim takes precedence even if it has no terminal; historical terminals are never a fallback once the issue leaves waiting. `trk runs` lists active and waiting agent sessions with `state` (`claimed` or `waiting`), agent, harness, terminal, claim metadata, terminal/session liveness and separate MCP liveness. A waiting row's lease is historical, not active. `trk reap` releases only active claims whose recorded local terminal is confirmed gone, recording a note; it leaves waiting, dormant and unknown sessions alone. Normal lease expiry remains independent.
 
 The worktree outlives the claim: a waiting issue's check runs in it, or in the primary project root if no worktree was recorded. Closing an issue retains its resources until manual `trk gc` or an eligible end-of-pass `trk check` sweep removes them.

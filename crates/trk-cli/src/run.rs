@@ -262,84 +262,92 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         )
     })?;
 
-    // 5. Render the launch spec.
-    let input = trk_agent::prompt::PromptInput {
-        issue: &issue_now,
-        project_root: &env.root,
-        config: &env.user,
-        issue_type: &routing.issue_type,
-        type_description: &routing.description,
-        agent: &agent,
-        tools: &tools,
-        worktree: wt_str.as_deref(),
-        actor: &actor,
-        harness: Some(&hname),
-        base: &base,
-        verify: &env.user.check.verify,
+    let undo = |store: &mut trk_core::Store, why: &str| {
+        if !a.dry_run {
+            let _ = store.write(&actor, false, |c| c.unclaim(&id, false, Some(why)));
+        }
     };
-    let prompts =
-        trk_agent::prompt::render_prompts(&resolved.config, &input, !profile.server_instructions)?;
-    let mut trk_env = BTreeMap::new();
-    trk_env.insert("TRK_DIR".to_string(), env.dir_env());
-    if let Some(user_dir) = &env.config.user_path {
-        trk_env.insert(
-            "TRK_USER_DIR".to_string(),
-            user_dir.to_string_lossy().into_owned(),
-        );
-    }
-    let cwd_s = cwd.to_string_lossy().to_string();
-    let spec = harness::build(LaunchInput {
-        issue: &id,
-        agent: &agent,
-        harness: &hname,
-        profile: &profile,
-        model: a.model.as_deref(),
-        actor: &actor,
-        on_behalf_of: Some(&human),
-        terminal: &terminal,
-        cwd: &cwd_s,
-        worktree: wt_str.as_deref(),
-        session_dir: &session_dir.to_string_lossy(),
-        trk_bin: &trk_bin(),
-        trk_env,
-        briefing: prompts.briefing,
-        instructions: prompts.instructions,
-        tools: tools.iter().map(|t| t.name.clone()).collect(),
-    })?;
-    let mut spec_json = serde_json::to_value(&spec)?;
-    spec_json["type"] = json!(routing.issue_type);
-    spec_json["routing"] = json!(routing);
-    spec_json["templates"] = serde_json::to_value(prompts.sources)?;
-    if a.dry_run {
-        return Ok(Out::Data(spec_json));
-    }
 
-    // Files the harness reads.
-    for (path, content) in &spec.files {
-        let p = PathBuf::from(path);
-        if let Some(d) = p.parent() {
-            std::fs::create_dir_all(d)?;
+    // 5. Render the launch spec and write the files the harness reads.
+    let cwd_s = cwd.to_string_lossy().to_string();
+    let (spec, spec_json) = (|| -> Result<_> {
+        let input = trk_agent::prompt::PromptInput {
+            issue: &issue_now,
+            project_root: &env.root,
+            config: &env.user,
+            issue_type: &routing.issue_type,
+            type_description: &routing.description,
+            agent: &agent,
+            tools: &tools,
+            worktree: wt_str.as_deref(),
+            actor: &actor,
+            harness: Some(&hname),
+            base: &base,
+            verify: &env.user.check.verify,
+        };
+        let prompts = trk_agent::prompt::render_prompts(
+            &resolved.config,
+            &input,
+            !profile.server_instructions,
+        )?;
+        let mut trk_env = BTreeMap::new();
+        trk_env.insert("TRK_DIR".to_string(), env.dir_env());
+        if let Some(user_dir) = &env.config.user_path {
+            trk_env.insert(
+                "TRK_USER_DIR".to_string(),
+                user_dir.to_string_lossy().into_owned(),
+            );
         }
-        std::fs::write(&p, content)?;
-        if checkout.is_some()
-            && let Ok(rel) = p.strip_prefix(&cwd)
-        {
-            crate::env::git_exclude(&cwd, &format!("/{}", rel.to_string_lossy()));
+        let spec = harness::build(LaunchInput {
+            issue: &id,
+            agent: &agent,
+            harness: &hname,
+            profile: &profile,
+            model: a.model.as_deref(),
+            actor: &actor,
+            on_behalf_of: Some(&human),
+            terminal: &terminal,
+            cwd: &cwd_s,
+            worktree: wt_str.as_deref(),
+            session_dir: &session_dir.to_string_lossy(),
+            trk_bin: &trk_bin(),
+            trk_env,
+            briefing: prompts.briefing,
+            instructions: prompts.instructions,
+            tools: tools.iter().map(|t| t.name.clone()).collect(),
+        })?;
+        let mut spec_json = serde_json::to_value(&spec)?;
+        spec_json["type"] = json!(routing.issue_type);
+        spec_json["routing"] = json!(routing);
+        spec_json["templates"] = serde_json::to_value(prompts.sources)?;
+        if !a.dry_run {
+            for (path, content) in &spec.files {
+                let p = PathBuf::from(path);
+                if let Some(d) = p.parent() {
+                    std::fs::create_dir_all(d)?;
+                }
+                std::fs::write(&p, content)?;
+                if checkout.is_some()
+                    && let Ok(rel) = p.strip_prefix(&cwd)
+                {
+                    crate::env::git_exclude(&cwd, &format!("/{}", rel.to_string_lossy()));
+                }
+            }
         }
-    }
-    if a.print {
+        Ok((spec, spec_json))
+    })()
+    .inspect_err(|error| undo(&mut store, &format!("launch failed: {error}")))?;
+    if a.dry_run || a.print {
         return Ok(Out::Data(spec_json));
     }
 
     // 6. Start.
-    let undo = |store: &mut trk_core::Store, why: &str| {
-        let _ = store.write(&actor, false, |c| c.unclaim(&id, false, Some(why)));
-    };
     if a.fg {
         let st = Command::new("sh")
             .arg("-c")
             .arg(&spec.shell_command)
-            .status()?;
+            .status()
+            .inspect_err(|error| undo(&mut store, &format!("launch failed: {error}")))?;
         return Ok(Out::Text(
             format!(
                 "{} exited ({}). Its claim stays until the lease expires or `trk reap`.",

@@ -1457,6 +1457,40 @@ fn run_without_id_selects_ready_work_by_priority_and_age() {
 }
 
 #[test]
+fn run_releases_claim_when_briefing_template_is_broken() {
+    let e = Env::new();
+    let id = e.create(&["Retry after fixing the briefing"]);
+    let template = e.trk_dir().join("prompts/briefing.md.j2");
+    let original = std::fs::read_to_string(&template).unwrap();
+    std::fs::write(&template, "{% if %}").unwrap();
+
+    let error = e.err(
+        &["run", &id, "--harness", "omp", "--fg"],
+        4,
+        "config_invalid",
+    );
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("prompts/briefing.md.j2"),
+        "{error:#}"
+    );
+    let issue = e.ok(&["show", &id]);
+    assert_eq!(issue["state"], "open");
+    assert!(issue["claim"].is_null());
+    assert_eq!(issue["derived"]["ready"], true);
+    assert_eq!(
+        issue["notes"].as_array().unwrap().last().unwrap()["body"],
+        format!("launch failed: {}", error["message"].as_str().unwrap())
+    );
+    assert_eq!(e.ok(&["ready"])[0]["id"], id);
+
+    std::fs::write(&template, original).unwrap();
+    assert_eq!(e.ok(&["run", "--harness", "omp", "--print"])["issue"], id);
+}
+
+#[test]
 fn agent_preview_and_run_dry_run() {
     let e = Env::new();
     let list = e.ok(&["agent", "list"]);
