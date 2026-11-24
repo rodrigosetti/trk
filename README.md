@@ -943,7 +943,7 @@ project of the working directory, so each project needs its own `trk check --wat
   `trk check` using the seed merge recipe. Failed-check wake and `trk send`
   acknowledgements were verified. `read-only` and `none` were also exercised live.
 - **Unverified harness profiles**: the Codex, OpenCode and pi profiles were not run live.
-- **Session liveness** comes from the local claim's terminal via its pinned launcher's `exists` operation or Herdr driver (legacy `alive` is still supported).
+- **Session liveness** comes from the local claim's terminal via its pinned launcher's `exists` operation or Herdr driver.
   MCP pid, host and exit metadata in `actor.meta` report MCP status separately, not session death.
 - **`trk check` lock**: a row holding the pid and host of the running pass. A holder whose process
   is gone on this machine is replaced; a holder on another host is never replaced automatically.

@@ -53,19 +53,11 @@ fn launch(
 }
 
 #[test]
-fn unchanged_seed_profiles_preserve_complete_legacy_launch_specs() {
-    let mut current = harness::profiles(&seed_config()).unwrap();
-    // Claude's explicit permissions intentionally replace its legacy defaults.
-    current.remove("claude-code");
-    let fixture: toml::Table =
-        toml::from_str(include_str!("fixtures/harness-legacy.toml")).unwrap();
-    let mut legacy = seed_config();
-    legacy.harness = fixture["harness"].clone().try_into().unwrap();
-    let legacy = harness::profiles(&legacy).unwrap();
-    assert_eq!(current.len(), 4);
+fn seed_profiles_build_complete_launch_specs() {
+    let current = harness::profiles(&seed_config()).unwrap();
     assert_eq!(
-        current.keys().collect::<Vec<_>>(),
-        legacy.keys().collect::<Vec<_>>()
+        current.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["claude-code", "codex", "omp", "opencode", "pi"]
     );
     for (level, configured) in ["default", "read-only", "none"]
         .into_iter()
@@ -89,13 +81,25 @@ fn unchanged_seed_profiles_preserve_complete_legacy_launch_specs() {
                 continue;
             }
             let actual = launch(profile, name, &agent).unwrap();
-            let expected = launch(&legacy[name], name, &agent).unwrap();
-            // Compare strings too: embedded MCP JSON key order and shell quoting matter.
-            assert_eq!(
-                serde_json::to_string(&actual).unwrap(),
-                serde_json::to_string(&expected).unwrap(),
-                "{name}, {level}"
-            );
+            let command = match name.as_str() {
+                "claude-code" => "claude",
+                name => name,
+            };
+            assert_eq!(actual.argv[0], command);
+            if configured {
+                assert!(
+                    actual
+                        .argv
+                        .windows(2)
+                        .any(|args| args == ["--model", "chosen-model"])
+                );
+                assert!(
+                    actual
+                        .argv
+                        .windows(2)
+                        .any(|args| args == ["--extra", "proj-abc"])
+                );
+            }
             let mcp = r#"{"mcpServers":{"trk":{"command":"/bin/trk","args":["mcp","--issue","proj-abc","--actor","agent:reviewer:session","--agent","reviewer"],"env":{"TRK_DIR":"/project/.trk"}}}}"#;
             if name == "omp" {
                 assert_eq!(actual.files["/work/proj-abc/.omp/mcp.json"], mcp);
