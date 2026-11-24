@@ -23,8 +23,9 @@ command; `trk check` runs those commands until each one passes, fails, or says "
 ./install.sh
 ```
 
-This builds a release binary and installs it to `~/.cargo/bin/trk`. Nothing else is written:
-trk keeps no global database or config. Set it up per project:
+This builds a release binary and installs it to `~/.cargo/bin/trk`. Nothing else is written.
+trk keeps no global database; an optional user configuration can be shared across projects.
+Set up each project:
 
 ```sh
 cd ~/src/orch && trk install
@@ -532,7 +533,7 @@ trk herdr uninstall              # remove the mod and layouts unless you edited 
 
 ## Configuration
 
-Everything trk keeps for a project is in `.trk/` at its root, written by `trk install`:
+Project state stays in `.trk/` at its root, written by `trk install`:
 
 ```
 .trk/                     (found from the working directory; $TRK_DIR / --dir override it)
@@ -548,11 +549,31 @@ Everything trk keeps for a project is in `.trk/` at its root, written by `trk in
   checks/                 logs of running checks
 ```
 
-`config.toml` is explicit: `trk install` writes the settings. Missing settings are errors
-except for optional `[launcher] alive`, compatibility defaults such as `[check] max_wakes`,
-`gc`, `gc_grace`, and the detected `[run] base`.
-`[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory name,
-or `trk install --prefix NAME`. Changing it later only affects new issues.
+Settings resolve in order: **built-in defaults < user < project**. The optional user
+directory is `$TRK_USER_DIR`, otherwise `$XDG_CONFIG_HOME/trk`, otherwise `~/.config/trk`.
+It has the same configuration layout: `config.toml`, `agents/`, `types/`, and `prompts/`;
+no database or session state is stored there. A missing user directory changes nothing.
+`trk whoami` shows the resolved user directory.
+
+`config.toml` merges per key: tables merge recursively, arrays and scalar values replace
+the lower layer. Named `[harness.<name>]` profiles and `[views.<name>]` views therefore
+inherit unspecified keys. Project `[user]` identity and `[issues] prefix` take precedence;
+when absent they can inherit from the user layer. Built-in defaults fill absent settings,
+but do not supply agent/type/template files or harness profiles.
+`[issues] prefix` names new issues (`<prefix>-<base32>`); normal installation writes the
+directory name, or `trk install --prefix NAME`. Changing it later only affects new issues.
+
+Agents, types, and prompts resolve by filename, **project first, then user**, without
+merging file contents. Template `{% include "prompts/_rules.md.j2" %}` uses the same
+search order, even when the including template comes from the other layer.
+The MCP server uses these same layers when started with `TRK_DIR`.
+
+Normal `trk install` still writes complete project settings and all seed files.
+Those project copies override shared settings; remove individual keys/files to inherit.
+For a new project using shared configuration, use `trk install --minimal`: it writes
+only project identity, issue prefix and base branch, plus the database, ignore file and
+CLI skill. Populate the user directory with the shared profiles, agents, types and prompts
+first. Minimal installation does not delete existing project resources.
 
 `[run] base` selects the base branch, for example:
 
@@ -574,8 +595,19 @@ and briefing prompt templates can use `{{ base }}`.
 
 There is no schema to apply: states, the close reasons (`done`, `abandoned`), priorities and the
 one dependency kind (`blocks`) are fixed. Agents and prompts are read when a session starts;
-`trk agent check` validates them. `trk show` and `trk run --dry-run` print which type and agent
-files a run would use.
+`trk agent check` validates them. `trk agents`, `trk agent check`, and `trk run --dry-run`
+report the project/user origins of agents, types and templates.
+
+Set the default harness preference once in either layer's `config.toml`:
+
+```toml
+[harness]
+prefer = ["omp", "claude-code"]
+```
+
+Agents inherit this list unless their own `[harness] prefer` is present. An explicit
+`prefer = []` disables the inherited ordering; `--harness` overrides selection.
+Seed agents inherit the preference from the project config rather than repeating it.
 
 Agents can choose models and add arguments without duplicating harness profiles:
 
@@ -701,9 +733,8 @@ Legacy `{mcp_json}`, `{opencode_json}`, `{trk_args_toml}`, `{trk_env_toml}` and
 `trk agent check` warns when a profile uses deprecated placeholders.
 Launcher templates retain their existing single-brace syntax.
 
-There is no global configuration and no cross-project view: `trk list`, `trk runs` and
-`trk check --watch` act on the project of the working directory, so each project needs its own
-`trk check --watch`.
+There is no cross-project view: `trk list`, `trk runs` and `trk check --watch` act on the
+project of the working directory, so each project needs its own `trk check --watch`.
 
 ## Layout
 

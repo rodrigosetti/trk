@@ -77,6 +77,9 @@ enum Cmd {
         /// Prefix of new issue ids (default: from the directory name)
         #[arg(long)]
         prefix: Option<String>,
+        /// Write only project identity and base; use shared user configuration
+        #[arg(long)]
+        minimal: bool,
     },
     /// Query issues; `@view` runs a saved view
     List {
@@ -524,8 +527,13 @@ fn show_one(env: &Env, store: &trk_core::Store, id: &str) -> Result<Out> {
 }
 
 fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
-    if let Cmd::Install { force, prefix } = cmd {
-        return install(g, force, prefix);
+    if let Cmd::Install {
+        force,
+        prefix,
+        minimal,
+    } = cmd
+    {
+        return install(g, force, prefix, minimal);
     }
     // The mod is machine-wide: installing and removing it need no project.
     let cmd = match cmd {
@@ -910,7 +918,7 @@ fn default_prefix(root: &std::path::Path) -> String {
 /// `trk install`: `.trk/` with the default config and the database, plus the
 /// agent skill. An installed Herdr mod is refreshed. Existing config files
 /// are kept unless `force`.
-fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
+fn install(g: &Global, force: bool, prefix: Option<String>, minimal: bool) -> Result<Out> {
     let loc = env::Location::find(g);
     let dir = loc.dir.clone();
     let root = loc.root.clone();
@@ -933,24 +941,26 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
         .map(String::from)
         .or_else(|| env::git(&root, &["config", "user.email"]).filter(|e| !e.is_empty()));
     let prefix = prefix.unwrap_or_else(|| default_prefix(&root));
-    let config_toml = seed::CONFIG_TOML
-        .replace(
-            "{{EMAIL_LINE}}",
-            &match &email {
-                Some(e) => format!("email = \"{e}\""),
-                None => "# email = \"you@example.com\"".to_string(),
-            },
-        )
-        .replace("{{PREFIX}}", &prefix)
-        .replace(
-            "{{BASE}}",
-            &toml::Value::String(env::detect_base(&root)).to_string(),
-        );
+    let email_line = match email {
+        Some(email) => format!("email = {}", toml::Value::String(email)),
+        None => "# email = \"you@example.com\"".to_string(),
+    };
+    let base = toml::Value::String(env::detect_base(&root)).to_string();
+    let config_toml = if minimal {
+        format!("[user]\n{email_line}\n\n[issues]\nprefix = \"{prefix}\"\n\n[run]\nbase = {base}\n")
+    } else {
+        seed::CONFIG_TOML
+            .replace("{{EMAIL_LINE}}", &email_line)
+            .replace("{{PREFIX}}", &prefix)
+            .replace("{{BASE}}", &base)
+    };
     let mut files: Vec<(&str, String)> = vec![
         (".gitignore", seed::GITIGNORE.to_string()),
         ("config.toml", config_toml),
     ];
-    files.extend(seed::FILES.iter().map(|(p, c)| (*p, c.to_string())));
+    if !minimal {
+        files.extend(seed::FILES.iter().map(|(p, c)| (*p, c.to_string())));
+    }
     let mut written = vec![];
     let mut kept = vec![];
     // Kept files whose content is not the default: the user's edits, or
@@ -1201,6 +1211,7 @@ fn whoami(env: &Env) -> Result<Out> {
         "actor": env.actor,
         "root": env.root,
         "dir": env.dir,
+        "user_dir": env.config.user_path,
         "db": env.db,
         "prefix": env.user.issues.prefix,
         "worktrees": env.worktrees_dir(),
@@ -1248,6 +1259,11 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             let mut text = String::new();
             for resolved in agents.values() {
                 let a = &resolved.agent;
+                let source = resolved.config.resolve(format!("agents/{}.toml", a.name));
+                let source_layer = resolved.config.source_layer(&source);
+                let templates =
+                    trk_agent::prompt::agent_template_sources(&resolved.config, a, &env.user)?;
+                let agent_types: Vec<_> = types.values().filter(|r| r.agent == a.name).collect();
                 let models: BTreeMap<_, _> = profiles
                     .iter()
                     .map(|(name, profile)| (name, profile.resolve_model(a, name, None)))
@@ -1262,20 +1278,37 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                     .map(|t| t.name)
                     .collect();
                 text.push_str(&format!(
-                    "{:<12} {}\n             harness: {}  builtin_tools: {}\n             model: {}\n             tools: {}\n",
+                    "{:<12} {}\n             harness: {}  builtin_tools: {}\n             model: {}\n             tools: {}\n             source: {} ({})\n",
                     a.name,
                     a.description.clone().unwrap_or_default(),
-                    a.harness.prefer.join(" > "),
+                    a.harness.prefer.as_deref().unwrap_or_default().join(" > "),
                     a.harness.builtin_tools,
                     model_text,
                     tools.join(", "),
+                    source.display(),
+                    source_layer,
                 ));
+                for route in &agent_types {
+                    text.push_str(&format!(
+                        "             type {}: {} ({})\n",
+                        route.issue_type,
+                        route.type_source.display(),
+                        route.type_layer,
+                    ));
+                }
+                for (name, template) in &templates {
+                    text.push_str(&format!(
+                        "             template {name}: {} ({})\n",
+                        template.source.display(),
+                        template.layer,
+                    ));
+                }
                 items.push(json!({"name": a.name, "description": a.description,
                                   "tools": tools,
                                   "model": a.harness.model, "models": models, "args": a.harness.args,
-                                  "source": resolved.config.path.join("agents").join(format!("{}.toml", a.name)),
-                                  "prompt_directory": resolved.config.path,
-                                  "types": types.values().filter(|r| r.agent == a.name).collect::<Vec<_>>(),
+                                  "source": source, "source_layer": source_layer,
+                                  "prompt_directory": resolved.config.path, "templates": templates,
+                                  "types": agent_types,
                                   "harness": a.harness.prefer, "builtin_tools": a.harness.builtin_tools}));
             }
             if text.is_empty() {
@@ -1284,9 +1317,9 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             Ok(Out::Text(text, Value::Array(items)))
         }
         AgentCmd::Check => {
-            let d = local_config().check(&env.user);
+            let cfg = local_config();
+            let d = cfg.check(&env.user);
             let errors = d.iter().filter(|x| x.level == Level::Error).count();
-            let data = json!({"ok": errors == 0, "diagnostics": d});
             if errors > 0 {
                 return Err(Error::new(
                     Code::ConfigInvalid,
@@ -1308,11 +1341,55 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                     ),
                 ));
             }
-            let text = if d.is_empty() {
+            let mut resources = json!({"agents": [], "types": [], "templates": {}});
+            let mut resource_text = String::new();
+            let mut templates = BTreeMap::new();
+            for resolved in cfg.agents()?.values() {
+                let source = resolved
+                    .config
+                    .resolve(format!("agents/{}.toml", resolved.agent.name));
+                let layer = resolved.config.source_layer(&source);
+                resources["agents"].as_array_mut().unwrap().push(json!({
+                    "name": resolved.agent.name, "source": source, "source_layer": layer,
+                }));
+                resource_text.push_str(&format!(
+                    "\nagent {}: {} ({layer})",
+                    resolved.agent.name,
+                    source.display(),
+                ));
+                templates.extend(trk_agent::prompt::agent_template_sources(
+                    &resolved.config,
+                    &resolved.agent,
+                    &env.user,
+                )?);
+            }
+            for route in cfg.types()?.values() {
+                resources["types"].as_array_mut().unwrap().push(json!({
+                    "name": route.issue_type, "source": route.type_source,
+                    "source_layer": route.type_layer,
+                }));
+                resource_text.push_str(&format!(
+                    "\ntype {}: {} ({})",
+                    route.issue_type,
+                    route.type_source.display(),
+                    route.type_layer,
+                ));
+            }
+            for (name, template) in &templates {
+                resource_text.push_str(&format!(
+                    "\ntemplate {name}: {} ({})",
+                    template.source.display(),
+                    template.layer,
+                ));
+            }
+            resources["templates"] = serde_json::to_value(templates)?;
+            let data = json!({"ok": errors == 0, "diagnostics": d, "resources": resources});
+            let mut text = if d.is_empty() {
                 "agents, templates and harness profiles are fine".to_string()
             } else {
                 diag_text(&d)
             };
+            text.push_str(&resource_text);
             Ok(Out::Text(text, data))
         }
         AgentCmd::Preview { agent, issue } => {

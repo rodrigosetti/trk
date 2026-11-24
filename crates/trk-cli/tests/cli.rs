@@ -26,6 +26,9 @@ mod base;
 #[path = "cli/verify.rs"]
 mod verify;
 
+#[path = "cli/user_config.rs"]
+mod user_config;
+
 fn local_host() -> String {
     let output = StdCommand::new("hostname").output().unwrap();
     assert!(output.status.success());
@@ -38,6 +41,10 @@ struct Env {
 
 impl Env {
     fn new() -> Env {
+        Self::with_install(false)
+    }
+
+    fn with_install(minimal: bool) -> Env {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -66,7 +73,11 @@ impl Env {
             );
         }
         let e = Env { dir };
-        e.ok(&["install", "--prefix", "orch"]);
+        if minimal {
+            e.ok(&["install", "--minimal", "--prefix", "orch"]);
+        } else {
+            e.ok(&["install", "--prefix", "orch"]);
+        }
         e
     }
 
@@ -79,10 +90,15 @@ impl Env {
         self.repo().join(".trk")
     }
 
+    fn user_dir(&self) -> PathBuf {
+        self.dir.path().join("user-config")
+    }
+
     fn cmd(&self) -> Command {
         let mut c = Command::cargo_bin("trk").unwrap();
         c.current_dir(self.repo())
             // No ~/.claude here: the skill's Claude Code link is opt-in per test.
+            .env("TRK_USER_DIR", self.user_dir())
             .env("HOME", self.dir.path().join("home"))
             .env("TRK_ACTOR", "human:alice@example.com")
             .env("TRK_NOW", "2026-11-20T10:00:00Z")
@@ -619,6 +635,7 @@ impl CheckRunner {
         let child = command
             .current_dir(e.repo())
             .env("HOME", e.dir.path().join("home"))
+            .env("TRK_USER_DIR", e.user_dir())
             .env("TRK_ACTOR", "human:alice@example.com")
             .env("TRK_NOW", "2026-11-20T10:00:00Z")
             .env_remove("TRK_FORMAT")
@@ -939,6 +956,7 @@ fn commands_require_an_installed_project() {
             .unwrap()
             .current_dir(&bare)
             .env("HOME", dir.path().join("home"))
+            .env("TRK_USER_DIR", dir.path().join("user-config"))
             .env("TRK_ACTOR", "human:alice@example.com")
             .env_remove("TRK_DIR")
             .env_remove("TRK_FORMAT")
@@ -988,6 +1006,7 @@ fn commands_require_an_installed_project() {
         let out = Command::cargo_bin("trk")
             .unwrap()
             .current_dir(&bare)
+            .env("TRK_USER_DIR", dir.path().join("user-config"))
             .args(args)
             .output()
             .unwrap();
@@ -1690,9 +1709,9 @@ fn live_mcp_refuses_a_newer_database_without_mutating_the_issue() {
     };
     let server = trk_mcp::TrkServer::new(trk_mcp::McpArgs {
         db: path.clone(),
-        config: trk_core::config::ConfigDir { path: e.trk_dir() },
+        config: trk_core::config::ConfigDir::with_user_dir(e.trk_dir(), None),
         project_root: e.repo(),
-        user: trk_core::config::ConfigDir::new(e.trk_dir())
+        user: trk_core::config::ConfigDir::with_user_dir(e.trk_dir(), None)
             .user_config()
             .unwrap(),
         opts: opts.clone(),
@@ -1821,6 +1840,7 @@ fn mcp_server_over_stdio() {
         // As the harness starts it: from anywhere, with TRK_DIR.
         .env("TRK_DIR", e.trk_dir())
         .env("HOME", e.dir.path().join("home"))
+        .env("TRK_USER_DIR", e.user_dir())
         .env("TRK_NOW", "2026-11-20T10:00:00Z")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

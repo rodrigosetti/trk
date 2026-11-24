@@ -11,7 +11,7 @@ fn seed() -> (tempfile::TempDir, ConfigDir) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
     }
-    let config = ConfigDir::new(dir.path());
+    let config = ConfigDir::with_user_dir(dir.path(), None);
     (dir, config)
 }
 
@@ -76,7 +76,7 @@ fn a_broken_agent_file_does_not_stop_the_others() {
         "name = \"old\"\n[trk_tools.composed.x]\ndescription = \"gone\"\n",
     )
     .unwrap();
-    let cfg = ConfigDir::new(dir.path());
+    let cfg = ConfigDir::with_user_dir(dir.path(), None);
     assert_eq!(load_agent(&cfg, "good").unwrap().name, "good");
     assert!(load_agent(&cfg, "old").is_err());
     let d = trk_agent::check::check_agents(&cfg, &UserConfig::default());

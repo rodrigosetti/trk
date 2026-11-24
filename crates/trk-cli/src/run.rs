@@ -303,15 +303,16 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         base: &base,
         verify: &env.user.check.verify,
     };
-    let instructions = trk_agent::prompt::instructions(&resolved.config, &input)?;
-    let fold = if profile.server_instructions {
-        None
-    } else {
-        Some(instructions.as_str())
-    };
-    let briefing = trk_agent::prompt::briefing(&resolved.config, &input, fold)?;
+    let prompts =
+        trk_agent::prompt::render_prompts(&resolved.config, &input, !profile.server_instructions)?;
     let mut trk_env = BTreeMap::new();
     trk_env.insert("TRK_DIR".to_string(), env.dir_env());
+    if let Some(user_dir) = &env.config.user_path {
+        trk_env.insert(
+            "TRK_USER_DIR".to_string(),
+            user_dir.to_string_lossy().into_owned(),
+        );
+    }
     let cwd_s = cwd.to_string_lossy().to_string();
     let spec = harness::build(LaunchInput {
         issue: &id,
@@ -327,13 +328,14 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         session_dir: &session_dir.to_string_lossy(),
         trk_bin: &trk_bin(),
         trk_env,
-        briefing,
-        instructions,
+        briefing: prompts.briefing,
+        instructions: prompts.instructions,
         tools: tools.iter().map(|t| t.name.clone()).collect(),
     })?;
     let mut spec_json = serde_json::to_value(&spec)?;
     spec_json["type"] = json!(routing.issue_type);
     spec_json["routing"] = json!(routing);
+    spec_json["templates"] = serde_json::to_value(prompts.sources)?;
     if a.dry_run {
         return Ok(Out::Data(spec_json));
     }

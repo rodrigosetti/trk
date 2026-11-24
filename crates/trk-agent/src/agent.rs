@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use trk_core::config::ConfigDir;
+use trk_core::config::{ConfigDir, UserConfig};
 use trk_core::error::{Code, Error, Result};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -57,8 +57,9 @@ pub struct McpServer {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentHarness {
-    #[serde(default)]
-    pub prefer: Vec<String>,
+    /// Omitted inherits `[harness].prefer`; an explicit empty list disables it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer: Option<Vec<String>>,
     #[serde(default = "default_level")]
     pub builtin_tools: String,
     /// One model for every harness, or a model per harness.
@@ -72,7 +73,7 @@ pub struct AgentHarness {
 impl Default for AgentHarness {
     fn default() -> Self {
         AgentHarness {
-            prefer: vec![],
+            prefer: None,
             builtin_tools: default_level(),
             model: None,
             args: BTreeMap::new(),
@@ -113,11 +114,28 @@ pub fn load_agent_file(path: &Path) -> Result<AgentDef> {
         .map_err(|e| Error::new(Code::ConfigInvalid, format!("{}: {e}", path.display())))
 }
 
+pub(crate) fn agent_config(cfg: &ConfigDir) -> Result<UserConfig> {
+    if cfg.exists() {
+        cfg.user_config()
+    } else {
+        Ok(UserConfig::default())
+    }
+}
+
+pub(crate) fn apply_preferences(agent: &mut AgentDef, user: &UserConfig) -> Result<()> {
+    if agent.harness.prefer.is_none() {
+        agent.harness.prefer = Some(crate::harness::default_preferences(user)?);
+    }
+    Ok(())
+}
+
 /// All agents in the config dir, keyed by name.
 pub fn load_agents(cfg: &ConfigDir) -> Result<BTreeMap<String, AgentDef>> {
+    let user = agent_config(cfg)?;
     let mut out = BTreeMap::new();
     for p in cfg.files_in("agents", "toml") {
-        let a = load_agent_file(&p)?;
+        let mut a = load_agent_file(&p)?;
+        apply_preferences(&mut a, &user)?;
         out.insert(a.name.clone(), a);
     }
     Ok(out)
@@ -125,10 +143,11 @@ pub fn load_agents(cfg: &ConfigDir) -> Result<BTreeMap<String, AgentDef>> {
 
 pub fn load_agent(cfg: &ConfigDir, name: &str) -> Result<AgentDef> {
     // The agent's own file first, so a broken neighbour cannot stop a run.
-    let own = cfg.path.join("agents").join(format!("{name}.toml"));
+    let own = cfg.resolve(Path::new("agents").join(format!("{name}.toml")));
     if own.is_file() {
-        let a = load_agent_file(&own)?;
+        let mut a = load_agent_file(&own)?;
         if a.name == name {
+            apply_preferences(&mut a, &agent_config(cfg)?)?;
             return Ok(a);
         }
     }

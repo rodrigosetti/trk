@@ -54,7 +54,7 @@ impl Env {
     fn server(&self, actor: &str) -> TrkServer {
         TrkServer::new(McpArgs {
             db: self.dir.path().join("trk.db"),
-            config: ConfigDir::new(self.dir.path().join("seed")),
+            config: ConfigDir::with_user_dir(self.dir.path().join("seed"), None),
             project_root: self.dir.path().to_path_buf(),
             user: trk_core::config::UserConfig::default(),
             opts: self.opts.clone(),

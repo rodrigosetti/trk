@@ -2,8 +2,11 @@
 //! config dir and are named by their path relative to it, so templates can
 //! `{% include "prompts/_rules.md.j2" %}`.
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
 use serde_json::{Value, json};
 use trk_core::config::{ConfigDir, UserConfig};
 use trk_core::error::{Code, Error, Result};
@@ -60,9 +63,53 @@ impl PromptInput<'_> {
     }
 }
 
-pub fn render_template(cfg: &ConfigDir, path: &str, ctx: &Value) -> Result<String> {
+#[derive(Debug, Clone, Serialize)]
+pub struct TemplateSource {
+    pub source: PathBuf,
+    pub layer: &'static str,
+}
+
+type Sources = Arc<Mutex<BTreeMap<String, TemplateSource>>>;
+
+fn environment(cfg: &ConfigDir, sources: Option<Sources>) -> minijinja::Environment<'static> {
     let mut env = minijinja::Environment::new();
-    env.set_loader(minijinja::path_loader(&cfg.path));
+    let project = minijinja::path_loader(&cfg.path);
+    let user = cfg.user_path.as_ref().map(minijinja::path_loader);
+    let source_config = sources.as_ref().map(|_| cfg.clone());
+    env.set_loader(move |name| {
+        let (template, from_user) = match project(name)? {
+            Some(template) => (Some(template), false),
+            None => match &user {
+                Some(load) => (load(name)?, true),
+                None => (None, false),
+            },
+        };
+        if template.is_some()
+            && let (Some(sources), Some(cfg)) = (&sources, &source_config)
+        {
+            let (root, layer) = if from_user {
+                (cfg.user_path.as_ref().unwrap(), "user")
+            } else {
+                (&cfg.path, "project")
+            };
+            sources.lock().unwrap().insert(
+                name.to_string(),
+                TemplateSource {
+                    layer,
+                    source: root.join(name),
+                },
+            );
+        }
+        Ok(template)
+    });
+    env
+}
+
+pub fn render_template(cfg: &ConfigDir, path: &str, ctx: &Value) -> Result<String> {
+    render(&environment(cfg, None), path, ctx)
+}
+
+fn render(env: &minijinja::Environment<'_>, path: &str, ctx: &Value) -> Result<String> {
     let tmpl = env
         .get_template(path)
         .map_err(|e| Error::new(Code::ConfigInvalid, format!("template {path}: {e}")))?;
@@ -78,12 +125,77 @@ pub fn render_template(cfg: &ConfigDir, path: &str, ctx: &Value) -> Result<Strin
         })
 }
 
+pub struct RenderedPrompts {
+    pub instructions: String,
+    pub briefing: String,
+    pub sources: BTreeMap<String, TemplateSource>,
+}
+
+/// Render once while recording the templates actually used, including includes,
+/// imports and inheritance. Folding must match the selected harness.
+pub fn render_prompts(
+    cfg: &ConfigDir,
+    input: &PromptInput,
+    fold_instructions: bool,
+) -> Result<RenderedPrompts> {
+    let sources = Sources::default();
+    let env = environment(cfg, Some(sources.clone()));
+    let instructions = render_instructions(&env, input)?;
+    let fold = fold_instructions.then_some(instructions.as_str());
+    let briefing = render_briefing(&env, input, fold)?;
+    let sources = std::mem::take(&mut *sources.lock().unwrap());
+    Ok(RenderedPrompts {
+        instructions,
+        briefing,
+        sources,
+    })
+}
+
+/// Inspect with instructions folded, as in the representative agent check context.
+pub fn template_sources(
+    cfg: &ConfigDir,
+    input: &PromptInput,
+) -> Result<BTreeMap<String, TemplateSource>> {
+    Ok(render_prompts(cfg, input, true)?.sources)
+}
+
+/// Inspect an agent's templates using the same representative context as `agent check`.
+pub fn agent_template_sources(
+    cfg: &ConfigDir,
+    agent: &AgentDef,
+    user: &UserConfig,
+) -> Result<BTreeMap<String, TemplateSource>> {
+    let issue = crate::check::sample_issue();
+    let tools = crate::tools::agent_tools(agent, &user.check);
+    template_sources(
+        cfg,
+        &PromptInput {
+            issue: &issue,
+            project_root: cfg.path.parent().unwrap_or(&cfg.path),
+            config: user,
+            issue_type: "code-change",
+            type_description: "Sample type description",
+            agent,
+            tools: &tools,
+            worktree: None,
+            base: user.run.base.as_deref().unwrap_or("main"),
+            verify: &user.check.verify,
+            actor: "agent:x:1",
+            harness: None,
+        },
+    )
+}
+
 const DEFAULT_INSTRUCTIONS: &str = "You are working on one tracked issue. Use the trk tools to read it (get_task) and record progress (add_note). End the session with exactly one of: close (nothing more has to happen), wait (it is done once something outside this session happens), or hand_back (you cannot finish).";
 
 /// Rules for the whole session: the MCP server's `instructions`.
 pub fn instructions(cfg: &ConfigDir, input: &PromptInput) -> Result<String> {
+    render_instructions(&environment(cfg, None), input)
+}
+
+fn render_instructions(env: &minijinja::Environment<'_>, input: &PromptInput) -> Result<String> {
     match &input.agent.instructions {
-        Some(p) => render_template(cfg, p, &input.context(None)),
+        Some(p) => render(env, p, &input.context(None)),
         None => Ok(DEFAULT_INSTRUCTIONS.to_string()),
     }
 }
@@ -91,8 +203,16 @@ pub fn instructions(cfg: &ConfigDir, input: &PromptInput) -> Result<String> {
 /// The task: the initial prompt. With `fold`, the instructions are appended
 /// (for harnesses that ignore MCP server instructions).
 pub fn briefing(cfg: &ConfigDir, input: &PromptInput, fold: Option<&str>) -> Result<String> {
+    render_briefing(&environment(cfg, None), input, fold)
+}
+
+fn render_briefing(
+    env: &minijinja::Environment<'_>,
+    input: &PromptInput,
+    fold: Option<&str>,
+) -> Result<String> {
     match &input.agent.briefing {
-        Some(p) => render_template(cfg, p, &input.context(fold)),
+        Some(p) => render(env, p, &input.context(fold)),
         None => {
             let issue = input.issue;
             let mut s = format!(

@@ -1,5 +1,5 @@
 //! Runtime type routing: an issue's type selects the agent that works on it.
-//! Types, agents and prompts all come from the project's `.trk/` directory.
+//! Types, agents and prompts resolve from project configuration over user defaults.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use trk_core::config::{ConfigDir, Diagnostic, UserConfig};
 use trk_core::error::{Code, Error, Result};
 
-use crate::agent::{AgentDef, load_agent_file};
+use crate::agent::{AgentDef, agent_config, apply_preferences, load_agent_file};
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +34,8 @@ pub struct Routing {
     pub worktree: bool,
     pub type_source: PathBuf,
     pub agent_source: PathBuf,
+    pub type_layer: &'static str,
+    pub agent_layer: &'static str,
     pub prompt_directory: PathBuf,
 }
 
@@ -69,9 +71,7 @@ impl RoutingConfig {
         valid_name(issue_type)?;
         let path = self
             .config
-            .path
-            .join("types")
-            .join(format!("{issue_type}.toml"));
+            .resolve(PathBuf::from("types").join(format!("{issue_type}.toml")));
         if !path.try_exists()? {
             return Err(
                 Error::new(Code::NotFound, format!("unknown type '{issue_type}'"))
@@ -105,9 +105,7 @@ impl RoutingConfig {
         valid_name(&agent)?;
         let agent_source = self
             .config
-            .path
-            .join("agents")
-            .join(format!("{agent}.toml"));
+            .resolve(PathBuf::from("agents").join(format!("{agent}.toml")));
         if !agent_source.is_file() {
             return Err(Error::new(
                 Code::NotFound,
@@ -121,6 +119,8 @@ impl RoutingConfig {
             agent,
             override_agent: override_agent.is_some(),
             worktree: def.worktree.unwrap_or(true),
+            type_layer: self.config.source_layer(&path),
+            agent_layer: self.config.source_layer(&agent_source),
             type_source: path,
             agent_source,
             prompt_directory: self.config.path.clone(),
@@ -128,7 +128,8 @@ impl RoutingConfig {
     }
 
     pub fn load(&self, routing: &Routing) -> Result<ResolvedAgent> {
-        let agent = load_agent_file(&routing.agent_source)?;
+        let mut agent = load_agent_file(&routing.agent_source)?;
+        apply_preferences(&mut agent, &agent_config(&self.config)?)?;
         if agent.name != routing.agent {
             return Err(Error::new(
                 Code::ConfigInvalid,
@@ -146,13 +147,15 @@ impl RoutingConfig {
     }
 
     pub fn agents(&self) -> Result<BTreeMap<String, ResolvedAgent>> {
+        let user = agent_config(&self.config)?;
         self.config
             .files_in("agents", "toml")
             .into_iter()
             .map(|path| {
                 let name = path.file_stem().unwrap().to_string_lossy().into_owned();
                 valid_name(&name)?;
-                let agent = load_agent_file(&path)?;
+                let mut agent = load_agent_file(&path)?;
+                apply_preferences(&mut agent, &user)?;
                 if agent.name != name {
                     return Err(Error::new(
                         Code::ConfigInvalid,

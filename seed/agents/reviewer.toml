@@ -6,5 +6,4 @@ briefing     = "prompts/briefing.md.j2"
 inbox        = true
 
 [harness]
-prefer        = ["omp", "claude-code"]
 builtin_tools = "read-only"

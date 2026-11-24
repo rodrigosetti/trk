@@ -18,5 +18,4 @@ inbox        = true
 # env     = { GITHUB_TOKEN = "${env:GITHUB_TOKEN}" }
 
 [harness]
-prefer        = ["omp", "claude-code"]   # first installed wins; `trk run --harness` overrides
 builtin_tools = "default"                # default | read-only | none

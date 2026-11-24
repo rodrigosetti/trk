@@ -1,5 +1,5 @@
-//! The project's `.trk/` directory and the settings in its `config.toml`.
-//! `trk install` writes every setting explicitly. New settings default in older configs.
+//! Project configuration over an optional user layer. `trk install` writes every
+//! setting explicitly; absent keys retain their built-in defaults.
 //!
 //! ```text
 //! config.toml      settings, launcher templates, harness profiles, views
@@ -18,6 +18,8 @@ use crate::error::{Code, Error, Result};
 #[derive(Debug, Clone)]
 pub struct ConfigDir {
     pub path: PathBuf,
+    /// Shared configuration and resources, independent of the project database.
+    pub user_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -53,6 +55,7 @@ impl Diagnostic {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default)]
 pub struct UserConfig {
     #[serde(default)]
     pub user: UserSection,
@@ -76,6 +79,7 @@ pub struct UserSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct IssuesSection {
     /// Prefix of new issue ids: `<prefix>-<base32>`.
     pub prefix: String,
@@ -90,6 +94,7 @@ impl Default for IssuesSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct ClaimsSection {
     /// Lease for agent claims, e.g. "30m".
     pub agent_lease: String,
@@ -109,6 +114,7 @@ fn default_lease() -> String {
 
 /// Settings for waiting checks and `trk check`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct CheckSection {
     /// How often a waiting issue is checked when it does not say, e.g. "5m".
     pub interval: String,
@@ -162,6 +168,7 @@ fn default_check_timeout() -> String {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct RunSection {
     /// Where `trk run` creates worktrees: absolute, `~/…`, or relative to the
     /// project root.
@@ -211,9 +218,58 @@ fn parse_toml<T: serde::de::DeserializeOwned>(path: &Path, text: &str) -> Result
         .map_err(|e| Error::new(Code::ConfigInvalid, format!("{}: {e}", path.display())))
 }
 
+/// The user layer is independent of project discovery, including for MCP sessions
+/// started with only `TRK_DIR`.
+pub fn user_dir() -> Option<PathBuf> {
+    let path = std::env::var_os("TRK_USER_DIR")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_CONFIG_HOME")
+                .filter(|p| !p.is_empty())
+                .map(|p| PathBuf::from(p).join("trk"))
+        })
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|p| !p.is_empty())
+                .map(|p| PathBuf::from(p).join(".config").join("trk"))
+        })?;
+    Some(if path.is_absolute() {
+        path
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(path)
+    } else {
+        path
+    })
+}
+
+fn merge(base: &mut toml::Value, overlay: toml::Value) {
+    match (base, overlay) {
+        (toml::Value::Table(base), toml::Value::Table(overlay)) => {
+            for (key, value) in overlay {
+                match base.get_mut(&key) {
+                    Some(existing) => merge(existing, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
+}
+
 impl ConfigDir {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        ConfigDir { path: path.into() }
+        Self::with_user_dir(path, user_dir())
+    }
+
+    /// Explicit layer selection, also useful for isolated consumers and tests.
+    pub fn with_user_dir(path: impl Into<PathBuf>, user_path: Option<PathBuf>) -> Self {
+        ConfigDir {
+            path: path.into(),
+            user_path,
+        }
     }
 
     pub fn exists(&self) -> bool {
@@ -229,22 +285,74 @@ impl ConfigDir {
             )
             .with_hint("run `trk install` in the project's root directory"));
         }
-        parse_toml(&p, &read(&p)?)
-    }
-
-    /// Files in a subdirectory with the given extension, sorted.
-    pub fn files_in(&self, sub: &str, ext: &str) -> Vec<PathBuf> {
-        let mut out = vec![];
-        if let Ok(rd) = std::fs::read_dir(self.path.join(sub)) {
-            for e in rd.flatten() {
-                let p = e.path();
-                if p.extension().and_then(|x| x.to_str()) == Some(ext) {
-                    out.push(p);
+        let mut merged = toml::Value::Table(toml::Table::new());
+        if let Some(user) = &self.user_path {
+            let user = user.join("config.toml");
+            match std::fs::read_to_string(&user) {
+                Ok(text) => merge(&mut merged, parse_toml::<toml::Value>(&user, &text)?),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(Error::new(
+                        Code::ConfigInvalid,
+                        format!("cannot read {}: {e}", user.display()),
+                    ));
                 }
             }
         }
-        out.sort();
-        out
+        merge(&mut merged, parse_toml::<toml::Value>(&p, &read(&p)?)?);
+        merged.try_into().map_err(|e| {
+            Error::new(
+                Code::ConfigInvalid,
+                format!("merged configuration for {}: {e}", p.display()),
+            )
+        })
+    }
+
+    /// Resolve a resource by relative filename. A missing resource retains its
+    /// intended project path so callers can report a useful error.
+    pub fn resolve(&self, relative: impl AsRef<Path>) -> PathBuf {
+        let relative = relative.as_ref();
+        let project = self.path.join(relative);
+        if project.is_file() {
+            return project;
+        }
+        if let Some(user) = &self.user_path {
+            let path = user.join(relative);
+            if path.is_file() {
+                return path;
+            }
+        }
+        project
+    }
+
+    pub fn source_layer(&self, path: &Path) -> &'static str {
+        if path.starts_with(&self.path) {
+            "project"
+        } else if self
+            .user_path
+            .as_ref()
+            .is_some_and(|user| path.starts_with(user))
+        {
+            "user"
+        } else {
+            "project"
+        }
+    }
+
+    /// Files merged by filename, sorted; a project file shadows its user copy.
+    pub fn files_in(&self, sub: &str, ext: &str) -> Vec<PathBuf> {
+        let mut out = BTreeMap::new();
+        for root in self.user_path.iter().chain(std::iter::once(&self.path)) {
+            if let Ok(rd) = std::fs::read_dir(root.join(sub)) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_file() && p.extension().and_then(|x| x.to_str()) == Some(ext) {
+                        out.insert(e.file_name(), p);
+                    }
+                }
+            }
+        }
+        out.into_values().collect()
     }
 }
 

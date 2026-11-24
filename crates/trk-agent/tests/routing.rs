@@ -32,7 +32,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
         "{% include 'prompts/fragment.j2' %}: {{ issue.type }} / {{ type.name }} ({{ type.description }}) / {{ agent.name }} targeting {{ base }}",
     );
     put(&cfg_dir, "prompts/fragment.j2", "Project policy");
-    let cfg = RoutingConfig::new(&ConfigDir::new(&cfg_dir));
+    let cfg = RoutingConfig::new(&ConfigDir::with_user_dir(&cfg_dir, None));
     let route = cfg.resolve("code-change", None).unwrap();
     assert_eq!(route.description, "Change code");
     assert_eq!(route.agent, "custom reviewer");
@@ -91,7 +91,7 @@ fn missing_types_and_agents_are_explicit() {
         "description = 'Change code'\nagent = 'implementer'\n",
     );
     put(&cfg_dir, "types/empty.toml", "description = 'No agent'\n");
-    let cfg = RoutingConfig::new(&ConfigDir::new(&cfg_dir));
+    let cfg = RoutingConfig::new(&ConfigDir::with_user_dir(&cfg_dir, None));
     assert_eq!(
         cfg.resolve("nope", None).unwrap_err().code(),
         trk_core::Code::NotFound

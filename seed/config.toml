@@ -75,6 +75,9 @@ send_delay = 5
 #   server_instructions  = false folds the MCP server instructions into the briefing
 #   briefing             = "arg" | "send"
 
+[harness]
+prefer = ["omp", "claude-code"]
+
 [harness.omp]
 command = "omp"
 args    = ["--config", "{{ session_dir }}/omp.yml", "{{ briefing }}"]

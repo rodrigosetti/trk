@@ -4,7 +4,7 @@ Nov 21, 2026 · @Rodrigo Setti
 
 ## Overview
 
-`trk` is a local issue tracker and agent launcher in one Rust binary. It keeps the work of every repository in one SQLite database in the user's home directory. Humans use the CLI. Agents work through a per-issue MCP server. `trk run [ID]` starts an agent session on one issue in a persistent terminal (herdr-core, `hc`), with focused instructions and only that issue's tools.
+`trk` is a local issue tracker and agent launcher in one Rust binary. It keeps each project's work in its own `.trk/trk.db`, with optional shared user configuration under `~/.config/trk`. Humans use the CLI. Agents work through a per-issue MCP server. `trk run [ID]` starts an agent session on one issue in a persistent terminal (herdr-core, `hc`), with focused instructions and only that issue's tools.
 
 Issues have routing-only types and share one state machine. An agent work cycle ends with the issue **closed**, **waiting** for something outside the session, or handed back **open**. A waiting check is a shell command that `trk check` runs until it passes, fails, or says "not yet"; a failed check may wake the same session for another work cycle.
 
@@ -12,7 +12,7 @@ Issues have routing-only types and share one state machine. An agent work cycle 
 
 **Goals**
 
-- One database per project, kept in the project's own `.trk/` directory next to its config: no global state, nothing to register.
+- One database per project, kept in the project's own `.trk/` directory next to its config: no global database, nothing to register.
 - A model small enough to hold in the head: four states, routing-only types, one dependency kind.
 - First-class claims by humans (`human:<email>`) and agent sessions (`agent:<harness>:<id>`), with leases.
 - A complete, append-only history: every change and every note is an attributed, timestamped event.
@@ -318,12 +318,18 @@ project root without creating or reusing an issue branch or worktree, and record
 worktree path in the claim.
 `trk agent check` validates agent files, templates and harness profiles.
 
-Types, agents and prompts all come from the project's `.trk/` directory, which `trk install`
-fills with the defaults. There is one configuration layer: no global config to merge with and
-no trust gate, because `.trk/` is created by the user's own `trk install` and is not tracked by
-git. An agent's `harness.prefer` orders the harnesses it may use; `trk run --harness` overrides it.
+Types, agents and prompts resolve by filename from the project's `.trk/` first, then
+the optional user directory: `$TRK_USER_DIR`, else `$XDG_CONFIG_HOME/trk`, else
+`~/.config/trk`. File contents are not merged. Template includes use the same search
+order, independent of the including template's layer. There is no trust gate: both
+directories are user-controlled configuration, including executable launch templates.
+An agent's `harness.prefer` orders the harnesses it may use; when omitted it inherits
+`[harness] prefer` from merged `config.toml`. An explicit empty list overrides that
+default; `trk run --harness` overrides selection. Seed agents omit their preference
+and the complete seed config sets `prefer = ["omp", "claude-code"]`.
 `trk show --json` routing and `trk run --dry-run --json` expose routing provenance,
-including the resolved `worktree` boolean, before execution.
+including the resolved `worktree` boolean, before execution. `trk agents`,
+`trk run --dry-run`, and `trk agent check` report agent/type/template layer origins.
 
 An agent's optional `harness.model` is either a string for all harnesses or a table
 of harness names to model strings. Resolution is `trk run --model M`, then the
@@ -551,13 +557,14 @@ One binary, one database file, one write path. Every interface (the CLI for huma
 
 ### Files and locations
 
-Everything is in `<project root>/.trk/`, created by `trk install`:
+Project state is in `<project root>/.trk/`, created by `trk install`; shared configuration is optional:
 
 | What | Path | Override |
 | --- | --- | --- |
 | Project directory | `<project root>/.trk/` | `TRK_DIR`, `--dir` |
 | Database | `.trk/trk.db` |  |
 | Config | `.trk/config.toml`, `agents/`, `types/`, `prompts/` |  |
+| User configuration | `$XDG_CONFIG_HOME/trk/` or `~/.config/trk/` | `TRK_USER_DIR` |
 | Worktrees | `.trk/worktrees/<ID>` | `[run] worktrees` |
 | Per-session scratch | `.trk/sessions/<actor-uuid>/` |  |
 | Check logs | `.trk/checks/` |  |
@@ -573,9 +580,19 @@ Everything is in `<project root>/.trk/`, created by `trk install`:
   prompts/*.j2         # MiniJinja templates for instructions and briefings
 ```
 
-`config.toml` is explicit: `trk install` writes the settings. Missing settings are errors except
-for optional `[launcher] alive`, compatibility defaults such as `[check] verify`, `max_wakes`,
-`gc`, `gc_grace`, and the detected `[run] base`. Types, agents and prompts are read when routing is resolved.
+Settings resolve **built-in defaults < user < project**. The user directory has the
+same configuration layout as `.trk/`: `config.toml`, `agents/`, `types/`, and `prompts/`,
+but no database or session state. A missing user directory is ignored. `trk whoami`
+shows its resolved path. The CLI and MCP server use the same resolution, including
+MCP started with only `TRK_DIR`.
+
+`config.toml` merges recursively per key: tables merge, arrays and scalar values
+replace lower-layer values. `[harness.<name>]` profiles and `[views.<name>]` views merge
+by name and then by key. Project `[issues] prefix` and `[user]` identity win over the
+user layer; absent keys inherit. Typed built-in defaults fill settings absent from both
+layers; there are no runtime built-in resource files or harness profiles.
+Normal `trk install` writes complete project settings and all resource files, so the
+project remains self-contained. Types, agents and prompts are read when routing is resolved.
 
 `[run] base` configures the base branch (for example, `base = "develop"`). When writing
 a new config, `trk install` detects the branch named by `origin/HEAD`, then the current
@@ -610,6 +627,12 @@ Existing type files are preserved: after the research and review seed defaults c
 to `worktree = false`, `trk install` lists `types/research.toml` and `types/review.toml`
 in `differ` without overwriting them. Users may add the setting themselves or use
 `trk install --force` to replace files with current defaults.
+
+`trk install --minimal` writes only project-specific `config.toml` settings (`[user]`
+identity, `[issues] prefix`, `[run] base), the database and ignore file, and installs the
+CLI skill as usual. It does not seed agents, types or prompts; those and shared settings
+must be supplied by the user directory. Existing project resources are not deleted.
+Both install modes preserve existing config unless `--force` is passed.
 
 ### Connection and transactions
 
@@ -716,8 +739,8 @@ Every command builds one typed result, then renders it in the requested format. 
 | `trk mcp --issue ID --actor A --agent N` | The per-issue MCP server (started by the harness, not by hand) |
 | `trk agent list` / `preview <agent> [--issue ID]` / `check` | Inspect and validate agent definitions |
 | **Setup** |  |
-| `trk install [--force] [--prefix P]` | Set trk up in the project: `.trk/` with the database and default config, and the CLI skill for interactive agent sessions |
-| `trk whoami` | Resolved actor, project directory, database, prefix, skill state, issue counts, running check |
+| `trk install [--force] [--minimal] [--prefix P]` | Set trk up in the project; minimal configuration relies on shared user resources |
+| `trk whoami` | Resolved actor, project and user directories, database, prefix, skill state, issue counts, running check |
 | `trk backup <PATH>` | Consistent copy via `VACUUM INTO` |
 
 `-d` and `-c` take text, `@file`, or `@-` for stdin. In the interactive editor, `title`, `priority` and required `type` are TOML front matter and the description is the markdown body; if validation fails on save, the file reopens with the errors added as comments. `--dry-run` runs every check and returns the would-be result or the error, and writes nothing.

@@ -228,7 +228,7 @@ fn malformed_templates_in_each_renderable_field_are_config_invalid() {
 #[test]
 fn agent_check_warns_for_legacy_placeholders_in_every_profile_field() {
     let dir = tempfile::tempdir().unwrap();
-    let config = ConfigDir::new(dir.path());
+    let config = ConfigDir::with_user_dir(dir.path(), None);
     for field in [
         "command",
         "args",

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use trk_core::config::{ConfigDir, Diagnostic, UserConfig};
 
-use crate::agent::{AgentDef, BUILTIN_LEVELS, load_agent_file};
+use crate::agent::{AgentDef, BUILTIN_LEVELS, apply_preferences, load_agent_file};
 use crate::harness::{installed, profiles};
 use crate::prompt::{PromptInput, briefing, instructions};
 use crate::tools::{agent_tools, unmatched_includes};
@@ -29,7 +29,10 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
     for p in cfg.files_in("agents", "toml") {
         let file = format!("agents/{}", p.file_name().unwrap().to_string_lossy());
         match load_agent_file(&p) {
-            Ok(a) => {
+            Ok(mut a) => {
+                if let Err(e) = apply_preferences(&mut a, user) {
+                    d.push(Diagnostic::error(Some("config.toml"), e.message()));
+                }
                 let stem = p.file_stem().unwrap().to_string_lossy().to_string();
                 if stem != a.name {
                     d.push(Diagnostic::warning(
@@ -82,7 +85,7 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
                 ),
             ));
         }
-        for h in &a.harness.prefer {
+        for h in a.harness.prefer.as_deref().unwrap_or_default() {
             match profs.get(h) {
                 None => d.push(Diagnostic::warning(
                     Some(file),
@@ -106,7 +109,7 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
             }
         }
         for name in [&a.instructions, &a.briefing].into_iter().flatten() {
-            if !cfg.path.join(name).exists() {
+            if !cfg.resolve(name).exists() {
                 d.push(Diagnostic::error(
                     Some(file),
                     format!("template '{name}' does not exist"),

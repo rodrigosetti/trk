@@ -104,9 +104,38 @@ impl HarnessProfile {
     }
 }
 
+fn preference_values(user: &UserConfig) -> Result<&[toml::Value]> {
+    let Some(value) = user.harness.get("prefer") else {
+        return Ok(&[]);
+    };
+    let invalid = || {
+        Error::new(
+            Code::ConfigInvalid,
+            "config.toml [harness] prefer: expected an array of strings",
+        )
+    };
+    let values = value.as_array().ok_or_else(invalid)?;
+    if values.iter().any(|value| !value.is_str()) {
+        return Err(invalid());
+    }
+    Ok(values)
+}
+
+/// Global harness ordering, inherited only by agents without their own `prefer`.
+pub fn default_preferences(user: &UserConfig) -> Result<Vec<String>> {
+    Ok(preference_values(user)?
+        .iter()
+        .map(|value| value.as_str().unwrap().to_owned())
+        .collect())
+}
+
 pub fn profiles(user: &UserConfig) -> Result<BTreeMap<String, HarnessProfile>> {
+    preference_values(user)?;
     let mut out = BTreeMap::new();
     for (name, v) in &user.harness {
+        if name == "prefer" {
+            continue;
+        }
         let p: HarnessProfile = v.clone().try_into().map_err(|e| {
             Error::new(
                 Code::ConfigInvalid,
@@ -146,7 +175,7 @@ pub fn choose(
         }
         return Ok(h.to_string());
     }
-    for h in &agent.harness.prefer {
+    for h in agent.harness.prefer.as_deref().unwrap_or_default() {
         if let Some(p) = profiles.get(h)
             && installed(&p.command)
         {
