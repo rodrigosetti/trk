@@ -434,6 +434,10 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
 }
 
 pub fn pid_alive(pid: i64) -> bool {
+    // Reject process-group IDs and values an external kill may truncate.
+    if pid <= 0 || libc::pid_t::try_from(pid).is_err() {
+        return false;
+    }
     Command::new("kill")
         .args(["-0", &pid.to_string()])
         .stderr(std::process::Stdio::null())
