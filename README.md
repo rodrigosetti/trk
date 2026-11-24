@@ -556,7 +556,8 @@ Everything trk keeps for a project is in `.trk/` at its root, written by `trk in
 
 `config.toml` is explicit: `trk install` writes the settings. Missing settings are errors
 except for optional `[launcher] alive`, compatibility defaults such as `[launcher] send_retries`,
-`send_retry_delay`, `[check] max_wakes`, `gc`, `gc_grace`, and the detected `[run] base`.
+`send_retry_delay`, `[check] max_wakes`, `gc`, `gc_grace`, `[run] landing` (default `"merge"`),
+and the detected `[run] base`.
 `[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory name,
 or `trk install --prefix NAME`. Changing it later only affects new issues.
 
