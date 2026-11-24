@@ -95,6 +95,67 @@ fn seed_agents_check_clean() {
 }
 
 #[test]
+fn builtin_levels_are_defined_by_profiles_not_a_fixed_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join("agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    let cfg = ConfigDir::new(dir.path());
+    let mut user = UserConfig::default();
+    user.harness = toml::from_str(
+        r#"
+[enforcing]
+command = "sh"
+builtin_tools = { no-network = ["--offline"], plan-only = [] }
+[preferred]
+command = "sh"
+"#,
+    )
+    .unwrap();
+    for level in [
+        "default",
+        "no-network",
+        "plan-only",
+        "undefined",
+        "read-only",
+        "none",
+    ] {
+        std::fs::write(
+            agents.join("custom.toml"),
+            format!(
+                "name = 'custom'\n[harness]\nprefer = ['preferred']\nbuiltin_tools = '{level}'\n"
+            ),
+        )
+        .unwrap();
+        let diagnostics = trk_agent::check::check_agents(&cfg, &user);
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.level == Level::Error)
+            .collect();
+        if matches!(level, "default" | "no-network" | "plan-only") {
+            assert!(errors.is_empty(), "{level}: {diagnostics:#?}");
+        } else {
+            assert_eq!(errors.len(), 1, "{level}: {diagnostics:#?}");
+            assert!(
+                errors[0]
+                    .message
+                    .contains(&format!("builtin_tools '{level}'"))
+            );
+            assert!(
+                errors[0]
+                    .message
+                    .contains("available levels: default, no-network, plan-only")
+            );
+        }
+        assert_eq!(
+            diagnostics.iter().any(|d| d.level == Level::Warning
+                && d.message.contains("harness 'preferred' cannot enforce")),
+            level != "default",
+            "{level}: {diagnostics:#?}"
+        );
+    }
+}
+
+#[test]
 fn the_briefing_carries_description_notes_and_blockers() {
     let (_dir, seed) = seed();
     let a = load_agent(&seed, "implementer").unwrap();

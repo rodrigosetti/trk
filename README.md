@@ -632,6 +632,16 @@ args = { omp = ["--thinking", "high"] }
 in a model table falls back to the profile default. `harness.args` is a table of
 harness names to argument lists; only the selected harness's list is used.
 
+Agent `harness.builtin_tools` levels are open-ended: `default` is reserved and adds
+no restriction arguments; any other name (for example `no-network` or `plan-only`)
+must be defined by at least one profile's `builtin_tools.<level>` argument list.
+An empty list explicitly declares support without extra arguments.
+`trk agent check` reports undefined levels with the available names and warns
+when a preferred harness lacks a level. `trk run` refuses to launch when the
+selected profile lacks it, including explicit `--harness` selections; it no
+longer silently launches unrestricted. Define the level's enforcement flags in
+that profile or select a profile that supports it.
+
 ```toml
 # .trk/config.toml
 [harness.omp]

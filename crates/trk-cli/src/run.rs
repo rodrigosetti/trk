@@ -232,6 +232,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let profiles = harness::profiles(&env.user)?;
     let hname = harness::choose(&agent, &profiles, a.harness.as_deref())?;
     let profile = profiles[&hname].clone();
+    profile.builtin_args(&agent.harness.builtin_tools, &hname)?;
 
     // 2. Worktree.
     let checkout = env.checkout();

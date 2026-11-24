@@ -1484,6 +1484,63 @@ fn agent_preview_and_run_dry_run() {
 }
 
 #[test]
+fn run_refuses_harnesses_without_the_agents_builtin_level_before_claiming() {
+    let e = Env::new();
+    std::fs::write(
+        e.trk_dir().join("config.toml"),
+        r#"
+[issues]
+prefix = "orch"
+[claims]
+agent_lease = "30m"
+[check]
+interval = "5m"
+timeout = "10m"
+[run]
+worktrees = ".trk/worktrees"
+[harness.unsupported]
+command = "sh"
+[harness.enforcing]
+command = "sh"
+args = ["{builtin_tools_args}"]
+builtin_tools = { no-network = ["--offline"] }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        e.trk_dir().join("agents/implementer.toml"),
+        "name = 'implementer'\n[harness]\nprefer = ['unsupported']\nbuiltin_tools = 'no-network'\n",
+    )
+    .unwrap();
+    let id = e.create(&["Enforce custom tool policy"]);
+    for mode in ["--dry-run", "--print", "--fg"] {
+        for explicit in [false, true] {
+            let mut args = vec!["run", &id, mode];
+            if explicit {
+                args.extend(["--harness", "unsupported"]);
+            }
+            let error = e.err(&args, 4, "config_invalid");
+            assert!(
+                error["message"].as_str().unwrap().contains(
+                    "harness 'unsupported' cannot enforce builtin_tools = \"no-network\""
+                ),
+                "{error:#}"
+            );
+            let hint = error["hint"].as_str().unwrap();
+            assert!(hint.contains("builtin_tools.no-network"), "{hint}");
+            assert!(hint.contains("--harness"), "{hint}");
+            let issue = e.ok(&["show", &id]);
+            assert_eq!(issue["state"], "open");
+            assert!(issue["claim"].is_null());
+            assert!(!e.trk_dir().join("worktrees").join(&id).exists());
+        }
+    }
+    let spec = e.ok(&["run", &id, "--harness", "enforcing", "--print"]);
+    assert_eq!(spec["argv"], json!(["sh", "--offline"]));
+    assert_eq!(e.ok(&["show", &id])["state"], "claimed");
+}
+
+#[test]
 fn codex_dry_run_passes_every_mcp_server_as_toml_overrides() {
     let e = Env::new();
     std::fs::write(
@@ -1564,6 +1621,12 @@ fn run_resolves_profile_agent_per_harness_and_cli_models_and_args() {
         "model   = \"openai-codex/gpt-6-luna\"",
         "model   = \"profile-model\"",
     );
+    // Model resolution across all profiles uses an unrestricted agent.
+    let agent_path = e.trk_dir().join("agents/reviewer.toml");
+    let original = std::fs::read_to_string(&agent_path)
+        .unwrap()
+        .replace("builtin_tools = \"read-only\"", "builtin_tools = \"default\"");
+    std::fs::write(&agent_path, &original).unwrap();
     let check = |harness: &str, model: Option<&str>, extra: &[&str], cli: Option<&str>| {
         let mut args = vec!["run", &id, "--harness", harness, "--dry-run"];
         if let Some(model) = cli {
@@ -1601,8 +1664,6 @@ fn run_resolves_profile_agent_per_harness_and_cli_models_and_args() {
         check(harness, None, &[], None);
         check(harness, Some("one-run"), &[], Some("one-run"));
     }
-    let agent_path = e.trk_dir().join("agents/reviewer.toml");
-    let original = std::fs::read_to_string(&agent_path).unwrap();
     let extra = r#"
 args = { omp = ["--label", "review {issue}: {model}"], opencode = ["--label", "{model}"] }
 "#;
@@ -2838,6 +2899,7 @@ fn types_without_worktrees_run_and_check_in_the_project_root() {
              [harness.cwd-proof]\n\
              command = 'sh'\n\
              args = ['-c', 'pwd > observed-cwd']\n\
+             builtin_tools = {{ read-only = [] }}\n\
              files = {{ '.omp/mcp.json' = '{{mcp_json}}' }}\n"
         ),
     )

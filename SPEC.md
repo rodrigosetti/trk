@@ -302,7 +302,7 @@ env     = { GITHUB_TOKEN = "${env:GITHUB_TOKEN}" }
 
 [harness]
 prefer        = ["omp", "claude-code"]   # first installed wins; `trk run --harness` overrides
-builtin_tools = "default"                # default | read-only | none
+builtin_tools = "default"                # no extra args; otherwise a profile-defined level
 model         = { omp = "provider/reviewer-model", claude-code = "reviewer-model" }
 args          = { omp = ["--thinking", "high"] }
 ```
@@ -534,7 +534,18 @@ keys to enable overrides.
 | Codex CLI | `-c mcp_servers.*` overrides of `config.toml` | Medium |
 | pi | Per-session agent directory with `mcp.json` | Medium |
 
-A harness's built-in tools are not MCP and can only be limited through that harness's flags. Each profile maps the agent's coarse `builtin_tools` level to what its harness supports, and `trk agent check` warns when it cannot.
+A harness's built-in tools are not MCP and can only be limited through that
+harness's flags. `builtin_tools` levels are open-ended strings, such as `read-only`,
+`none`, `no-network` or `plan-only`. `default` is reserved: it adds no restriction
+arguments, even if a profile defines that key. Every other level must appear in
+at least one harness profile's `builtin_tools` map; an empty argument list is an
+explicit declaration of support without extra arguments. `trk agent check`
+errors on undefined levels, listing the available names (including `default`),
+and warns when a preferred harness cannot enforce the requested level.
+`trk run` refuses a selected harness without that level, with an error and hint,
+before creating a worktree or claiming the issue. This applies equally to
+automatic selection and `--harness`; trk does not silently launch unrestricted
+or skip to another harness.
 
 ## Architecture
 

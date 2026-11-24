@@ -76,6 +76,12 @@ fn seed_profiles_preserve_complete_legacy_launch_specs() {
             }
         }
         for (name, profile) in &current {
+            if level != "default" && !profile.builtin_tools.contains_key(level) {
+                let error = launch(profile, name, &agent).unwrap_err();
+                assert_eq!(error.code(), Code::ConfigInvalid);
+                assert!(error.message().contains("cannot enforce"), "{error}");
+                continue;
+            }
             let actual = launch(profile, name, &agent).unwrap();
             let expected = launch(&legacy[name], name, &agent).unwrap();
             // Compare strings too: embedded MCP JSON key order and shell quoting matter.
@@ -104,6 +110,26 @@ fn seed_profiles_preserve_complete_legacy_launch_specs() {
             }
         }
     }
+}
+
+#[test]
+fn custom_builtin_levels_render_their_enforcement_arguments() {
+    let profile: HarnessProfile = toml::from_str(
+        r#"
+command = "test"
+args = ["{builtin_tools_args}", "{{ briefing }}"]
+builtin_tools = { no-network = ["--network", "deny", "{{ issue }}"] }
+"#,
+    )
+    .unwrap();
+    let spec = launch(&profile, "test", &agent("no-network")).unwrap();
+    assert_eq!(
+        spec.argv,
+        ["test", "--network", "deny", "proj-abc", BRIEFING]
+    );
+    let error = launch(&profile, "test", &agent("plan-only")).unwrap_err();
+    assert_eq!(error.code(), Code::ConfigInvalid);
+    assert!(error.message().contains("plan-only"), "{error}");
 }
 
 #[test]
@@ -334,6 +360,7 @@ fn malformed_templates_in_each_renderable_field_are_config_invalid() {
         "builtin_tools",
     ] {
         let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+        profile.builtin_tools.insert("read-only".into(), vec![]);
         let bad = "{{ broken".to_string();
         match field {
             "command" => profile.command = bad,

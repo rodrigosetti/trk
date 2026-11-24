@@ -1,12 +1,12 @@
 //! `trk agent check`: diagnostics for agent definitions, their templates and
 //! the harness profiles they prefer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 use trk_core::config::{ConfigDir, Diagnostic, UserConfig};
 
-use crate::agent::{AgentDef, BUILTIN_LEVELS, load_agent_file};
+use crate::agent::{AgentDef, load_agent_file};
 use crate::harness::{installed, profiles};
 use crate::prompt::{PromptInput, briefing, instructions};
 use crate::tools::{agent_tools, unmatched_includes};
@@ -69,16 +69,23 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
             _ => {}
         }
     }
+    let levels: BTreeSet<&str> = std::iter::once("default")
+        .chain(
+            profs
+                .values()
+                .flat_map(|p| p.builtin_tools.keys().map(String::as_str)),
+        )
+        .collect();
     for a in agents.values() {
         let file = format!("agents/{}.toml", a.name);
         let file = file.as_str();
-        if !BUILTIN_LEVELS.contains(&a.harness.builtin_tools.as_str()) {
+        if !levels.contains(a.harness.builtin_tools.as_str()) {
             d.push(Diagnostic::error(
                 Some(file),
                 format!(
-                    "builtin_tools '{}' must be one of {}",
+                    "builtin_tools '{}' is not defined by any harness profile; available levels: {}",
                     a.harness.builtin_tools,
-                    BUILTIN_LEVELS.join(", ")
+                    levels.iter().copied().collect::<Vec<_>>().join(", ")
                 ),
             ));
         }
