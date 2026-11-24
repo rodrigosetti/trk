@@ -5,8 +5,12 @@ use trk_agent::{agent_tools, load_agent};
 use trk_core::config::{ConfigDir, Level, UserConfig};
 
 fn seed() -> (tempfile::TempDir, ConfigDir) {
+    seed_preset("default")
+}
+
+fn seed_preset(name: &str) -> (tempfile::TempDir, ConfigDir) {
     let dir = tempfile::tempdir().unwrap();
-    for (path, content) in trk_core::seed::preset("default").unwrap() {
+    for (path, content) in trk_core::seed::preset(name).unwrap() {
         let path = dir.path().join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();
@@ -96,70 +100,77 @@ fn seed_agents_check_clean() {
 
 #[test]
 fn landing_selection_only_changes_implementer_instructions() {
-    let (_dir, seed) = seed();
-    std::fs::write(
-        seed.path.join("prompts/_landing.gitlab.md.j2"),
-        "Open a GitLab merge request targeting {{ base }} ({{ config.run.landing }}).",
-    )
-    .unwrap();
-    let issue = trk_agent::check::sample_issue();
-    for landing in ["merge", "pr", "gitlab", "legacy"] {
-        let mut config = user_config();
-        if landing == "legacy" {
-            let old = toml::to_string(&config)
-                .unwrap()
-                .replace("landing = \"merge\"\n", "");
-            config = toml::from_str(&old).unwrap();
-        } else {
-            config.run.landing = landing.into();
-        }
-        let diagnostics = trk_agent::check::check_agents(&seed, &config);
-        assert!(
-            diagnostics.iter().all(|d| d.level != Level::Error),
-            "{diagnostics:#?}"
-        );
-        for name in ["implementer", "researcher", "reviewer"] {
-            let agent = load_agent(&seed, name).unwrap();
-            let tools = agent_tools(&agent, &config.check);
-            let input = trk_agent::prompt::PromptInput {
-                issue: &issue,
-                project_root: std::path::Path::new("/project"),
-                config: &config,
-                issue_type: "code-change",
-                type_description: "code change",
-                agent: &agent,
-                tools: &tools,
-                worktree: Some("/wt/proj-abc"),
-                base: "develop",
-                verify: "",
-                actor: "agent:omp:u1",
-                harness: Some("omp"),
+    for preset in ["default", "minimal"] {
+        let (_dir, seed) = seed_preset(preset);
+        std::fs::write(
+            seed.path.join("prompts/_landing.gitlab.md.j2"),
+            "Open a GitLab merge request targeting {{ base }} ({{ config.run.landing }}).",
+        )
+        .unwrap();
+        let issue = trk_agent::check::sample_issue();
+        for landing in ["merge", "pr", "gitlab", "legacy"] {
+            let mut config = user_config();
+            if landing == "legacy" {
+                let old = toml::to_string(&config)
+                    .unwrap()
+                    .replace("landing = \"merge\"\n", "");
+                config = toml::from_str(&old).unwrap();
+            } else {
+                config.run.landing = landing.into();
+            }
+            let diagnostics = trk_agent::check::check_agents(&seed, &config);
+            assert!(
+                diagnostics.iter().all(|d| d.level != Level::Error),
+                "{diagnostics:#?}"
+            );
+            let agents: &[&str] = if preset == "default" {
+                &["implementer", "researcher", "reviewer"]
+            } else {
+                &["implementer"]
             };
-            let rules = trk_agent::prompt::instructions(&seed, &input).unwrap();
-            let implementer = name == "implementer";
-            assert_eq!(
-                rules.matches("git merge --ff-only").count(),
-                usize::from(implementer && matches!(landing, "merge" | "legacy")),
-                "{name}/{landing}: {rules}"
-            );
-            assert_eq!(
-                rules.matches("gh pr view").count(),
-                usize::from(implementer && landing == "pr"),
-                "{name}/{landing}: {rules}"
-            );
-            assert_eq!(
-                rules
-                    .matches("GitLab merge request targeting develop (gitlab)")
-                    .count(),
-                usize::from(implementer && landing == "gitlab"),
-                "{name}/{landing}: {rules}"
-            );
-            if implementer && landing == "pr" {
-                assert!(
-                    rules.contains("pull request targeting `develop`"),
-                    "{rules}"
+            for &name in agents {
+                let agent = load_agent(&seed, name).unwrap();
+                let tools = agent_tools(&agent, &config.check);
+                let input = trk_agent::prompt::PromptInput {
+                    issue: &issue,
+                    project_root: std::path::Path::new("/project"),
+                    config: &config,
+                    issue_type: "code-change",
+                    type_description: "code change",
+                    agent: &agent,
+                    tools: &tools,
+                    worktree: Some("/wt/proj-abc"),
+                    base: "develop",
+                    verify: "",
+                    actor: "agent:omp:u1",
+                    harness: Some("omp"),
+                };
+                let rules = trk_agent::prompt::instructions(&seed, &input).unwrap();
+                let implementer = name == "implementer";
+                assert_eq!(
+                    rules.matches("git merge --ff-only").count(),
+                    usize::from(implementer && matches!(landing, "merge" | "legacy")),
+                    "{name}/{landing}: {rules}"
                 );
-                assert!(!rules.contains("Merge your branch"), "{rules}");
+                assert_eq!(
+                    rules.matches("gh pr view").count(),
+                    usize::from(implementer && landing == "pr"),
+                    "{name}/{landing}: {rules}"
+                );
+                assert_eq!(
+                    rules
+                        .matches("GitLab merge request targeting develop (gitlab)")
+                        .count(),
+                    usize::from(implementer && landing == "gitlab"),
+                    "{name}/{landing}: {rules}"
+                );
+                if implementer && landing == "pr" {
+                    assert!(
+                        rules.contains("pull request targeting `develop`"),
+                        "{rules}"
+                    );
+                    assert!(!rules.contains("Merge your branch"), "{rules}");
+                }
             }
         }
     }

@@ -592,6 +592,7 @@ primary checkout) and `_landing.pr.md.j2` (GitHub pull request targeting the res
 base branch and a merge/CI/conflict check). Only `implementer.instructions.md.j2`
 includes the selected landing template. `_rules.md.j2` contains generic tracker and
 waiting rules shared with the researcher and reviewer, without either landing recipe.
+Both built-in presets (`default` and `minimal`) select landing recipes this way.
 Custom values are not an enum: for example, `landing = "gitlab"` selects a
 project-provided `prompts/_landing.gitlab.md.j2` without a code change.
 `trk agent check` emits a configuration error if the selected template does not exist,

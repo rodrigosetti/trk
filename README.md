@@ -615,6 +615,7 @@ for verified local landing into the base branch in the primary checkout, and `"p
 for opening a GitHub pull request against that branch and waiting on its merge.
 It defaults to `"merge"`, including in older configs that omit it. Only the implementer
 includes the selected recipe; researchers and reviewers receive the generic tracker rules.
+Both built-in install presets (`default` and `minimal`) use this setting.
 To add another workflow, create a template such as `.trk/prompts/_landing.gitlab.md.j2`
 and set `landing = "gitlab"`—no code change or edit to shared rules is needed.
 `trk agent check` reports a configured landing value with no matching template.
