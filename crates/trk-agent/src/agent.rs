@@ -59,6 +59,7 @@ pub struct McpServer {
 pub struct AgentHarness {
     #[serde(default)]
     pub prefer: Vec<String>,
+    /// Profile-defined level; `default` adds no tool restriction arguments.
     #[serde(default = "default_level")]
     pub builtin_tools: String,
     /// One model for every harness, or a model per harness.
@@ -99,8 +100,6 @@ impl AgentHarness {
 fn default_level() -> String {
     "default".into()
 }
-
-pub const BUILTIN_LEVELS: &[&str] = &["default", "read-only", "none"];
 
 pub fn load_agent_file(path: &Path) -> Result<AgentDef> {
     let text = std::fs::read_to_string(path).map_err(|e| {

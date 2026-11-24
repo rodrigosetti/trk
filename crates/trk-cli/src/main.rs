@@ -131,7 +131,7 @@ enum Cmd {
         /// P0 urgent, P1 high, P2 normal (default), P3 low
         #[arg(short = 'p', long)]
         priority: Option<String>,
-        /// Issue type (default: code-change)
+        /// Issue type (default: [issues] default_type in config.toml)
         #[arg(long = "type")]
         issue_type: Option<String>,
         /// An issue that must close before this one is ready (repeatable)
@@ -1020,6 +1020,7 @@ fn install(
                     },
                 )
                 .replace("{{PREFIX}}", &prefix)
+                .replace("{{DEFAULT_TYPE}}", seed::DEFAULT_TYPE)
                 .replace(
                     "{{BASE}}",
                     &toml::Value::String(env::detect_base(&root)).to_string(),
@@ -1188,7 +1189,7 @@ fn create(env: &Env, new: NewIssue, dry_run: bool, run: bool) -> Result<Out> {
             issue_type: new
                 .issue_type
                 .clone()
-                .unwrap_or_else(|| "code-change".into()),
+                .unwrap_or_else(|| env.user.issues.default_type.clone()),
             description: if new.description.is_empty() {
                 "<!-- What is needed and why, with enough context to start cold. -->\n".into()
             } else {
@@ -1298,7 +1299,7 @@ fn whoami(env: &Env) -> Result<Out> {
         "prefix": env.user.issues.prefix,
         "worktrees": env.worktrees_dir(),
         "skill": skill::configured_state(&env.root, &settings),
-        "default_type": "code-change",
+        "default_type": env.user.issues.default_type,
         "issues": counts,
         "check_running": lock.map(|(pid, host, started, pgid)| json!({"pid": pid, "host": host, "started_at": started, "pgid": pgid})),
     });
@@ -1350,7 +1351,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                     .map(|(name, model)| format!("{name}={}", model.unwrap_or("(harness default)")))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let tools: Vec<String> = trk_agent::agent_tools(a, &env.user.check)
+                let tools: Vec<String> = trk_agent::agent_tools(a, &env.user)
                     .into_iter()
                     .map(|t| t.name)
                     .collect();
@@ -1423,7 +1424,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                         )
                     })?
                 }
-                None => trk_agent::check::sample_issue(),
+                None => trk_agent::check::sample_issue(&env.user),
             };
             let cfg = trk_agent::routing::RoutingConfig::new(&env.config);
             let routing = cfg.resolve(
@@ -1432,7 +1433,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             )?;
             let resolved = cfg.load(&routing)?;
             let a = resolved.agent;
-            let tools = trk_agent::agent_tools(&a, &env.user.check);
+            let tools = trk_agent::agent_tools(&a, &env.user);
             let input = trk_agent::prompt::PromptInput {
                 issue: &issue_json,
                 project_root: &env.root,

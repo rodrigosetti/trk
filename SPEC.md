@@ -39,7 +39,7 @@ Issues have routing-only types and share one state machine. An agent work cycle 
 | `description` | markdown: what is needed, why, how to tell it is done |
 | notes | an append-only log, stored as events |
 | `priority` | `P0` urgent, `P1` high, `P2` normal (default), `P3` low; orders `trk list` and `trk ready` by default |
-| `type` | required routing type; defaults to `code-change` |
+| `type` | required routing type; defaults to `[issues] default_type` (`code-change` when omitted) |
 
 Everything else on an issue is state the tool owns: `state`, `close_reason`, the waiting fields, timestamps and `created_by`.
 
@@ -302,7 +302,7 @@ env     = { GITHUB_TOKEN = "${env:GITHUB_TOKEN}" }
 
 [harness]
 prefer        = ["omp", "claude-code"]   # first installed wins; `trk run --harness` overrides
-builtin_tools = "default"                # default | read-only | none
+builtin_tools = "default"                # no extra args; otherwise a profile-defined level
 model         = { omp = "provider/reviewer-model", claude-code = "reviewer-model" }
 args          = { omp = ["--thinking", "high"] }
 ```
@@ -316,6 +316,10 @@ and `--agent` do not override it. The `code-change` seed omits it and keeps the 
 the research and review seeds set `worktree = false`. False launches in the primary
 project root without creating or reusing an issue branch or worktree, and records no
 worktree path in the claim.
+`[issues] default_type` is written by `trk install` and supplies omitted types for CLI
+creation, editor templates and MCP follow-ups; `trk whoami` reports it. Older configs
+fall back to `code-change`. Explicit types override it. Core inserts always supply
+the type, so the legacy SQLite column default is inert.
 `trk agent check` validates agent files, templates and harness profiles.
 
 Types, agents and prompts all come from the project's `.trk/` directory, which `trk install`
@@ -535,7 +539,18 @@ keys to enable overrides.
 | Codex CLI | `-c mcp_servers.*` overrides of `config.toml` | Medium |
 | pi | Per-session agent directory with `mcp.json` | Medium |
 
-A harness's built-in tools are not MCP and can only be limited through that harness's flags. Each profile maps the agent's coarse `builtin_tools` level to what its harness supports, and `trk agent check` warns when it cannot.
+A harness's built-in tools are not MCP and can only be limited through that
+harness's flags. `builtin_tools` levels are open-ended strings, such as `read-only`,
+`none`, `no-network` or `plan-only`. `default` is reserved: it adds no restriction
+arguments, even if a profile defines that key. Every other level must appear in
+at least one harness profile's `builtin_tools` map; an empty argument list is an
+explicit declaration of support without extra arguments. `trk agent check`
+errors on undefined levels, listing the available names (including `default`),
+and warns when a preferred harness cannot enforce the requested level.
+`trk run` refuses a selected harness without that level, with an error and hint,
+before creating a worktree or claiming the issue. This applies equally to
+automatic selection and `--harness`; trk does not silently launch unrestricted
+or skip to another harness.
 
 ## Architecture
 
