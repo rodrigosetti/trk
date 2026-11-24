@@ -119,6 +119,11 @@ fn templates_cross_layers_for_includes_imports_and_inheritance_and_report_source
     );
     put(
         &user,
+        "types/code-change.toml",
+        "description = 'Change code'\nagent = 'personal'\n",
+    );
+    put(
+        &user,
         "prompts/instructions.j2",
         "{% extends 'prompts/layout.j2' %}{% block content %}root/{% include 'prompts/project.j2' %}/{% import 'prompts/macros.j2' as m %}{{ m.rule() }}{% endblock %}",
     );
@@ -206,7 +211,7 @@ fn global_harness_preferences_are_inherited_but_explicit_lists_replace_them() {
     put(
         &user,
         "config.toml",
-        "[run]\nlanding = 'pr'\n[harness]\nprefer = ['z']\n[harness.a]\ncommand = '/bin/sh'\n[harness.z]\ncommand = '/bin/sh'\n",
+        "[issues]\ndefault_type = 'change'\n[run]\nlanding = 'pr'\n[harness]\nprefer = ['z']\n[harness.a]\ncommand = '/bin/sh'\n[harness.z]\ncommand = '/bin/sh'\n",
     );
     put(&user, "agents/inherited.toml", "name = 'inherited'\n");
     put(

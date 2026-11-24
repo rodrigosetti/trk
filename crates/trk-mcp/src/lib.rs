@@ -55,7 +55,14 @@ const TASK_URI: &str = "trk://task";
 
 impl TrkServer {
     /// Load the agent, select its tools, render the instructions.
-    pub fn new(args: McpArgs) -> anyhow::Result<TrkServer> {
+    pub fn new(mut args: McpArgs) -> anyhow::Result<TrkServer> {
+        args.opts.known_types = args
+            .config
+            .files_in("types", "toml")
+            .into_iter()
+            .filter(|path| path.is_file())
+            .map(|path| path.file_stem().unwrap().to_string_lossy().into_owned())
+            .collect();
         let store = Store::open(&args.db, args.opts.clone())?;
         let (issue_json, worktree) = store.read(Some(&args.actor), |c| {
             let id = c.resolve_id(&args.issue)?;
@@ -76,7 +83,21 @@ impl TrkServer {
         )?;
         let resolved = config.load(&routing)?;
         let agent = resolved.agent;
-        let tools = trk_agent::agent_tools(&agent, &args.user);
+        let mut tools = trk_agent::agent_tools(&agent, &args.user);
+        if let Some(tool) = tools.iter_mut().find(|tool| tool.name == "report_followup") {
+            let types = config.types()?;
+            let descriptions = types
+                .iter()
+                .map(|(name, routing)| format!("{name}: {}", routing.description))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let field = &mut tool.input_schema["properties"]["type"];
+            field["enum"] = json!(args.opts.known_types);
+            field["description"] = json!(format!(
+                "Work type for the new issue; default {}. Project types: {descriptions}",
+                args.user.issues.default_type
+            ));
+        }
         let input = trk_agent::prompt::PromptInput {
             issue: &issue_json,
             project_root: &args.project_root,
@@ -409,6 +430,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let seed = dir.path().join("seed");
         write_seed(&seed);
+        std::fs::write(
+            seed.join("types/task.toml"),
+            "description = \"Project task\"\nagent = \"implementer\"\n",
+        )
+        .unwrap();
         let db = dir.path().join("trk.db");
         let mut user = UserConfig::default();
         user.issues.default_type = "task".into();
@@ -447,9 +473,43 @@ mod tests {
             .find(|tool| tool.name == "report_followup")
             .unwrap();
         let schema = to_tool(followup);
+        let types = trk_agent::routing::RoutingConfig::new(&ConfigDir::with_user_dir(&seed, None))
+            .types()
+            .unwrap();
         assert_eq!(
-            schema.input_schema["properties"]["type"]["description"],
-            "Work type for the new issue; default task"
+            schema.input_schema["properties"]["type"]["enum"],
+            json!(types.keys().collect::<Vec<_>>())
+        );
+        let description = schema.input_schema["properties"]["type"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(description.contains("default task"), "{description}");
+        for (name, routing) in &types {
+            assert!(
+                description.contains(&format!("{name}: {}", routing.description)),
+                "{description}"
+            );
+        }
+        let (ok, out) = server.call_sync(
+            "report_followup",
+            json!({
+                "title": "Unknown follow-up type",
+                "description": "Must be rejected",
+                "type": "unknown-type"
+            }),
+        );
+        assert!(!ok, "{out}");
+        assert_eq!(out["error"]["code"], "invalid_field");
+        assert_eq!(
+            out["error"]["allowed"],
+            json!(types.keys().collect::<Vec<_>>())
+        );
+        assert!(
+            out["error"]["hint"]
+                .as_str()
+                .unwrap()
+                .contains(".trk/types/"),
+            "{out}"
         );
         for (override_type, expected_type) in [(None, "task"), (Some("code-change"), "code-change")]
         {

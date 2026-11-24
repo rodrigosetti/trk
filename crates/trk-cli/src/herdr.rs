@@ -101,6 +101,69 @@ pub fn has_terminal(terminal: &str) -> Result<bool, String> {
     Ok(terminal_space(&ui, terminal).is_some())
 }
 
+/// Close a recorded terminal's whole space only when it cannot contain live work.
+pub(crate) fn close_session(
+    terminal: &str,
+    protected: &[String],
+    dry_run: bool,
+    closed_spaces: &mut std::collections::BTreeSet<String>,
+) -> trk_core::error::Result<crate::gc::Resource> {
+    use crate::gc::Resource;
+    use trk_core::error::{Code, Error};
+
+    let ui = match json_command("herdr-app", &["ls"]) {
+        Ok(ui) => ui,
+        Err(reason) => {
+            return Ok(Resource::new(
+                "skipped",
+                format!("Herdr unavailable: {reason}"),
+            ));
+        }
+    };
+    let Some(space) = terminal_space(&ui, terminal) else {
+        return Ok(Resource::new("absent", "terminal is already gone"));
+    };
+    let id = space["id"]
+        .as_str()
+        .ok_or_else(|| Error::new(Code::InvalidState, "Herdr space omitted its ID"))?;
+    if closed_spaces.contains(id) {
+        return Ok(Resource::new("absent", "space already handled").in_space(id));
+    }
+    let own = std::env::var("HC_TERMINAL_ID").ok();
+    if own
+        .as_deref()
+        .is_some_and(|t| terminal_space(&ui, t) == Some(space))
+    {
+        return Ok(Resource::new("skipped", "space contains the current terminal").in_space(id));
+    }
+    if protected
+        .iter()
+        .any(|t| terminal_space(&ui, t) == Some(space))
+    {
+        return Ok(Resource::new(
+            "skipped",
+            "space contains another issue's active or waiting terminal",
+        )
+        .in_space(id));
+    }
+    if !dry_run {
+        command(
+            "herdr-app",
+            &["do", "space.close", "--id", id, "--confirmed", "true"],
+        )
+        .map_err(|reason| Error::new(Code::InvalidState, reason))?;
+    }
+    closed_spaces.insert(id.to_owned());
+    Ok(Resource::new(
+        "removed",
+        format!(
+            "{} space {id} containing terminal {terminal}",
+            if dry_run { "would remove" } else { "removed" }
+        ),
+    )
+    .in_space(id))
+}
+
 /// Show the pane of `terminal` in the Herdr window. Only when this process
 /// runs in a pane of that window, so the person is looking at it: `false`
 /// means the caller should reach the terminal another way.

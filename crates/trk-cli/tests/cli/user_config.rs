@@ -102,8 +102,10 @@ fn minimal_install_writes_only_project_settings_and_keeps_existing_files() {
     }
     assert!(e.trk_dir().join("trk.db").is_file());
     assert_eq!(e.ok(&["whoami"])["prefix"], "orch");
-    assert!(e.create(&["Minimal project"]).starts_with("orch-"));
     assert_eq!(e.ok(&["agents"]), json!([]));
+    e.err(&["create", "Minimal project"], 4, "invalid_field");
+    shared_config(&e.user_dir());
+    assert!(e.create(&["Minimal project"]).starts_with("orch-"));
     let again = e.ok(&["install", "--minimal"]);
     assert_eq!(again["written"], json!([]));
     assert_eq!(std::fs::read_to_string(&config_path).unwrap(), text);
@@ -114,6 +116,7 @@ fn minimal_install_writes_only_project_settings_and_keeps_existing_files() {
     assert_eq!(e.ok(&["whoami"])["prefix"], "local");
     assert!(e.trk_dir().join("agents/custom.toml").is_file());
     // The ordinary install remains complete and usable without a user layer.
+    std::fs::remove_dir_all(e.user_dir()).unwrap();
     e.ok(&["install", "--force"]);
     for directory in ["agents", "types", "prompts"] {
         assert!(e.trk_dir().join(directory).is_dir());

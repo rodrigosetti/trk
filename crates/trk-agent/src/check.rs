@@ -25,6 +25,20 @@ pub fn sample_issue(user: &UserConfig) -> Value {
 
 pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
     let mut d = vec![];
+    let default_type = &user.issues.default_type;
+    if !cfg.files_in("types", "toml").iter().any(|path| {
+        path.is_file()
+            && path
+                .file_stem()
+                .is_some_and(|name| name == default_type.as_str())
+    }) {
+        d.push(Diagnostic::error(
+            Some("config.toml"),
+            format!(
+                "issues.default_type '{default_type}': .trk/types/{default_type}.toml does not exist"
+            ),
+        ));
+    }
     let landing = format!("prompts/_landing.{}.md.j2", user.run.landing);
     if !cfg.resolve(&landing).is_file() {
         d.push(Diagnostic::error(

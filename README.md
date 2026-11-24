@@ -2,7 +2,7 @@
 
 A local issue tracker and agent launcher in one Rust binary. Each project has its own SQLite
 database in `.trk/`; humans use the CLI, agents work through a per-issue MCP server, and `trk run [ID]` starts
-an agent session on one issue in a persistent terminal (`hc`). See [SPEC.md](SPEC.md) for the design.
+an agent session on one issue through a named launcher profile (Herdr, `hc`, or tmux). See [SPEC.md](SPEC.md) for the design.
 
 An issue has a title, a description, notes, a priority, a required type (from `[issues] default_type`, initially `code-change`), and one of four states:
 
@@ -301,7 +301,7 @@ whole check's `[check] timeout` (default 10m) and holds the serialized queue; ch
 subset or increase the timeout for slow suites.
 
 A failed check restores the original session's claim with a fresh lease when its terminal
-is confirmed live on the claim's known local host, `[launcher] send` is configured,
+is confirmed live on the claim's known local host, its pinned launcher provides `send`,
 and its wake count is below `[check] max_wakes`. MCP liveness is not a prerequisite.
 The cap defaults to `5`, including in existing configs that omit it; `0` disables waking.
 Each restored claim increments the session's persistent count, even if sending fails.
@@ -323,7 +323,7 @@ trk interprets only the check's exit code, not PRs or CI.
 A passing check still best-effort sends an informational message that the issue is
 closed. Exit 75 does not notify or restore a claim.
 
-With `[launcher] herdr = true`, a passing check also best-effort prepends `[closed] `
+With the Herdr driver, a passing check also best-effort prepends `[closed] `
 to the current name of the space containing the original waiting session's exact
 terminal, keeping the marker visible even when a long title is truncated. User
 renames and embedded literal `[closed]` text are preserved. An existing leading
@@ -391,9 +391,10 @@ closed-as-done issues; `--abandoned` also includes abandoned issues. It never co
 claimed or waiting issues, and serializes cleanup with the check queue and lifecycle writes.
 All historical claims are considered, but only resources on this host are eligible.
 
-Sessions are found by their exact recorded terminal through Herdr, not by title. GC closes
-their containing spaces, protecting your current terminal's space and other issues' active
-or waiting sessions. Only descendants of the configured worktree directory are removed,
+Sessions use each historical claim's pinned launcher, never today's selection order.
+GC invokes its optional `close` operation; Herdr finds the exact recorded terminal and
+closes its containing space, protecting your current space and other issues' active or
+waiting sessions. Only descendants of the configured worktree directory are removed,
 never the current worktree. Git worktree removal is not forced; branch deletion uses
 `git branch -d` in the primary checkout, only for the issue-ID branch and only after all
 recorded worktrees are removed or absent. Dirty worktrees, unmerged branches and other
@@ -477,11 +478,11 @@ the old session's access.
 
 Session liveness comes from the recorded terminal, not the MCP process. A known claim
 host matching this machine and a nonblank terminal are required; otherwise liveness is
-unknown. Herdr uses its existing `has_terminal` discovery. Non-Herdr launchers use the
-optional `[launcher] alive` argv template, substituting `{name}`: exit 0 means live,
-1 means gone, and any other exit, command error, or missing/empty template means unknown.
-Unknown sessions are neither woken/resumed nor reaped; a failed check instead reopens.
-Wakes and manual resume still require `[launcher] send`.
+unknown. The Herdr driver discovers exact terminals; other profiles use optional
+`exists` argv: exit 0 means live, a nonzero exit means gone, and command errors or a
+missing/empty operation mean unknown. Unknown sessions are neither woken/resumed nor
+reaped; a failed check instead reopens. Wakes and manual resume require the pinned
+profile's `send`. Legacy `alive` retains exit 0/live, 1/gone, other/unknown behavior.
 
 `[launcher] send_delay` waits before the initial briefing (default 5 seconds).
 All sends—briefings, `trk send`, resume, and check wakes/notifications—use
@@ -496,19 +497,36 @@ identity to use tools again. `trk reap` leaves dormant and unknown sessions alon
 Lease renewal stops while MCP is stopped, however: active claims can still expire
 through the normal lease sweep. Terminal liveness does not prevent expiry.
 
-With `[launcher] herdr = true`, each run opens a **new Herdr space**, named with the issue's title
-and rooted in its launch directory (the worktree or primary project root). Its first terminal
-runs the agent directly; the launching space and its tabs are left intact.
-trk confirms the space's title, folder and agent pane through `herdr-app ls`; JSON includes
-`placement` (`visible` or `failed`) and the actual terminal address used by `trk attach` and `trk send`.
+### Launcher profiles
 
-If the UI is unavailable before launch, trk uses the configured `start` template headlessly and
-warns. Once space creation is attempted, an uncertain response retains the claim and never starts
-a duplicate session. A two-second observation timeout warns without ending the running session.
+`[launcher] use = ["herdr", "hc"]` tries named profiles in order and selects the first
+available one. The seed includes `[launcher.herdr]`, `[launcher.hc]` and
+`[launcher.tmux]`; set `use = ["tmux"]` to use tmux. An `available` argv must succeed;
+without it a profile is usable (the Herdr driver probes its UI). No available profile
+is an error before claiming or starting a session. The selected name is recorded on
+the claim, and attach/focus, send, resume, checks and GC keep using that profile even
+after `use` changes. Keep profiles needed by historical sessions in the config.
 
-Omit `herdr` or use `herdr = false` for a headless/custom launcher; the default hc template uses
-`--no-parent` to keep sessions independent. Herdr launching requires `hc` and `herdr-app` on PATH;
-no IDs belong in the config.
+Profiles accept optional `available`, `start`, `attach`, `send`, `exists`, `focus`,
+`close` and `rename` argv arrays. Missing operations are skipped. Entries remain
+separate arguments, with substitutions `{name}` (session address), `{cwd}`,
+`{shell_command}` (launch command including directory and environment), `{text}`
+and `{title}`. Start's first stdout line replaces the generated session name;
+empty stdout retains it. Stderr is diagnostics, never a session address.
+The tmux seed requests a stable session ID so rename does not break later operations.
+Retry settings on `[launcher]` apply to profiles unless overridden there.
+
+`driver = "herdr"` supplies Herdr's start, exists, focus, close and rename defaults;
+the seed's attach and send still use `hc`. Each run opens a **new Herdr space** named
+with the issue title and rooted in the launch directory, leaving the launching space
+and tabs intact. JSON includes the actual terminal address and `placement` (`visible`
+or `failed`). Observation timeout warns without ending the session. An uncertain
+creation response retains the claim and never starts a duplicate session. When
+Herdr is unavailable, the seed selects `hc` before attempting a launch.
+
+Existing flat `[launcher] start/attach/send` configurations remain supported,
+including `herdr = true` and the `alive` alias for `exists`. Claims without a named
+profile continue using that flat configuration, not the current `use` order.
 
 ## Agent skill
 
@@ -612,6 +630,7 @@ when absent they can inherit from the user layer. Built-in defaults fill absent 
 but do not supply agent/type/template files or harness profiles.
 Compatibility defaults also apply to `[launcher] send_retries`, `send_retry_delay`,
 `[issues] default_type`, `[check] max_wakes`, `gc`, `gc_grace`, and `[run] landing` (default `"merge"`).
+Launcher operations are optional.
 `[issues] prefix` names new issues (`<prefix>-<base32>`); normal installation writes the
 directory name, or `trk install --prefix NAME`. Changing it later only affects new issues.
 `[issues] default_type` selects the type for CLI and editor creation and MCP follow-ups
@@ -840,7 +859,7 @@ project of the working directory, so each project needs its own `trk check --wat
   It keeps `write` available even with a restricted `--tools` list, so `builtin_tools = "read-only"`
   is not fully enforced there.
 - **Unverified harness profiles**: the Claude Code, Codex, OpenCode and pi profiles were not run live.
-- **Session liveness** comes from the local claim's terminal via Herdr or `[launcher] alive`.
+- **Session liveness** comes from the local claim's terminal via its pinned launcher's `exists` operation or Herdr driver (legacy `alive` is still supported).
   MCP pid, host and exit metadata in `actor.meta` report MCP status separately, not session death.
 - **`trk check` lock**: a row holding the pid and host of the running pass. A holder whose process
   is gone on this machine is replaced; a holder on another host is never replaced automatically.

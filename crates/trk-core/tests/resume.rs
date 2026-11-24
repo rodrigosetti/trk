@@ -31,6 +31,7 @@ fn waiting() -> (tempfile::TempDir, Store, String, i64, i64) {
                 &id,
                 ClaimOpts {
                     terminal: Some("original-terminal".into()),
+                    launcher: Some("original-profile".into()),
                     ..Default::default()
                 },
             )
@@ -101,6 +102,7 @@ fn stale_check_cannot_close_retry_or_wake_a_resumed_and_waiting_session() {
         let restored = store
             .write(HUMAN, false, |c| c.resume(&id, claim, revision, "continue"))
             .unwrap();
+        assert_eq!(restored.launcher.as_deref(), Some("original-profile"));
         store
             .write(AGENT, false, |c| {
                 c.wait(
