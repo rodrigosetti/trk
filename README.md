@@ -915,3 +915,7 @@ project of the working directory, so each project needs its own `trk check --wat
 - **`trk check` lock**: a row holding the pid and host of the running pass. A holder whose process
   is gone on this machine is replaced; a holder on another host is never replaced automatically.
 - **`TRK_NOW`** fixes the clock, for tests.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
