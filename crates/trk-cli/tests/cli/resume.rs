@@ -11,7 +11,7 @@ fn response(mut command: Command, args: &[&str]) -> (i32, Value) {
     (output.status.code().unwrap_or(-1), value)
 }
 
-fn success(command: Command, args: &[&str]) -> Value {
+pub(super) fn success(command: Command, args: &[&str]) -> Value {
     let (code, value) = response(command, args);
     assert_eq!(code, 0, "{args:?}: {value:#}");
     assert_eq!(value["ok"], true, "{args:?}: {value:#}");
@@ -39,12 +39,7 @@ fn store(ui: &WaitingUi) -> trk_core::Store {
 }
 
 fn original_claim(ui: &WaitingUi, id: &str, terminal: Option<&str>) -> trk_core::model::Claim {
-    let hostname = StdCommand::new("hostname").output().unwrap();
-    assert!(hostname.status.success());
-    let host = String::from_utf8(hostname.stdout)
-        .unwrap()
-        .trim()
-        .to_owned();
+    let host = local_host();
     let actor = format!("agent:omp:{id}-original");
     store(ui)
         .write(&actor, false, |c| {
@@ -89,6 +84,14 @@ fn human_resume_restores_the_original_claim_with_a_fresh_lease() {
         ui.e.set_config("max_wakes = 5", "max_wakes = 0");
         let id = ui.e.create(&["Human-authorized continuation"]);
         let original = original_claim(&ui, &id, Some("exact-origin"));
+        store(&ui)
+            .write(&original.actor, false, |c| {
+                c.patch_actor_meta(
+                    &original.actor,
+                    json!({"mcp_exited_at": "2026-11-20T10:00:00Z"}),
+                )
+            })
+            .unwrap();
         ui.e.set_config(
             "send       = [\"hc\", \"send\", \"{name}\", \"{text}\"]",
             r#"send = ["sh", "-c", "\"$TRK_TEST_BINARY\" --json show \"$TRK_TEST_ISSUE\" > \"$TRK_TEST_UI/at-send.json\" || exit; printf '%s\\n%s\\n' \"$0\" \"$1\" >> \"$TRK_TEST_UI/messages\"", "{name}", "{text}"]"#,
@@ -280,9 +283,8 @@ fn resume_refuses_nonwaiting_and_replacement_claims() {
 #[test]
 fn resume_refuses_unavailable_original_sessions_without_replacement() {
     for mode in [
-        "absent",
-        "dead",
         "remote",
+        "unknown-host",
         "missing",
         "unavailable",
         "no-terminal",
@@ -292,17 +294,18 @@ fn resume_refuses_unavailable_original_sessions_without_replacement() {
         let id = ui.e.create(&["Unavailable waiting session"]);
         let terminal = (mode != "no-terminal").then_some("exact-origin");
         let original = original_claim(&ui, &id, terminal);
-        let patch = match mode {
-            "dead" => json!({"mcp_exited_at": "2026-11-20T10:00:00Z"}),
-            "absent" => json!({"mcp_pid": null, "mcp_host": null}),
-            "remote" => json!({"mcp_host": "unreachable.invalid"}),
-            _ => json!({}),
-        };
-        store(&ui)
-            .write("human:alice@example.com", false, |c| {
-                c.patch_actor_meta(&original.actor, patch)
-            })
-            .unwrap();
+        if matches!(mode, "remote" | "unknown-host") {
+            store(&ui)
+                .conn()
+                .execute(
+                    "UPDATE claim SET host = ?1 WHERE id = ?2",
+                    (
+                        (mode == "remote").then_some("unreachable.invalid"),
+                        original.id,
+                    ),
+                )
+                .unwrap();
+        }
         leave_waiting(&ui, &id, None);
         if mode == "no-send" {
             ui.e.set_config(
@@ -331,7 +334,7 @@ fn resume_never_falls_back_to_an_older_live_waiting_session() {
     let ui = WaitingUi::new();
     let id = ui.waiting("exit 75", true);
     ui.e.ok(&["reopen", &id]);
-    ui.claim(&id, "new-session", false);
+    ui.claim(&id, "dead-session", false);
     leave_waiting(&ui, &id, None);
     let before = ui.e.ok(&["show", &id, "--with", "all"]);
     let error = failure(

@@ -170,6 +170,19 @@ impl TrkServer {
         });
     }
 
+    fn record_started(&self) {
+        let host = std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        self.patch_meta(json!({
+            "mcp_pid": std::process::id(),
+            "mcp_host": host,
+            "mcp_started_at": trk_core::model::fmt_ts(jiff::Timestamp::now()),
+            "mcp_exited_at": null,
+        }));
+    }
+
     fn patch_meta(&self, patch: Value) {
         let Ok(mut store) = self.open() else { return };
         let actor = self.inner.session.actor.clone();
@@ -306,13 +319,8 @@ pub fn serve(args: McpArgs) -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     rt.block_on(async move {
-        let host = std::process::Command::new("hostname")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
         let s = server.clone();
-        let started = json!({"mcp_pid": std::process::id(), "mcp_host": host, "mcp_started_at": trk_core::model::fmt_ts(jiff::Timestamp::now()), "mcp_exited_at": null});
-        let _ = tokio::task::spawn_blocking(move || s.patch_meta(started)).await;
+        let _ = tokio::task::spawn_blocking(move || s.record_started()).await;
 
         // Renew the lease well before it runs out.
         let secs = (lease.as_secs() / 3).clamp(5, 300) as u64;
@@ -513,5 +521,134 @@ mod tests {
                 assert_released(&server, expected_state);
             }
         }
+    }
+
+    #[test]
+    fn stopped_mcp_restarts_after_failed_check_with_restored_actor_and_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let seed = dir.path().join("seed");
+        for (path, content) in trk_core::seed::FILES {
+            let path = seed.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        std::fs::write(
+            seed.join("prompts/implementer.instructions.md.j2"),
+            "claim={{ issue.claim.claimed_at }};state={{ issue.state }};actor={{ actor }}",
+        )
+        .unwrap();
+        let db = dir.path().join("trk.db");
+        let opts = StoreOpts {
+            now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
+            ..Default::default()
+        };
+        let mut store = Store::install(&db, opts.clone()).unwrap();
+        let issue = store
+            .write(HUMAN, false, |c| {
+                c.create(NewIssue {
+                    title: "Restart a dormant MCP server".into(),
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+        let original = store
+            .write(ACTOR, false, |c| {
+                c.claim(
+                    &issue,
+                    ClaimOpts {
+                        terminal: Some("still-running-terminal".into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        let args = |opts| McpArgs {
+            db: db.clone(),
+            config: ConfigDir::new(&seed),
+            project_root: dir.path().to_path_buf(),
+            user: UserConfig::default(),
+            opts,
+            issue: issue.clone(),
+            actor: ACTOR.into(),
+            agent: "implementer".into(),
+            base: "main".into(),
+        };
+        let server = TrkServer::new(args(opts.clone())).unwrap();
+        server.record_started();
+        let (ok, out) = server.call_sync(
+            "wait",
+            json!({"reason": "waiting for merge", "check": "exit 1"}),
+        );
+        assert!(ok, "{out}");
+        server.patch_meta(json!({"mcp_exited_at": "2026-11-20T10:01:00Z"}));
+        drop(server);
+        assert!(active_claim(&store, &issue).is_none());
+        let stopped = store.read(None, |c| c.actor_meta(ACTOR)).unwrap();
+        assert_eq!(stopped["mcp_exited_at"], "2026-11-20T10:01:00Z");
+
+        store.opts.now = Some("2026-11-20T10:05:00Z".parse().unwrap());
+        let result = store
+            .write(HUMAN, false, |c| {
+                c.check_record(
+                    &issue,
+                    "exit 1",
+                    c.issue_revision(&issue)?,
+                    &CheckRun {
+                        exit: Some(1),
+                        output: "merge failed".into(),
+                        ..Default::default()
+                    },
+                    Some(original.id),
+                )
+            })
+            .unwrap();
+        let restored = active_claim(&store, &issue).unwrap();
+        assert_eq!(result, CheckResult::Woken { claim: restored.id });
+        assert_ne!(restored.id, original.id);
+        assert_eq!(restored.actor, ACTOR);
+        assert_eq!(restored.terminal, original.terminal);
+        assert_eq!(restored.terminal.as_deref(), Some("still-running-terminal"));
+        assert_eq!(
+            store.read(None, |c| c.actor_meta(ACTOR)).unwrap()["mcp_exited_at"],
+            stopped["mcp_exited_at"]
+        );
+
+        let now = "2026-11-20T10:10:00Z".parse().unwrap();
+        let server = TrkServer::new(args(StoreOpts {
+            now: Some(now),
+            ..opts
+        }))
+        .unwrap();
+        assert_eq!(
+            server.inner.instructions,
+            format!("claim={};state=claimed;actor={ACTOR}", restored.claimed_at)
+        );
+        // Exercise the same startup marker and renewal tick as serve(), without
+        // a real harness process, a wall-clock lease delay, or shared state.
+        server.record_started();
+        let started = store.read(None, |c| c.actor_meta(ACTOR)).unwrap();
+        assert!(started["mcp_exited_at"].is_null());
+        assert_eq!(started["mcp_pid"], std::process::id());
+        assert!(started["mcp_started_at"].is_string());
+        server.renew_lease();
+        let renewed = active_claim(&store, &issue).unwrap();
+        assert_eq!(renewed.id, restored.id);
+        assert_eq!(renewed.actor, ACTOR);
+        assert_eq!(
+            renewed.lease_until,
+            Some(trk_core::model::fmt_ts(now + store.opts.agent_lease))
+        );
+        assert!(renewed.lease_until > restored.lease_until);
+
+        let (ok, out) =
+            server.call_sync("add_note", json!({"body": "restarted MCP tool succeeds"}));
+        assert!(ok, "{out}");
+        assert_eq!(out["ok"], true);
+        let (ok, out) = server.call_sync("get_task", json!({}));
+        assert!(ok, "{out}");
+        assert_eq!(out["claim"]["lease_until"], json!(renewed.lease_until));
+        assert_eq!(out["claim"]["actor"], ACTOR);
+        let history = store.read(None, |c| c.claims(&issue)).unwrap();
+        assert_eq!(history.len(), 2);
     }
 }

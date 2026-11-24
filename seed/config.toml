@@ -11,8 +11,9 @@
 prefix = "{{PREFIX}}"
 
 [claims]
-# Lease for agent claims. The MCP server renews it while the session runs,
-# so it only has to outlast a crash. Human claims have no lease.
+# Lease for agent claims. The MCP server renews it while running. A stopped MCP
+# connection stops renewal even if the terminal stays live; expiry is separate
+# from terminal liveness and reap. Human claims have no lease.
 agent_lease = "30m"
 
 [check]
@@ -48,6 +49,12 @@ start      = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "
 herdr      = true
 attach     = ["hc", "attach", "{name}"]
 send       = ["hc", "send", "{name}", "{text}"]
+# Optional terminal probe for non-Herdr launchers (Herdr uses has_terminal).
+# Requires a known local claim host and nonblank terminal; {name} is substituted.
+# Exit 0 = live, 1 = gone; other exits, command errors, missing/empty = unknown.
+# Unknown sessions are not woken/resumed or reaped. Wakes also require send.
+# Example for a tmux launcher: has-session exits 1 when the target is missing.
+# alive = ["tmux", "has-session", "-t", "{name}"]
 # Seconds to wait before sending the briefing to harnesses that take it by `send`.
 send_delay = 5
 

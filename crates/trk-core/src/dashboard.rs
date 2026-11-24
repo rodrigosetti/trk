@@ -64,8 +64,10 @@ pub struct Session {
     pub lease_until: Option<String>,
     /// False for a waiting session, which holds no claim.
     pub active: bool,
-    /// Whether the session's MCP server is running, when that can be told.
+    /// Whether the session's terminal is alive, when that can be told.
     pub alive: Option<bool>,
+    /// Whether the session's MCP server is running, independently of its terminal.
+    pub mcp_alive: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -143,13 +145,13 @@ pub struct Detail {
 }
 
 impl Ctx<'_> {
-    /// The snapshot. `alive` tells whether a session's MCP server is still
-    /// running from its actor metadata (`mcp_pid`, `mcp_host`,
-    /// `mcp_exited_at`); the caller owns that because it needs the host.
+    /// The snapshot. The caller probes terminal liveness from claim host and
+    /// terminal, and MCP server liveness separately from actor metadata.
     pub fn dashboard(
         &self,
         activity: usize,
-        alive: &dyn Fn(&Value) -> Option<bool>,
+        alive: &dyn Fn(Option<&str>, Option<&str>) -> Option<bool>,
+        mcp_alive: &dyn Fn(&Value) -> Option<bool>,
     ) -> Result<Dashboard> {
         let now = self.ts();
         let mut st = self.conn.prepare(&format!(
@@ -184,7 +186,12 @@ impl Ctx<'_> {
             sessions.insert(
                 c.issue_id.clone(),
                 Session {
-                    alive: if is_agent { alive(&meta) } else { None },
+                    alive: if is_agent {
+                        alive(c.host.as_deref(), c.terminal.as_deref())
+                    } else {
+                        None
+                    },
+                    mcp_alive: if is_agent { mcp_alive(&meta) } else { None },
                     actor: c.actor,
                     agent: c.agent,
                     harness,
