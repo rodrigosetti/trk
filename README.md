@@ -592,7 +592,8 @@ Everything trk keeps for a project is in `.trk/` at its root, written by `trk in
 
 `config.toml` is explicit: `trk install` writes the settings. Missing settings are errors
 except for optional `[launcher] alive`, compatibility defaults such as `[launcher] send_retries`,
-`send_retry_delay`, `[issues] default_type`, `[check] max_wakes`, `gc`, `gc_grace`, and the detected `[run] base`.
+`send_retry_delay`, `[issues] default_type`, `[check] max_wakes`, `gc`, `gc_grace`,
+`[run] landing` (default `"merge"`), and the detected `[run] base`.
 `[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory name,
 or `trk install --prefix NAME`. Changing it later only affects new issues.
 `[issues] default_type` selects the type for CLI and editor creation and MCP follow-ups
@@ -605,6 +606,7 @@ also the fallback for older configs. Set it to your project's type name (for exa
 ```toml
 [run]
 base = "develop"
+landing = "merge"
 ```
 
 When writing a new config, `trk install` detects the branch named by `origin/HEAD`,
@@ -612,6 +614,16 @@ then the current branch of the primary checkout, and finally falls back to `main
 Older configs that omit `base` use the same detection at runtime. An explicit `base`
 takes precedence. Waiting checks receive the resolved branch as `TRK_BASE`; instruction
 and briefing prompt templates can use `{{ base }}`.
+
+`[run] landing` selects `prompts/_landing.<value>.md.j2`. The seed provides `"merge"`
+for verified local landing into the base branch in the primary checkout, and `"pr"`
+for opening a GitHub pull request against that branch and waiting on its merge.
+It defaults to `"merge"`, including in older configs that omit it. Only the implementer
+includes the selected recipe; researchers and reviewers receive the generic tracker rules.
+Both built-in install presets (`default` and `minimal`) use this setting.
+To add another workflow, create a template such as `.trk/prompts/_landing.gitlab.md.j2`
+and set `landing = "gitlab"`—no code change or edit to shared rules is needed.
+`trk agent check` reports a configured landing value with no matching template.
 
 | Check setting | Default, also when omitted | Meaning |
 | --- | --- | --- |
@@ -675,6 +687,7 @@ the MCP server and `trk agent preview`:
 | `type.name`, `type.description` | Resolved `types/<type>.toml` metadata, even with an agent override |
 | `config.check.interval`, `config.check.timeout`, `config.check.max_wakes` | Configured check durations and numeric wake cap |
 | `config.claims.agent_lease`, `config.run.worktrees` | Configured lease duration and worktree directory |
+| `config.run.landing` | Landing recipe name, used by the implementer's dynamic template include |
 | `agent.name`, `agent.description` | Selected agent metadata |
 | `tools` | List of available tools, each with `name` and `description` |
 | `worktree`, `actor`, `harness` | Session worktree path, actor and harness name; worktree/harness may be null |
