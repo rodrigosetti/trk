@@ -11,6 +11,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Serialized waiting checks for verification and landing, plus a live dashboard and Herdr integration.
 - Embedded installation seeds, configurable agents, harnesses, launchers, and prompts.
 - Replaced `default`/`minimal` presets with `local` (implicit merge) and `github` (PR), sharing implementer/researcher agents and `change` (default), `bug`, and `research` types. Existing config and legacy resources are preserved; see the upgrade manual for migration.
+- Configuration reference links and user-layer guidance in installed config and skill files, plus a manual link in CLI help.
 
 ### Beta compatibility and upgrades
 

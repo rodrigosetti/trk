@@ -34,6 +34,7 @@ use crate::render::{Format, Out, Renderer};
     name = "trk",
     version = env!("TRK_VERSION"),
     about = "A local issue tracker and agent launcher",
+    after_help = "Manual: https://rodrigosetti.github.io/trk/",
     max_term_width = 100
 )]
 struct Cli {
