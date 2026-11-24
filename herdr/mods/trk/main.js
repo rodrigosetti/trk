@@ -10,7 +10,7 @@
 //   launcher  only the sidebar button; opens or focuses this space's trk panel.
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, TextView } from "gpui-base";
+import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Input, TextView } from "gpui-base";
 import {
   exec, spaces, panes, agents, terminals, theme, props, run, notify, checking,
   shared, setShared, setBadge, setAgentOrder, nextCommand, watchFolder, layout,
@@ -690,11 +690,14 @@ export default class Trk extends View {
         .child(div().flex_1().min_w(0).truncate().text_color(this.status?.level === "error" ? t.blocked : t.muted).child(this.busy ? `${this.busy}…` : this.status.text))
       : null;
 
+    // Native pane sizes belong to this stable group, not the selected issue.
     const body = this.wide && this.open && selected
-      ? h_flex().flex_1().min_h(0).items_start()
-        .child(v_flex().w(380).flex_none().h_full().min_h(0).border_r(1).border_color(t.border).child(list))
-        .child(v_flex().id("trk-detail").flex_1().min_w(0).h_full().min_h(0).p(10).overflow_y_scrollbar()
-          .child(this.detailView(t, selected, now)))
+      ? h_resizable("trk-list-details").w_full().flex_1().min_h(0)
+        .child(resizable_panel().size(380).size_range(280)
+          .child(v_flex().h_full().min_h(0).child(list)))
+        .child(resizable_panel().size_range(300)
+          .child(v_flex().id("trk-detail").w_full().h_full().min_w(0).min_h(0).p(10).overflow_y_scrollbar()
+            .child(this.detailView(t, selected, now))))
       : list;
 
     return root.child(this.header(t, name)).child(body).when(Boolean(footer), (el) => el.child(footer));

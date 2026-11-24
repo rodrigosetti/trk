@@ -10,7 +10,7 @@ async function dashboard(state) {
   const executions = [];
   const modules = {
     "gpui-kit": { View: class {}, div() {}, svg() {} },
-    "gpui-base": { v_flex() {}, h_flex() {}, InputState: {}, Input() {}, TextView: {} },
+    "gpui-base": { v_flex() {}, h_flex() {}, h_resizable() {}, resizable_panel() {}, InputState: {}, Input() {}, TextView: {} },
     herdr: {
       spaces: () => state.spaces,
       panes: () => state.panes,
