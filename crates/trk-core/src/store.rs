@@ -197,31 +197,8 @@ fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<(
     }
 }
 
-fn migrations() -> Vec<M<'static>> {
-    vec![
-        M::up(include_str!("schema.sql")),
-        // Existing holders predate group tracking: retain unknown ownership
-        // rather than treating a dead runner as proof its command is gone.
-        M::up(
-            "ALTER TABLE check_lock ADD COLUMN pgid INTEGER;
-             UPDATE check_lock SET pgid = 0",
-        ),
-        M::up(
-            "ALTER TABLE issue ADD COLUMN wake_count INTEGER NOT NULL DEFAULT 0 CHECK (wake_count >= 0)",
-        ),
-        M::up("ALTER TABLE claim ADD COLUMN launcher TEXT"),
-        // Current links only; their history is in `set` events.
-        M::up(
-            "CREATE TABLE link (
-               issue_id    TEXT NOT NULL REFERENCES issue(id),
-               url         TEXT NOT NULL CHECK (length(url) > 0),
-               label       TEXT,
-               created_by  TEXT NOT NULL REFERENCES actor(id),
-               created_at  TEXT NOT NULL,
-               PRIMARY KEY (issue_id, url)
-             )",
-        ),
-    ]
+fn migrations() -> [M<'static>; 1] {
+    [M::up(include_str!("schema.sql"))]
 }
 
 /// Issue id prefixes: a lowercase letter, then lowercase letters and digits.

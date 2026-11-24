@@ -65,37 +65,15 @@ sessions keep the binary they started with.
 
 ### Active sessions during upgrades
 
-Opening the shared database with a newer trk can apply forward schema migrations. An older,
-already-running MCP server cannot use a schema newer than its compiled migration set. It returns
-`newer_database`, with the database path, `database_version` (SQLite `user_version`) and
-`supported_version`, plus restart guidance. These numbers are **not** the JSON envelope's
-`schema_version`. The database is not downgraded or reset. Binaries predating this error may
-instead return the internal rusqlite_migration “migration number that is too high” error;
-the recovery is the same.
+Finish active sessions before a schema-changing upgrade. Running MCP servers keep the
+binary they started with; replacing the executable does not upgrade them.
 
-To avoid interrupted tools and lease renewal, finish active sessions before a schema-changing
-upgrade. Otherwise:
+If an older server encounters a newer schema, it returns `newer_database` with the database
+path, `database_version` (SQLite `user_version`) and `supported_version`. These are not the
+JSON envelope's `schema_version`. The database is not downgraded or reset.
 
-1. Preserve uncommitted work and handoff text. Have the human compare the installed
-   `trk --version` and `trk whoami --json` with the harness's MCP launch command and its
-   `TRK_DIR` (for omp, the worktree's `.omp/mcp.json`). Confirm the executable and
-   project directory match; a working CLI alone does not establish that.
-2. Install a trk that supports the database, then restart the harness's trk MCP connection
-   using that executable. Keep the original issue, actor, agent and project
-   directory. Restart/reconnect through the harness if supported; otherwise preserve the
-   session context and restart the harness with its existing MCP configuration.
-   trk does not hot-reload migrations or automatically replace/re-exec a running MCP server.
-3. Call `get_task` after reconnecting. Reads work without an active claim. If the original
-   claim remains active, resume or hand back normally. Lease renewal cannot access an
-   incompatible database, so do not assume a long-interrupted session still owns its issue.
-4. If this is the waiting session (the latest claim was released with reason `waiting`,
-   and the issue is still waiting), notes and follow-ups still work; lifecycle changes do
-   not. After reconnecting, a human can authorize more work in that live session with
-   `trk resume <ID> -m "Continue with the preserved handoff" --json`. Otherwise stop agent
-   writes. The human can preserve handoff text with `trk note <ID> ...`; if the waiting
-   session is gone, use `trk reopen <ID> -m "Recover the handoff"` then `trk run <ID>`.
-   Resolve blockers first; do not steal claims, impersonate another actor or edit the
-   database to recover a handoff.
-
-Restarting an MCP server does not claim an issue or bypass dependency/ownership checks.
+Preserve uncommitted work and handoff text, install a compatible trk, and restart the
+harness's MCP connection with that executable and the original project directory, issue
+and actor. Call `get_task` after reconnecting. Restarting does not claim an issue or bypass
+dependency/ownership checks; if the claim has expired, preserve the handoff for the human.
 
