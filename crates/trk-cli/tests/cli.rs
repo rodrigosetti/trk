@@ -2069,7 +2069,7 @@ fn mcp_server_over_stdio() {
         .unwrap();
     assert_eq!(
         followup_tool["inputSchema"]["properties"]["type"]["enum"],
-        json!(["bug", "research", "task"])
+        json!(["bug", "ops", "research", "task"])
     );
     let type_description = followup_tool["inputSchema"]["properties"]["type"]["description"]
         .as_str()
