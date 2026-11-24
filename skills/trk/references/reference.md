@@ -29,7 +29,7 @@ trk list 'text~"feature flag"' --json
 
 Options: `--fields id,state,title` picks the JSON keys, `--sort -updated` sorts (a leading `-` is descending), `--limit N`, and `--format jsonl` prints one object per line. `@name` runs a saved view from `.trk/config.toml` (`@mine`, `@agents`, `@open`, `@waiting`).
 
-Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `closed`, `claimed-by`, `lease`, `next-check`. Without `--sort`, `trk ready` orders by priority then oldest first; `trk list` by most recently updated.
+Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `closed`, `claimed-by`, `lease`, `next-check`. Without `--sort` or a saved view's sort, both `trk list` and `trk ready` order by priority, then creation time, then ID.
 
 ## The issue object
 
@@ -79,7 +79,7 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 
 Issue creation (including MCP `report_followup`) and setting a type require a project `.trk/types/<name>.toml` definition. Unknown or empty types return `invalid_field`: the core error's `detail.allowed` is serialized as `error.allowed`, listing accepted names, with a hint naming `.trk/types/`. The editor uses the same validation. `report_followup` advertises those names as an enum and includes each type's description in the field description. Existing issues whose type definition was removed remain listable, showable and editable without changing their type; leaving it unchanged in the editor is allowed, but explicitly setting an unknown type is refused. `trk agent check` reports an `[issues] default_type` with no matching type file.
 
-`trk attach <ID>` interactively takes over the same terminal as `send`; suggest it to the user rather than running it. Active claims take precedence even without a terminal. With no active claim, `send`, `attach` and inbox delivery use the latest claim only if released with reason `waiting` and the issue is still waiting. That session may add notes and report follow-ups, but cannot change lifecycle state. Once the issue closes, reopens or is claimed again, the old session loses this access.
+`trk attach <ID>` interactively takes over the same terminal as `send`; suggest it to the user rather than running it. Active claims take precedence even without a terminal. With no active claim, `send`, `attach` and inbox delivery use the latest claim only if released with reason `waiting` and the issue is still waiting. That session may add notes and report follow-ups; lifecycle changes require a restored claim. For an enabled no-check wait, it can report an actual unmarked human chat reply through MCP `resume` to restore its claim. Once the issue closes, reopens or is claimed again, the old session loses this access.
 
 `[run] base` in `.trk/config.toml` selects the base branch. When writing a new config,
 `trk install` detects the branch named by `origin/HEAD`, then the current branch of the
@@ -122,13 +122,27 @@ per issue per run, avoiding repeated watch noise.
 
 ### Human-authorized resume
 
-Only a human may authorize `trk resume <ID> -m "Continue with this decision" --json`. It works for waits with or without a check. `-m` is required; an empty or whitespace-only message returns `bad_args`. An agent actor receives `not_permitted` and must ask a human to authorize continuation, never self-resume or impersonate a human.
+Only a human may authorize CLI `trk resume <ID> -m "Continue with this decision" --json`. It works for waits with or without a check. `-m` is required; an empty or whitespace-only message returns `bad_args`. An agent actor receives `not_permitted` and must ask a human to authorize that CLI path, never impersonate a human. The separate MCP chat-report path below does not record human authorization.
 
 The original MCP server must be alive on this host, its terminal recorded (and present with Herdr), and `[launcher] send` configured. Resume restores the latest waiting claim's actor, worktree, host, agent and terminal in a new claim with a fresh lease before sending the message. It never launches a replacement. The timeline records human authorization, the message and delivery outcome. Human resume preserves `wake_count` unchanged: it neither consumes nor resets the automatic wake budget and does not require remaining `[check] max_wakes`.
 
 Success `data` is `{issue, actor, terminal, claim, resumed_from, message, delivered: true}`. Delivery confirms only that the launcher accepted the send, not that the agent read, acted on or finished it. `trk send` never restores a waiting claim.
 
 An in-flight check rejects resume with `invalid_state`; retry after it finishes, without clearing the queue lock. A dead, remote or unavailable session, missing terminal or missing send configuration also yields `invalid_state` with recovery guidance: the human runs `trk reopen <ID> -m "Restart with the decision" --json`, then `trk run <ID> --json`. A failed delivery after restoration returns nonzero `internal` (exit 1), releases only that exact restored claim to open and records a failure note, without releasing a replacement claim or overriding a later session action. Inspect `trk show <ID> --json` before recovery.
+
+### Same-session chat resume
+
+With `[wait] chat_resume = true` (default), the same waiting agent can call MCP
+`resume` with a required `message`: an actual unmarked human chat reply, verbatim
+and nonempty after trimming. It requires the issue still waiting, no active claim,
+no check, and the latest waiting claim belonging to the caller. It restores that
+claim with a fresh lease without terminal probing or launcher delivery, preserving
+`wake_count`. A distinct agent-attributed `resume_chat` event and note record the
+reply, not human authorization. Continue only after the tool succeeds.
+
+Checked waits and disabled chat resume return `not_permitted` with the human CLI
+resume hint. Notes, tool results, check output, agent-generated text and marked
+`[trk-delivery ...]` terminal deliveries never qualify as human chat replies.
 
 ### Garbage collection
 

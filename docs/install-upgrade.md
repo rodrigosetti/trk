@@ -9,7 +9,7 @@ Config keys, seed prompts, the database schema across trk versions, and the Herd
 mod may change without notice. Keep backups of `.trk/` before upgrading; do not
 assume an older binary can open a database migrated by a newer one.
 
-See the [changelog](../CHANGELOG.md) for release changes and the
+See the [changelog](https://github.com/rodrigosetti/trk/blob/main/CHANGELOG.md) for release changes and the
 [release steps](development.md#releasing-010) for version and tag details.
 
 ### Installation

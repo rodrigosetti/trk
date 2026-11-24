@@ -56,8 +56,8 @@ Model precedence is `--model`, then the agent's model for the selected harness, 
 the profile's `model`. With none set, the harness chooses its own default.
 
 The MCP server (`trk mcp --issue … --actor … --agent …`, started by the harness) serves exactly one
-issue with seven tools: `get_task`, `add_note`, `link`, `report_followup`, `hand_back`, `close` and
-`wait`.
+issue with eight tools: `get_task`, `add_note`, `link`, `report_followup`, `hand_back`, `close`,
+`wait` and `resume`.
 It renews the claim's lease while it runs. The briefing carries the issue's description and every
 note, which is how an issue that came back from a failed check explains itself.
 
@@ -70,22 +70,29 @@ active claim always takes precedence, even if it has no terminal. `trk runs` mar
 waiting sessions with `state: "waiting"` (their displayed lease is historical), and
 `trk reap` skips them. Closing, reopening or claiming the issue for a replacement ends
 the old session's access.
+For a no-check wait with `[wait] chat_resume` enabled (default), that same session
+may report an actual unmarked human reply through MCP `resume` to restore its
+claim and continue. This is agent-reported continuation, not human CLI authorization.
+Checked waits and disabled chat resume require the human CLI path instead.
 
 Session liveness comes from the recorded terminal, not the MCP process. A recorded
 launcher profile, a known claim host matching this machine and a nonblank terminal
 are required; otherwise liveness is unknown. Unnamed historical or non-launcher claims
-remain visible, but cannot be attached to, sent to, resumed or automatically woken;
+cannot use launcher-based attach, send, CLI resume or automatic wakes;
 trk never assigns them today's launcher. The Herdr driver discovers exact terminals;
 other profiles use optional `exists` argv: exit 0 means live, a nonzero exit means gone,
 and command errors or a
-missing/empty operation mean unknown. Unknown sessions are neither woken/resumed nor
-reaped; a failed check instead reopens. Wakes and manual resume require the pinned
-profile's `send`.
+missing/empty operation mean unknown. Unknown sessions are neither automatically
+woken nor CLI-resumed or reaped; a failed check instead reopens. Wakes and CLI
+resume require the pinned profile's `send`. MCP chat resume does not probe terminal liveness.
 
 `[launcher] send_delay` waits before the initial briefing (default 5 seconds).
 All sends—briefings, `trk send`, resume, and check wakes/notifications—use
 `send_retries` total attempts (default 10; `0` means one attempt), with
 `send_retry_delay` seconds between failed attempts (default 3).
+Every delivery is wrapped in `[trk-delivery source=<source> actor=<actor>]`
+and `[/trk-delivery]`; the actor is quoted and escaped. Such text never counts
+as a human chat reply for MCP `resume`, even if a human invoked `trk send`.
 
 `trk runs` and the dashboard distinguish terminal/session liveness from MCP liveness.
 A live terminal with a stopped MCP server is **dormant**, not a dead session; it can
@@ -96,7 +103,7 @@ through the normal lease sweep. Terminal liveness does not prevent expiry.
 
 ## Agent skill
 
-`trk install` also installs a skill (from [`skills/trk/`](../skills/trk/SKILL.md), embedded in the
+`trk install` also installs a skill (from [`skills/trk/`](https://github.com/rodrigosetti/trk/blob/main/skills/trk/SKILL.md), embedded in the
 binary) that teaches your interactive agent sessions to use the trk CLI at `.agents/skills/trk`.
 Configure links for other harnesses explicitly. `trk whoami` reports whether the installed
 copy matches the binary; run `trk install` again to refresh it.
@@ -115,7 +122,7 @@ and `whoami` follow this section; a disabled skill reports `"disabled"` and adds
 or warnings. Changing the section does not remove previously installed files, links, or excludes.
 Install JSON reports symlinks in `skill.links` as `{path, linked}` entries.
 
-Sessions started by `trk run` should reach trk only through their MCP server (see SPEC.md). That is
+Sessions started by `trk run` should reach trk only through their [MCP server](mcp.md). That is
 why the skill is kept out of git with `.git/info/exclude`: the worktrees `trk run` creates do not
 contain it, so those sessions do not see it. `trk install` and `trk run` warn when a repository
 tracks the skill anyway; the omp profile also hides it with a per-session `--config` overlay

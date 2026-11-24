@@ -1,3 +1,5 @@
+# Development
+
 For development: `cargo build`, `cargo test --workspace --locked`, and `cargo lint`.
 `cargo lint` runs `cargo clippy --workspace --all-targets -- -D warnings`, rejecting
 compiler and Clippy warnings in every workspace target, including tests and examples.
@@ -18,7 +20,7 @@ the release changes have landed on `main`; agents must not create or push the ta
 
 1. In the release checkout, ensure `main` is up to date and the working tree is clean.
    Confirm `workspace.package.version` in `Cargo.toml` is `0.1.0`.
-2. Review [CHANGELOG.md](../CHANGELOG.md), replace the pending release date with the
+2. Review [CHANGELOG.md](https://github.com/rodrigosetti/trk/blob/main/CHANGELOG.md), replace the pending release date with the
    actual release date, and commit and land that change before tagging.
 3. Run `cargo test --workspace --locked`, `cargo lint`, and
    `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs` on the release
@@ -44,7 +46,7 @@ Before installing the release, users should finish active sessions and follow th
 | Crate | Role |
 | --- | --- |
 | `trk-core` | The state machine, claims and leases, the waiting queue, query language, `Store` (the only writer) |
-| `trk-agent` | Agent definitions, the seven trk tools and their executor, prompt rendering, harness profiles, launch spec |
+| `trk-agent` | Agent definitions, the eight trk tools and their executor, prompt rendering, harness profiles, launch spec |
 | `trk-mcp` | The per-issue MCP server (rmcp, single-threaded Tokio) |
 | `trk-cli` | The `trk` binary, rendering, `trk check`, `trk run` and the launcher templates |
 
@@ -76,3 +78,25 @@ Before installing the release, users should finish active sessions and follow th
   is gone on this machine is replaced; a holder on another host is never replaced automatically.
 - **`TRK_NOW`** fixes the clock, for tests.
 
+## Building the manual
+
+The [manual](https://rodrigosetti.github.io/trk/) is built with
+[mdBook](https://rust-lang.github.io/mdBook/). Install the version pinned in
+`.github/workflows/pages.yml`, then build or preview from the repository root:
+
+```sh
+cargo install mdbook --version 0.5.4 --locked
+mdbook build
+mdbook serve --open
+```
+
+`book.toml` uses `docs/` as its source and `docs/SUMMARY.md` as its navigation.
+Add new chapters to the summary; generated HTML goes in the ignored `book/`
+directory. Use relative links between chapters and absolute GitHub URLs for
+repository files outside `docs/`, so links work both in source and on Pages.
+
+The **Manual** workflow builds pull requests, pushes to `main`, and manual runs.
+Only builds on `main` deploy, using the `github-pages` environment. A repository
+administrator must enable **Settings → Pages → Build and deployment → Source:
+GitHub Actions** before the first deployment. No deployment branch or token
+secret is required; the deploy job uses the workflow's Pages and OIDC permissions.
