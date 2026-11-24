@@ -6,7 +6,7 @@ use trk_core::config::{ConfigDir, Level, UserConfig};
 
 fn seed() -> (tempfile::TempDir, ConfigDir) {
     let dir = tempfile::tempdir().unwrap();
-    for (path, content) in trk_core::seed::FILES {
+    for (path, content) in trk_core::seed::preset("default").unwrap() {
         let path = dir.path().join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, content).unwrap();

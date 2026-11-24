@@ -1,0 +1,22 @@
+name        = "implementer"
+description = "Implements an issue in its worktree and gets the change landed"
+
+instructions = "prompts/implementer.instructions.md.j2"   # → MCP server instructions
+briefing     = "prompts/briefing.md.j2"                   # → initial prompt
+inbox        = true
+
+# The trk tools are fixed: get_task, add_note, report_followup, hand_back,
+# close, wait. An agent gets all of them unless it narrows the list:
+# [trk_tools]
+# include = ["get_task", "add_note", "close", "hand_back"]
+
+# Other MCP servers the session gets, e.g.:
+# [[mcp]]
+# name    = "github"
+# command = "github-mcp-server"
+# args    = ["stdio", "--toolsets", "pull_requests"]
+# env     = { GITHUB_TOKEN = "${env:GITHUB_TOKEN}" }
+
+[harness]
+prefer        = ["omp", "claude-code"]   # first installed wins; `trk run --harness` overrides
+builtin_tools = "default"                # default | read-only | none

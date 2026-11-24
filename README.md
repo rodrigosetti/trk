@@ -32,15 +32,50 @@ cd ~/src/orch && trk install
 
 `trk install` creates `.trk/` in the project root (in a git repository, the root of the primary
 checkout): the database, the default config with every setting written out, and a `.gitignore`
-that keeps all of it out of git. It also installs the agent skill (see below). Every other
-command fails with `not_installed` until a project has been installed. Commands find the project
-from any subdirectory and from any of its git worktrees.
+that keeps all of it out of git. It also installs the agent skill (see below). Commands find
+the project from any subdirectory and from any of its git worktrees. Other project commands
+fail with `not_installed` until it has been installed.
+
+Choose the configuration seed with these install options:
+
+```sh
+trk install --list-presets              # default and minimal; no installation or writes
+trk install --preset default            # implicit default: all three agents and issue types
+trk install --preset minimal            # implementer + code-change, with their common prompts
+trk install --from /path/to/team-seed   # use only this directory's files, recursively
+```
+
+The built-in `seed/` directory is embedded recursively at build time, so adding or changing
+a seed file is picked up by the next build without maintaining a file list. Common files
+(`config.toml`, `prompts/_rules.md.j2`, and `prompts/briefing.md.j2`) live at the seed root;
+the installer also supplies the built-in `.gitignore`. `seed/presets/default/` adds the
+implementer, researcher and reviewer agents,
+the code-change, research and review types, and their instruction prompts.
+`seed/presets/minimal/` adds only implementer, code-change and the implementer's instructions.
+A preset's files replace common files at matching paths.
+
+`--from DIR` instead copies a fully resolved install layout directly into `.trk/`, including
+nested and binary files, with no built-in fallback or preset selection. Only regular files
+and directories are accepted; symlinks and special entries are rejected. Supply your own
+`.gitignore` if wanted. A `presets/` directory inside a custom source is ordinary content.
+`--from` and `--preset` cannot be combined;
+`--list-presets` cannot be combined with install modifiers. Listing works outside a project;
+its JSON data is `{"presets":["default","minimal"]}`.
+
+Only `config.toml` substitutes install-time markers: `{{EMAIL_LINE}}` becomes the human email
+setting (or a commented example), `{{PREFIX}}` becomes `--prefix` or the detected project
+prefix, and `{{BASE}}` becomes the TOML-quoted detected base branch. Other files are copied
+unchanged, including template markers.
 
 To upgrade after changing or pulling this checkout, run `./install.sh` again, then `trk install`
-in each project: it applies schema migrations, refreshes the agent skill, keeps your config
-files, and lists the ones that differ from the new defaults. `trk install --force` rewrites the
-config with the defaults. `trk --version` prints the commit the binary was built from. Running
-agent sessions keep the binary they started with.
+in each project, passing the same `--preset` or `--from` used for its installation. trk does
+not remember that selection. It applies schema migrations, refreshes the agent skill, keeps
+existing configuration files, and lists the ones that differ from the selected seed.
+For `config.toml`, only harness-profile differences count as drift, not project identity
+or formatting. `trk install --force` rewrites files supplied by the selected seed but does
+not prune other files; switching to minimal does not remove previously installed agents
+or types. `trk --version` prints the commit the binary was built from. Running agent
+sessions keep the binary they started with.
 
 The research and review type defaults now set `worktree = false`. Existing installations
 keep their type files; `trk install` lists `types/research.toml` and `types/review.toml`

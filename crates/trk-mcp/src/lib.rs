@@ -407,7 +407,7 @@ mod tests {
             ] {
                 let dir = tempfile::tempdir().unwrap();
                 let seed = dir.path().join("seed");
-                for (path, content) in trk_core::seed::FILES {
+                for (path, content) in trk_core::seed::preset("default").unwrap() {
                     let path = seed.join(path);
                     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                     std::fs::write(path, content).unwrap();
@@ -527,7 +527,7 @@ mod tests {
     fn stopped_mcp_restarts_after_failed_check_with_restored_actor_and_lease() {
         let dir = tempfile::tempdir().unwrap();
         let seed = dir.path().join("seed");
-        for (path, content) in trk_core::seed::FILES {
+        for (path, content) in trk_core::seed::preset("default").unwrap() {
             let path = seed.join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, content).unwrap();
