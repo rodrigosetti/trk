@@ -152,7 +152,7 @@ On each wake, fix only what the check reported and end the new work cycle, norma
 
 While claimed or waiting with a nonzero count, issue JSON includes top-level `wake_count` and pretty `trk show` displays a `wakes` line. Otherwise the count is omitted.
 
-Without a check, the issue waits until a human closes or reopens it, authorizes CLI resume, or replies in the same waiting session's chat and that agent successfully reports the reply through MCP `resume`. Running `trk wait` on an issue that is already waiting replaces its check, interval and reason.
+Without a check, the issue waits until a human closes it if nothing remains, reopens it for a new session, authorizes CLI resume, or replies in the same waiting session's chat and that agent successfully reports the reply through MCP `resume` when chat resume is enabled (the default). The no-check MCP `wait` result includes the exact `trk resume <ID> -m "<your decision>"` command with the real issue id. When `[wait] chat_resume = false`, say plainly that a chat reply alone will not continue the work, and end your chat question with that exact command. If the human replies only in chat while chat resume is disabled, repeat the command rather than only recording a note. Running `trk wait` on an issue that is already waiting replaces its check, interval and reason.
 
 ### Human-authorized continuation
 
@@ -167,8 +167,9 @@ An empty message is `bad_args`; an agent actor is `not_permitted`. `invalid_stat
 ### No-check chat continuation
 
 By default (`[wait] chat_resume = true`, also when omitted), the original waiting
-agent can use MCP `resume` to report an actual human reply received in its chat,
-verbatim. This is an agent-attributed report, **not human authorization**. The issue
+agent can use MCP `resume` to report an actual unmarked human reply received in its
+chat, verbatim, and continue only after success. This is an agent-attributed report,
+**not human authorization**. The issue
 must still be waiting with no check or active claim, and the latest waiting claim
 must belong to that same agent. The tool restores its claim and lease without
 terminal liveness checks or delivery, preserving `wake_count`. Set

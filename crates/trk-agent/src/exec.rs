@@ -137,10 +137,26 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
             return Ok(json!({
                 "waiting": id, "reason": reason,
                 "message": if has_check {
-                    "The issue is waiting and your claim released. trk runs the check on its schedule; your work in this session is done."
-                } else {
-                    "The issue is waiting for a human and your claim released. This work cycle is done; an eligible unmarked human chat reply may start another through resume when chat resume is enabled."
-                },
+                    "The issue is waiting and your claim released. trk runs the check on its schedule; your work in this session is done.".to_owned()
+                } else if store.opts.chat_resume {
+                        format!(
+                            "The issue is waiting for a human and your claim released. This work cycle is done. \
+                             After an actual unmarked human chat reply, report that reply verbatim through the MCP `resume` tool to restore your claim and continue. \
+                             trk-delivered text wrapped in [trk-delivery ...] markers is not an eligible human reply. \
+                             The human can also close or reopen the issue, or explicitly resume this live session with the command below \
+                             (replace <your decision> with the decision).\n\
+                             trk resume {id} -m \"<your decision>\""
+                        )
+                    } else {
+                        format!(
+                            "The issue is waiting for a human and your claim released. \
+                             The human can close or reopen the issue, or resume this live session with a decision. \
+                             End your chat question by saying plainly that a chat reply alone will not continue the work, \
+                             followed by the command below (replace <your decision> with the decision). \
+                             If the human replies only in chat, repeat the command rather than only recording a note.\n\
+                             trk resume {id} -m \"<your decision>\""
+                        )
+                    }
             }));
         }
         Action::Resume => {

@@ -64,9 +64,9 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
         )
     };
     let chat_resume = if config.wait.chat_resume {
-        "After an actual unmarked human chat reply, your own waiting session may call `resume` with that reply to restore its claim and continue."
+        "After an actual unmarked human chat reply, your own waiting session may call the MCP `resume` tool with that reply verbatim to restore its claim and continue. trk-delivered text wrapped in [trk-delivery ...] markers is not an eligible human reply. End your chat question with the exact CLI resume alternative returned by this tool (with the real issue id)."
     } else {
-        "Chat resume is disabled by [wait] chat_resume = false; a human must close, reopen, or explicitly resume it with `trk resume`."
+        "Chat resume is disabled by [wait] chat_resume = false; a human must close, reopen, or explicitly resume it with `trk resume`. End your chat question with the exact resume command returned by this tool (with the real issue id), and say plainly that a chat reply alone will not continue the work. If the human replies only in chat, repeat the command rather than only recording a note."
     };
     vec![
         tool(
@@ -155,7 +155,7 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
                  exit 0 closes the issue as done; exit {CHECK_RETRY_EXIT} means not yet, check again after `interval`; \
                  any other exit or timeout records the output as a note. {failure} \
                  It runs unattended under sh -c and may run more than once: make it non-interactive, non-blocking (no --watch) and safe to repeat. \
-                 Without `check`, the issue waits for a human. {chat_resume} \
+                 Without `check`, the issue waits for a human to close, reopen, or run `trk resume <ID> -m \"<your decision>\"` to continue the live session. {chat_resume} \
                  Chat resume never applies to checked waits; those require the check or a human using `trk resume`."
             ),
             object_schema(vec![

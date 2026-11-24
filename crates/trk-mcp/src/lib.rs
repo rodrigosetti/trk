@@ -427,6 +427,80 @@ mod tests {
     }
 
     #[test]
+    fn wait_returns_human_resume_guidance_only_without_a_check() {
+        for chat_resume in [true, false] {
+            for check in [None, Some(" \n\t"), Some("exit 75")] {
+                let mut user = UserConfig::default();
+                user.wait.chat_resume = chat_resume;
+                let (_dir, mut store, issue, server) = chat_resume_fixture(user);
+                store
+                    .write(ACTOR, false, |c| {
+                        c.bind_terminal(&issue, "waiting-terminal")
+                    })
+                    .unwrap();
+                let original = active_claim(&store, &issue).unwrap();
+                let mut args = json!({"reason": "SQLite or Dolt?"});
+                if let Some(check) = check {
+                    args["check"] = json!(check);
+                }
+                let (ok, out) = server.call_sync("wait", args);
+                assert!(ok, "{out}");
+                assert_eq!(out["waiting"], issue);
+                let message = out["message"].as_str().unwrap();
+                let has_check = check.is_some_and(|s| !s.trim().is_empty());
+                if has_check {
+                    assert!(!message.contains("trk resume"), "{message}");
+                } else {
+                    assert!(
+                        message.ends_with(&format!("trk resume {issue} -m \"<your decision>\"")),
+                        "{message}"
+                    );
+                }
+                assert_released(&server, State::Waiting);
+
+                let (ok, out) = server.call_sync("resume", json!({"message": "Use SQLite."}));
+                if has_check || !chat_resume {
+                    assert!(!ok, "{out}");
+                    assert_eq!(out["error"]["code"], "not_permitted");
+                    assert_eq!(
+                        store.read(None, |c| c.issue(&issue)).unwrap().state,
+                        State::Waiting
+                    );
+                    assert!(active_claim(&store, &issue).is_none());
+                    if has_check {
+                        continue;
+                    }
+                    // Exercise the human operation behind the concrete CLI alternative.
+                    store
+                        .write(HUMAN, false, |c| {
+                            c.resume(
+                                &issue,
+                                original.id,
+                                c.issue_revision(&issue)?,
+                                "Use SQLite.",
+                            )
+                        })
+                        .unwrap();
+                } else {
+                    assert!(ok, "{out}");
+                    assert_eq!(out["result"]["resumed"], issue);
+                    assert_eq!(out["task"]["state"], "claimed");
+                }
+                assert_eq!(active_claim(&store, &issue).unwrap().actor, ACTOR);
+                let (ok, out) = server.call_sync(
+                    "close",
+                    json!({"reason": "done", "note": "Implemented the chosen store."}),
+                );
+                assert!(ok, "{out}");
+                assert_eq!(
+                    store.read(None, |c| c.issue(&issue)).unwrap().state,
+                    State::Closed
+                );
+            }
+        }
+    }
+
+    #[test]
     fn followups_use_the_configured_default_type_unless_overridden() {
         let dir = tempfile::tempdir().unwrap();
         let seed = dir.path().join("seed");
