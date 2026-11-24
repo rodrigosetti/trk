@@ -104,18 +104,9 @@ pub fn choose(env: &Env) -> Result<Launcher> {
         .clone()
         .try_into()
         .map_err(|error| invalid(format!("launcher.use: {error}")))?;
-    for name in names {
-        let profile = for_claim(env, Some(&name))?;
-        let usable = if let Some(probe) = &profile.available {
-            profile
-                .operation(Some(probe), "", None, false)
-                .is_ok_and(|out| out.is_some_and(|out| out.0))
-        } else if profile.is_herdr() {
-            crate::herdr::available().is_ok()
-        } else {
-            true
-        };
-        if usable {
+    for name in &names {
+        let profile = for_claim(env, Some(name))?;
+        if profile.is_available() {
             if !profile.is_herdr() && profile.start.as_ref().is_none_or(|start| start.is_empty()) {
                 return Err(invalid(format!(
                     "launcher.{name}.start: missing nonempty start template"
@@ -124,10 +115,28 @@ pub fn choose(env: &Env) -> Result<Launcher> {
             return Ok(profile);
         }
     }
-    Err(invalid("launcher.use: no available launcher"))
+    Err(invalid("launcher.use: no available launcher").with_hint(format!(
+        "profiles tried: {}; install one of these launchers (Herdr, hc, or tmux), edit [launcher] use in config.toml, or run `trk run --fg`",
+        if names.is_empty() {
+            "(none; [launcher] use is empty)".to_owned()
+        } else {
+            names.join(", ")
+        }
+    )))
 }
 
 impl Launcher {
+    pub fn is_available(&self) -> bool {
+        if let Some(probe) = &self.available {
+            self.operation(Some(probe), "", None, false)
+                .is_ok_and(|out| out.is_some_and(|out| out.0))
+        } else if self.is_herdr() {
+            crate::herdr::available().is_ok()
+        } else {
+            true
+        }
+    }
+
     pub fn terminal_name(&self, vars: &[(&str, &str)]) -> String {
         let template = self.name_template.as_deref().unwrap_or("trk-{id}");
         let allowed = self.name_chars.as_deref().unwrap_or("a-z0-9_-");
