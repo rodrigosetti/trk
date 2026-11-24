@@ -137,9 +137,16 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
             return Ok(json!({
                 "waiting": id, "reason": reason,
                 "message": if has_check {
-                    "The issue is waiting and your claim released. trk runs the check on its schedule; your work in this session is done."
+                    "The issue is waiting and your claim released. trk runs the check on its schedule; your work in this session is done.".to_owned()
                 } else {
-                    "The issue is waiting for a human and your claim released. Your work in this session is done."
+                    format!(
+                        "The issue is waiting for a human and your claim released. \
+                         The human can close or reopen the issue, or resume this live session with a decision. \
+                         End your chat question by saying plainly that a chat reply alone will not continue the work, \
+                         followed by the command below (replace <your decision> with the decision). \
+                         If the human replies only in chat, repeat the command rather than only recording a note.\n\
+                         trk resume {id} -m \"<your decision>\""
+                    )
                 },
             }));
         }

@@ -426,6 +426,67 @@ mod tests {
     }
 
     #[test]
+    fn wait_returns_human_resume_guidance_only_without_a_check() {
+        for check in [None, Some(" \n\t"), Some("exit 75")] {
+            let dir = tempfile::tempdir().unwrap();
+            let seed = dir.path().join("seed");
+            write_seed(&seed);
+            let db = dir.path().join("trk.db");
+            let opts = StoreOpts::default();
+            let mut store = Store::install(&db, opts.clone()).unwrap();
+            let issue = store
+                .write(HUMAN, false, |c| {
+                    c.create(NewIssue {
+                        title: "Choose a store".into(),
+                        ..Default::default()
+                    })
+                })
+                .unwrap();
+            store
+                .write(ACTOR, false, |c| c.claim(&issue, ClaimOpts::default()))
+                .unwrap();
+            let server = TrkServer::new(McpArgs {
+                db,
+                config: ConfigDir::with_user_dir(&seed, None),
+                project_root: dir.path().to_path_buf(),
+                user: UserConfig::default(),
+                opts,
+                issue: issue.clone(),
+                actor: ACTOR.into(),
+                agent: "implementer".into(),
+                base: "main".into(),
+            })
+            .unwrap();
+            let mut args = json!({"reason": "SQLite or Dolt?"});
+            if let Some(check) = check {
+                args["check"] = json!(check);
+            }
+            let (ok, out) = server.call_sync("wait", args);
+            assert!(ok, "{out}");
+            assert_eq!(out["waiting"], issue);
+            let message = out["message"].as_str().unwrap();
+            if check.is_some_and(|s| !s.trim().is_empty()) {
+                assert!(!message.contains("trk resume"), "{message}");
+                assert!(message.contains("trk runs the check"), "{message}");
+            } else {
+                assert!(
+                    message.ends_with(&format!("trk resume {issue} -m \"<your decision>\"")),
+                    "{message}"
+                );
+                assert!(
+                    message.contains("a chat reply alone will not continue the work"),
+                    "{message}"
+                );
+                assert!(
+                    message.contains("repeat the command rather than only recording a note"),
+                    "{message}"
+                );
+            }
+            assert_released(&server, State::Waiting);
+        }
+    }
+
+    #[test]
     fn followups_use_the_configured_default_type_unless_overridden() {
         let dir = tempfile::tempdir().unwrap();
         let seed = dir.path().join("seed");
