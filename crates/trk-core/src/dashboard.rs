@@ -57,6 +57,8 @@ pub struct Session {
     pub agent: Option<String>,
     pub harness: Option<String>,
     pub terminal: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<String>,
     pub worktree: Option<String>,
     pub host: Option<String>,
     pub claimed_at: String,
@@ -145,12 +147,12 @@ pub struct Detail {
 }
 
 impl Ctx<'_> {
-    /// The snapshot. The caller probes terminal liveness from claim host and
-    /// terminal, and MCP server liveness separately from actor metadata.
+    /// The snapshot. The caller probes terminal liveness from the pinned
+    /// launcher, host and terminal, and MCP liveness from actor metadata.
     pub fn dashboard(
         &self,
         activity: usize,
-        alive: &dyn Fn(Option<&str>, Option<&str>) -> Option<bool>,
+        alive: &dyn Fn(Option<&str>, Option<&str>, Option<&str>) -> Option<bool>,
         mcp_alive: &dyn Fn(&Value) -> Option<bool>,
     ) -> Result<Dashboard> {
         let now = self.ts();
@@ -173,8 +175,8 @@ impl Ctx<'_> {
         let rows = st.query_map([], |r| {
             Ok((
                 row_to_claim(r)?,
-                r.get::<_, Option<String>>(12)?,
                 r.get::<_, Option<String>>(13)?,
+                r.get::<_, Option<String>>(14)?,
             ))
         })?;
         for row in rows {
@@ -187,7 +189,11 @@ impl Ctx<'_> {
                 c.issue_id.clone(),
                 Session {
                     alive: if is_agent {
-                        alive(c.host.as_deref(), c.terminal.as_deref())
+                        alive(
+                            c.launcher.as_deref(),
+                            c.host.as_deref(),
+                            c.terminal.as_deref(),
+                        )
                     } else {
                         None
                     },
@@ -196,6 +202,7 @@ impl Ctx<'_> {
                     agent: c.agent,
                     harness,
                     terminal: c.terminal,
+                    launcher: c.launcher,
                     worktree: c.worktree,
                     host: c.host,
                     claimed_at: c.claimed_at,

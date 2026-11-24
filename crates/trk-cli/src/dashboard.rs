@@ -46,11 +46,15 @@ fn pid_exists(pid: i64) -> bool {
         || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-pub fn snapshot(store: &Store, launcher: &run::Launcher) -> Result<Dashboard> {
+pub fn snapshot(store: &Store, env: &Env) -> Result<Dashboard> {
     store.read(None, |c| {
         c.dashboard(
             ACTIVITY,
-            &|host, terminal| run::session_alive(launcher, host, terminal),
+            &|profile, host, terminal| {
+                crate::launcher::for_claim(env, profile)
+                    .ok()
+                    .and_then(|launcher| run::session_alive(&launcher, host, terminal))
+            },
             &run::mcp_alive,
         )
     })
@@ -64,7 +68,6 @@ struct Job {
 struct App<'a> {
     env: &'a Env,
     store: Store,
-    launcher: run::Launcher,
     host: Option<String>,
     ui: Ui,
     data_version: i64,
@@ -80,8 +83,7 @@ struct App<'a> {
 pub fn dashboard(env: &Env, json: bool) -> Result<Out> {
     let store = env.store()?;
     let host = hostname();
-    let launcher = run::launcher(env)?;
-    let snap = snapshot(&store, &launcher)?;
+    let snap = snapshot(&store, env)?;
     if json || !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
         return Ok(Out::Data(serde_json::to_value(&snap)?));
     }
@@ -95,7 +97,6 @@ pub fn dashboard(env: &Env, json: bool) -> Result<Out> {
         ui: Ui::new(project, snap, store.now()),
         env,
         store,
-        launcher,
         host,
         data_version: 0,
         refreshed: Instant::now(),
@@ -157,7 +158,7 @@ impl App<'_> {
 
     fn refresh(&mut self) {
         self.refreshed = Instant::now();
-        match snapshot(&self.store, &self.launcher) {
+        match snapshot(&self.store, self.env) {
             Ok(snap) => {
                 let keep = self.ui.issue().map(|i| i.id.clone());
                 self.ui.snap = snap;
@@ -598,30 +599,8 @@ impl App<'_> {
         Ok(())
     }
 
-    /// Show the session: its own pane when the dashboard runs inside the
-    /// Herdr window (a second view of the same terminal would fight over
-    /// its size), otherwise attach to it here.
+    /// Focus the recorded launcher's pane, or attach in this terminal.
     fn go_to_session(&mut self, terminal: &mut DefaultTerminal, id: &str) -> Result<()> {
-        let name = self
-            .ui
-            .issue()
-            .and_then(|i| i.session.as_ref())
-            .and_then(|s| s.terminal.clone())
-            .unwrap_or_default();
-        let herdr = run::launcher(self.env).is_ok_and(|l| l.herdr);
-        if herdr {
-            match crate::herdr::focus(&name) {
-                Ok(true) => {
-                    self.say(format!("showing the pane of {id} ({name})"));
-                    return Ok(());
-                }
-                Ok(false) => {}
-                Err(e) => {
-                    self.fail(e);
-                    return Ok(());
-                }
-            }
-        }
         let attached = self.suspended(terminal, |app| run::attach(app.env, id))?;
         match attached {
             Ok(_) => self.say(format!("detached from {id}")),
@@ -724,7 +703,11 @@ mod tests {
     }
 
     fn ui_of(s: &Store) -> Ui {
-        let snap = super::snapshot(s, &crate::run::Launcher::default()).unwrap();
+        let snap = s
+            .read(None, |c| {
+                c.dashboard(super::ACTIVITY, &|_, _, _| None, &crate::run::mcp_alive)
+            })
+            .unwrap();
         let mut ui = Ui::new("house".into(), snap, s.now());
         let id = ui.issue().unwrap().id.clone();
         let detail = s.read(None, |c| c.dashboard_detail(&id)).unwrap();
@@ -803,7 +786,7 @@ mod tests {
         let (_d, s) = sample();
         let snap = s
             .read(None, |c| {
-                c.dashboard(0, &|_, _| Some(true), &|_| Some(false))
+                c.dashboard(0, &|_, _, _| Some(true), &|_| Some(false))
             })
             .unwrap();
         let mut ui = Ui::new("house".into(), snap, s.now());

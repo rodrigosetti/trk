@@ -4,11 +4,11 @@ Nov 21, 2026 · @Rodrigo Setti
 
 ## Overview
 
-`trk` is a local issue tracker and agent launcher in one Rust binary. It keeps the work of every repository in one SQLite database in the user's home directory. Humans use the CLI. Agents work through a per-issue MCP server. `trk run [ID]` starts an agent session on one issue in a persistent terminal (herdr-core, `hc`), with focused instructions and only that issue's tools.
+`trk` is a local issue tracker and agent launcher in one Rust binary. Each project keeps its SQLite database in `.trk/`. Humans use the CLI. Agents work through a per-issue MCP server. `trk run [ID]` starts an agent session on one issue through a named launcher profile, with focused instructions and only that issue's tools.
 
 Issues have routing-only types and share one state machine. An agent work cycle ends with the issue **closed**, **waiting** for something outside the session, or handed back **open**. A waiting check is a shell command that `trk check` runs until it passes, fails, or says "not yet"; a failed check may wake the same session for another work cycle.
 
-**Terms.** An *agent* is instructions plus tools. A *harness* is the program that runs an agent: Claude Code, pi, omp, Codex, OpenCode. A *launcher* is where the harness runs: `hc`. A *check* is the shell command of a waiting issue.
+**Terms.** An *agent* is instructions plus tools. A *harness* is the program that runs an agent: Claude Code, pi, omp, Codex, OpenCode. A *launcher* is where the harness runs: Herdr, `hc`, tmux, or another configured backend. A *check* is the shell command of a waiting issue.
 
 **Goals**
 
@@ -19,7 +19,7 @@ Issues have routing-only types and share one state machine. An agent work cycle 
 - "Done" means landed. Work that is finished but not merged, reviewed or decided is waiting, not closed, and still blocks what depends on it.
 - Failures return as work: a failed check wakes its live waiting session, or reopens its issue, with the evidence in a note.
 - Agents reach trk only through MCP, never through CLI skills.
-- `trk run` starts a focused session for one issue, with minimal coupling to `hc`: launcher command templates and an optional terminal-liveness probe.
+- `trk run` starts a focused session for one issue using named launcher profiles with command templates and optional driver defaults.
 
 **Non-goals**
 
@@ -161,7 +161,7 @@ trk wait <ID> --json -r "PR 12 merged" --every 10m -c "$pr_check"
 
 Entering waiting releases the claim with reason `waiting`; nobody holds the issue. The session and terminal may stay open as the waiting session (see Claims). Running `wait` on an issue that is already waiting replaces its check, interval and reason, which is how a human repairs a bad check without reopening.
 
-On failure, the CLI checks the latest claim released as `waiting`: its nonblank terminal must be confirmed live on its known local claim host, and `[launcher] send` must be configured. MCP liveness is independent and is not a prerequisite. `[check] max_wakes` limits restorations per session (default `5`, including when omitted from existing configs); `0` disables waking. In the same transaction that records the failed check, trk verifies `wake_count < max_wakes`, restores that session's actor, worktree, host, agent and terminal in a new claim with a fresh lease, and increments the persistent `wake_count`. Its MCP connection can renew and use its tools again once running; a dormant connection must restart with the same identity first. The CLI then sends a prompt with `wake N of M` and the check output asking the session to address the failure and end again, normally with `wait`.
+On failure, the CLI checks the latest claim released as `waiting`: its nonblank terminal must be confirmed live on its known local claim host, and its pinned launcher must provide `send`. MCP liveness is independent and is not a prerequisite. `[check] max_wakes` limits restorations per session (default `5`, including when omitted from existing configs); `0` disables waking. In the same transaction that records the failed check, trk verifies `wake_count < max_wakes`, restores that session's actor, worktree, host, agent, terminal and launcher profile in a new claim with a fresh lease, and increments the persistent `wake_count`. Its MCP connection can renew and use its tools again once running; a dormant connection must restart with the same identity first. The CLI then sends a prompt with `wake N of M` and the check output asking the session to address the failure and end again, normally with `wait`.
 
 The woken session fixes only what the check reported, then ends the new cycle, normally with the same `wait`. It should use `hand_back` with evidence when the same failure keeps returning rather than repeat indefinitely. While waiting, it can still add notes and receive requests from the human.
 
@@ -173,7 +173,7 @@ With no live session or the wake cap reached, the issue reopens. A capped failur
 
 `trk resume <ID> -m MESSAGE --json` lets a human continue the original live waiting session, with or without a check. The message is required and must be nonempty after trimming (`bad_args` otherwise). Agent actors are refused with `not_permitted` and a hint to request human authorization. Agents must not self-resume, impersonate a human or change actor settings to bypass this boundary. `resume` is not an MCP tool.
 
-The CLI requires the latest waiting session's nonblank terminal to be confirmed live on its known local claim host, and configured `[launcher] send`; MCP liveness is not required. It takes the waiting queue lock; an in-flight check yields `invalid_state` with retry guidance, not concurrent delivery. Do not clear the lock to force resume. Restoration transactionally verifies the issue is still waiting, its latest waiting claim still matches and its event revision has not changed. It restores the original actor, worktree, host, agent and terminal in a new claim with a fresh lease before delivering the human's message. The original session can then renew its lease and use lifecycle tools once its MCP connection is running (restart it if dormant). No replacement is launched.
+The CLI requires the latest waiting session's nonblank terminal to be confirmed live on its known local claim host, and its pinned launcher to provide `send`; MCP liveness is not required. It takes the waiting queue lock; an in-flight check yields `invalid_state` with retry guidance, not concurrent delivery. Do not clear the lock to force resume. Restoration transactionally verifies the issue is still waiting, its latest waiting claim still matches and its event revision has not changed. It restores the original actor, worktree, host, agent, terminal and launcher profile in a new claim with a fresh lease before delivering the human's message. The original session can then renew its lease and use lifecycle tools once its MCP connection is running (restart it if dormant). No replacement is launched.
 
 Human resume preserves `wake_count` unchanged: it neither consumes nor resets the automatic `[check] max_wakes` budget and does not require remaining automatic wakes. The timeline records the human authorization and message, the restored claim and the delivery outcome, making this distinct from an automatic failed-check wake.
 
@@ -198,7 +198,7 @@ The kind ends at the first colon, and for agents the harness ends at the second.
 - A claim records where the work happens: `worktree` (absolute path) and `host`. `trk claim` fills them when it runs inside the project's checkout or one of its worktrees.
 - Only the claimant may close, wait or unclaim a claimed issue; a human's `--force` overrides and is recorded.
 - A claim ends with one of: `closed`, `waiting`, `unclaimed`, `expired`, `stolen`.
-- For agent actors, a claim also records the agent definition (`agent`) and the launcher terminal (`terminal`), both set by `trk run`.
+- For agent actors, a claim also records the agent definition (`agent`), launcher terminal (`terminal`) and selected named launcher profile (`launcher`), set by `trk run`. Legacy claims have no profile name.
 - The **waiting session** is the actor of the latest claim, if that claim was released with reason `waiting` and the issue is still waiting. It holds no claim or lease. Closing or reopening the issue ends this access; a later claim replaces the old session.
 
 **Enforcement.** Agent actors write only to issues they currently claim, plus creating follow-ups of such an issue. A waiting session may still append notes and create follow-ups, but may not close, wait, hand back, resume or otherwise mutate the issue. The rule is in `trk-core` and applies to the CLI as well. Human authorization is required for `resume`; agents must not evade refusal by impersonating a human. Actor identity is not a security sandbox, so hard isolation requires running the harness where the database is not reachable.
@@ -280,7 +280,7 @@ A check is written by an agent and executed later, unattended, with the user's p
 | Type | Name, description, agent routing and whether to use a worktree; no workflow or custom fields |
 | Agent | Who does the work: instructions, briefing, other MCP servers, harness preference, model override, extra per-harness arguments, built-in tool level |
 | Harness profile | How to run an agent in one harness: command, arguments, default model, conditional model arguments, environment, files, how MCP servers and instructions are passed |
-| Launcher | Where it runs: start, attach and send command templates, plus an optional non-Herdr alive probe |
+| Launcher | Where it runs: named profiles with optional lifecycle command templates and driver defaults |
 
 ```toml
 # agents/implementer.toml
@@ -400,12 +400,12 @@ the configured issue prefix and settings, and sample type `code-change` with des
 trk run <ID> [--agent A] [--harness H] [--model M] [--fg] [--print] [--dry-run]
 ```
 
-1. Check the issue is ready, and resolve its agent and harness.
+1. Check the issue is ready, resolve its agent and harness, and select the first available launcher in `[launcher] use`. Fail before claiming if none is available.
 2. If the type's `worktree` is true, create or reuse the worktree. New issue branches start at the resolved base: `git worktree add <worktrees>/<ID> -b <ID> <base>`. Existing issue branches are reused rather than reset to the base. The branch is always named after the issue, so a later session finds earlier work. Otherwise use the primary project root without creating a branch or worktree.
 3. Mint the actor `agent:<harness>:<uuid>`; the harness's own session id, once known, goes in `actor.meta`.
-4. Claim the issue with the actor, agent, optional worktree path and terminal name (Herdr binds its returned address after launch). A type with `worktree = false` records no claim worktree path.
+4. Claim the issue with the actor, agent, optional worktree path, terminal name and selected launcher profile. Bind a returned session address after launch. A type with `worktree = false` records no claim worktree path.
 5. Render the launch spec: resolved `model` (string or null), briefing, MCP server list (trk plus the agent's others), environment (`TRK_ACTOR`, for attribution only), files, argv.
-6. Start in a new Herdr space when enabled and available, otherwise use the launcher's `start` template. `--print` emits the launch spec as JSON instead; `--dry-run` also skips the claim.
+6. Start with the selected launcher's `start` template or driver default. `--print` emits the launch spec as JSON instead; `--dry-run` also skips the claim.
 
 Related commands: `trk attach <ID>` and `trk send <ID>` (only when their launcher templates are set) target the active claim's terminal, or the waiting session's terminal when there is no active claim. An active claim takes precedence even if it has no terminal; historical terminals are never a fallback once the issue leaves waiting. `trk runs` lists active and waiting agent sessions with `state` (`claimed` or `waiting`), agent, harness, terminal, claim metadata, terminal/session liveness and separate MCP liveness. A waiting row's lease is historical, not active. `trk reap` releases only active claims whose recorded local terminal is confirmed gone, recording a note; it leaves waiting, dormant and unknown sessions alone. Normal lease expiry remains independent.
 
@@ -421,7 +421,7 @@ Collect resources of closed issues in this project, optionally limited to the gi
 
 GC takes the check queue lock and uses an immediate database transaction to serialize eligibility and cleanup with lifecycle changes. It examines all historical claims, not only the latest, and removes only resources recorded on the local host:
 
-- **Sessions:** discover the recorded exact terminal with `herdr-app ls`, then close its containing space with `herdr-app do space.close`. Never infer a session from a title. Protect the caller's current terminal's space and spaces used by other issues' active or waiting sessions; unavailable discovery or unsafe targets are skipped.
+- **Sessions:** use each historical claim's pinned launcher's optional `close` operation. Herdr discovers the recorded exact terminal with `herdr-app ls`, then closes its containing space with `herdr-app do space.close`. Never infer a session from a title. Protect the caller's current terminal's space and spaces used by other issues' active or waiting sessions; unavailable discovery or unsafe targets are skipped.
 - **Worktrees:** only descendants of the configured worktree directory are eligible, never the current worktree. Use `git worktree remove` without force; dirty worktrees and other Git refusals are skipped, not overridden.
 - **Branches:** only the branch named exactly after the issue ID, from the primary checkout, after every recorded worktree is removed or absent. Use `git branch -d`, never `-D`; unmerged, checked-out or otherwise refused branches are skipped.
 
@@ -437,29 +437,43 @@ Pretty output reports each issue's session, worktree and branch outcome and reas
 
 ```toml
 [launcher]
-start  = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
-herdr  = true
+use = ["herdr", "hc"]
+
+[launcher.herdr]
+driver = "herdr"
 attach = ["hc", "attach", "{name}"]
-send   = ["hc", "send", "{name}", "{text}"]
+send = ["hc", "send", "{name}", "{text}"]
+
+[launcher.hc]
+available = ["hc", "ls"]
+start = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
+attach = ["hc", "attach", "{name}"]
+send = ["hc", "send", "{name}", "{text}"]
 ```
 
 `{shell_command}` changes into the worktree and sets the environment; `--cwd` also sets the terminal's launch folder. `--no-parent` keeps the session independent of the launching terminal.
 
-Session liveness requires a known claim host matching this machine and a nonblank recorded terminal. Herdr uses its existing `has_terminal` discovery. With `herdr = false`, optional `[launcher] alive` is an argv template using `{name}`, for example `alive = ["tmux", "has-session", "-t", "{name}"]`. Exit 0 means live and exit 1 means gone; any other exit, command error, or missing/empty template means unknown. Arguments remain separate argv entries, not shell-split. Unknown liveness never authorizes a wake, manual resume or reap; a failed check without a confirmed live session reopens instead. Wakes and resume also require `send`.
+Named profiles live at `[launcher.<name>]`. `use` is an ordered list; each profile's optional `available` argv must exit successfully, otherwise selection continues. Without `available`, a profile is usable (the Herdr driver supplies its own availability probe). No available profile fails before claiming or launching. The seed also supplies an opt-in `tmux` profile; select it with `use = ["tmux"]`.
+
+Optional argv arrays are `available`, `start`, `attach`, `send`, `exists`, `focus`, `close` and `rename`. Missing operations are skipped, not replaced with a different profile's operation. Arguments are never shell-split. Substitutions are `{name}` (session address), `{cwd}`, `{shell_command}`, `{text}` and `{title}`. The first stdout line from `start` replaces the generated name; empty stdout retains it. Stderr is diagnostic output only. The tmux seed prints a stable session ID with `new-session -P -F '#{session_id}'`, uses `has-session` for existence, `rename-session`, `kill-session`, `attach-session` and `send-keys` for the corresponding operations.
+
+The selected profile name is persisted on claims, copied through resume/check wakes, and used for attach/focus, send, liveness, notifications and GC regardless of later changes to `use`. Keep historical profiles configured. Root send delay/retry settings are inherited unless a profile overrides them. Existing flat `[launcher]` templates remain supported, including `herdr = true` and `alive` as an alias of `exists`; claims without a profile name resolve only the legacy flat configuration.
+
+Session liveness requires a known claim host matching this machine and a nonblank recorded terminal. The Herdr driver discovers exact terminals. Other profiles use optional `exists` argv: exit 0 means live, nonzero means gone; command errors or a missing/empty operation mean unknown. Legacy `alive` retains exit 0/live, 1/gone, other/unknown semantics. Unknown liveness never authorizes a wake, manual resume or reap; a failed check without a confirmed live session reopens instead. Wakes and resume also require the pinned profile's `send`.
 
 A stopped MCP server with a live terminal is **dormant**, not a dead session. Terminal liveness controls wake/resume eligibility and reap, independently of MCP process metadata. The session can receive instructions while dormant, but must restart its MCP connection with the same identity to use tools and renew leases again. Renewal stops while MCP is stopped, so active claims can still expire through the normal lease sweep; terminal liveness does not prevent expiry.
 
 **Dashboard.** `trk dashboard` shows every issue that is not closed, grouped by what it needs and sorted by priority inside each group: *needs you* (waiting with no check, a failed check or lost session that returned the issue to open, a session whose terminal is confirmed gone, an expired lease, the wake cap reached), *in flight* (claimed), *waiting* (on a check), *ready* and *blocked* (with its open blockers). Terminal/session liveness and MCP liveness are shown separately; a dormant MCP connection alone does not mark a live session dead or move it to needs you. Each row shows priority, issue id, issue type and title, with the type immediately after the id. Under each title, a second line says who holds the issue, what it waits for and what blocks it. `Enter` opens the selected issue in full: session, waiting condition, dependencies, description, notes and history. Below the list are the latest events of all issues. The header counts each group and says whether a check runner holds the queue lock. The dashboard never runs checks.
 
-The view is one read-only snapshot (`trk_core::dashboard`), re-read when the database changes; reading it writes nothing, so an expired lease is reported, not swept. `--json` prints that snapshot. Keys act on the selected issue: `r` run, `a` go to the session, `s` send, `m`/`M` note (to the agent), `x` close, `o` reopen, `u` unclaim, `R` reap, `p` priority, `e`/`c` edit and create in `$EDITOR`, `/` filter. `run`, `reopen`, `unclaim` and `reap` ask first; `x` and `u` override an agent's claim, as `--force` does. `a` shows the session's own pane when the dashboard runs inside the Herdr window and `herdr = true`; otherwise it runs the `attach` template in the dashboard's terminal.
+The view is one read-only snapshot (`trk_core::dashboard`), re-read when the database changes; reading it writes nothing, so an expired lease is reported, not swept. `--json` prints that snapshot. Keys act on the selected issue: `r` run, `a` go to the session, `s` send, `m`/`M` note (to the agent), `x` close, `o` reopen, `u` unclaim, `R` reap, `p` priority, `e`/`c` edit and create in `$EDITOR`, `/` filter. `run`, `reopen`, `unclaim` and `reap` ask first; `x` and `u` override an agent's claim, as `--force` does. `a` uses the session's pinned profile's `focus` operation, or its `attach` operation in the dashboard's terminal when focus is absent.
 
-`herdr = true` starts the agent directly with `herdr-app do space.new`: the space's name is the issue title, its folder is the worktree (session scratch for issues without a repository), and its first terminal runs the harness shell command. The launching space and its tabs are unchanged. The returned terminal address is bound to the claim and used by `trk attach`, `trk send` and `trk runs`.
+`driver = "herdr"` supplies guarded start/close and defaults for exists, focus and rename; explicit exists/focus/rename operations override those defaults. Its start invokes `herdr-app do space.new`: the space's name is the issue title, its folder is the worktree (session scratch for issues without a repository), and its first terminal runs the harness shell command. The launching space and its tabs are unchanged. The returned terminal address is bound to the claim and used by `trk attach`, `trk send` and `trk runs`.
 
-trk observes `herdr-app ls` for up to two seconds; only a direct agent pane in the created space, with the expected title and folder, counts as visible. JSON returns `placement.status` (`visible` or `failed`) with pane/tab/space IDs or a reason. Observation failures warn and retain the session and claim. If UI discovery fails before launch, the configured `start` template runs headlessly with a warning. If space creation itself fails or returns an uncertain response, the command errors and retains the claim; it never retries or falls back to a second session.
+trk observes `herdr-app ls` for up to two seconds; only a direct agent pane in the created space, with the expected title and folder, counts as visible. JSON returns `placement.status` (`visible` or `failed`) with pane/tab/space IDs or a reason. Observation failures warn and retain the session and claim. If UI discovery fails before selection, the seed's next profile (`hc`) is selected instead. If space creation itself fails or returns an uncertain response, the command errors and retains the claim; it never retries or falls back to a second session.
 
-After a waiting check commits a passing outcome, trk best-effort uses `herdr-app do space.rename --id … --name …` to prepend `[closed] ` to the current name of the space containing the exact terminal from the historical claim released as `waiting`. It never targets an active/replacement claim or overwrites a user rename. An existing leading marker is not duplicated; old trailing ` [closed]` markers are removed, while literal `[closed]` text inside the title is preserved. This update is independent of MCP liveness and notification delivery; unavailable UI, missing spaces and rename failures do not affect the committed outcome or prevent an otherwise deliverable notification. Failed/retrying checks do not rename spaces; non-Herdr launchers are unchanged. Watchers automatically restart after executable replacement without replaying completed checks or renaming their spaces again.
+After a waiting check commits a passing outcome, trk best-effort invokes the pinned profile's optional `rename`, passing `[closed] <issue title>` as `{title}` and `{text}`. The Herdr default uses `herdr-app do space.rename --id … --name …` to prepend `[closed] ` to the current name of the space containing the exact historical waiting terminal, preserving user renames and embedded literal markers. An existing leading marker is not duplicated; old trailing ` [closed]` markers are removed. This update is independent of MCP liveness and notification delivery; rename failures do not affect the committed outcome or prevent notification. Failed/retrying checks do not rename. Watchers restart after executable replacement without replaying completed checks.
 
-Replacing hc with tmux or a plain process is a config change: replace the templates and set `herdr = false`.
+Replacing Herdr with tmux is a config change: set `[launcher] use = ["tmux"]`.
 
 ### Harness profiles
 
@@ -589,9 +603,7 @@ Everything is in `<project root>/.trk/`, created by `trk install`:
   prompts/*.j2         # MiniJinja templates for instructions and briefings
 ```
 
-`config.toml` is explicit: `trk install` writes the settings. Missing settings are errors except
-for optional `[launcher] alive`, compatibility defaults such as `[check] verify`, `max_wakes`,
-`gc`, `gc_grace`, `[run] landing` (default `"merge"`), and the detected `[run] base`. Types, agents and prompts are read when routing is resolved.
+`config.toml` is explicit: `trk install` writes the settings. Launcher operation arrays are optional. Other exceptions include compatibility defaults such as `[check] verify`, `max_wakes`, `gc`, `gc_grace`, `[run] landing` (default `"merge"`), and the detected `[run] base`. Types, agents and prompts are read when routing is resolved.
 
 `[run] base` configures the base branch (for example, `base = "develop"`). When writing
 a new config, `trk install` detects the branch named by `origin/HEAD`, then the current

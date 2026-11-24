@@ -54,8 +54,8 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | --- | --- |
 | `trk list [QUERY]`, `trk ready [QUERY]` | Query issues |
 | `trk show <ID>... [--with notes,events,deps,claims]` | Full issues with derived state |
-| `trk create [TITLE] [-d TEXT] [-p P0..P3] [--type T] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; type defaults to `code-change` |
-| `trk edit <ID> [-t TITLE] [-d TEXT] [-p P0..P3] [--type T] [--dry-run]` | Change the authored fields; type cannot be empty |
+| `trk create [TITLE] [-d TEXT] [-p P0..P3] [--type T] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; type defaults to `[issues] default_type` (initially `code-change`) |
+| `trk edit <ID> [-t TITLE] [-d TEXT] [-p P0..P3] [--type T] [--dry-run]` | Change authored fields; a set type must exist in `.trk/types/` |
 | `trk claim <ID> [--lease 30m] [--worktree PATH] [--steal]` | open → claimed |
 | `trk unclaim <ID> [-m NOTE] [--force]` | claimed → open |
 | `trk renew <ID> [--lease 30m]` | Extend a lease |
@@ -75,6 +75,8 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk whoami`, `trk backup <PATH>` | Environment and backup |
 
 `-d` and `-c` take text, `@file`, or `@-` for stdin.
+
+Issue creation (including MCP `report_followup`) and setting a type require a project `.trk/types/<name>.toml` definition. Unknown or empty types return `invalid_field`: the core error's `detail.allowed` is serialized as `error.allowed`, listing accepted names, with a hint naming `.trk/types/`. The editor uses the same validation. `report_followup` advertises those names as an enum and includes each type's description in the field description. Existing issues whose type definition was removed remain listable, showable and editable without changing their type; leaving it unchanged in the editor is allowed, but explicitly setting an unknown type is refused. `trk agent check` reports an `[issues] default_type` with no matching type file.
 
 `trk attach <ID>` interactively takes over the same terminal as `send`; suggest it to the user rather than running it. Active claims take precedence even without a terminal. With no active claim, `send`, `attach` and inbox delivery use the latest claim only if released with reason `waiting` and the issue is still waiting. That session may add notes and report follow-ups, but cannot change lifecycle state. Once the issue closes, reopens or is claimed again, the old session loses this access.
 

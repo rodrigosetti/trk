@@ -32,6 +32,9 @@ pub struct StoreOpts {
     pub prefix: String,
     /// Type assigned to issues created without an explicit type.
     pub default_type: String,
+    /// Project type names accepted when creating an issue or setting its type.
+    /// Callers supply names from `.trk/types/*.toml`; reads do not validate them.
+    pub known_types: Vec<String>,
 }
 
 impl Default for StoreOpts {
@@ -43,6 +46,7 @@ impl Default for StoreOpts {
             max_wakes: 5,
             prefix: "trk".into(),
             default_type: crate::seed::DEFAULT_TYPE.into(),
+            known_types: vec![crate::seed::DEFAULT_TYPE.into()],
         }
     }
 }
@@ -205,6 +209,7 @@ fn migrations() -> Vec<M<'static>> {
         M::up(
             "ALTER TABLE issue ADD COLUMN wake_count INTEGER NOT NULL DEFAULT 0 CHECK (wake_count >= 0)",
         ),
+        M::up("ALTER TABLE claim ADD COLUMN launcher TEXT"),
     ]
 }
 
@@ -461,7 +466,7 @@ pub(crate) const SESSION_CLAIM_FILTER: &str = "(c.released_at IS NULL OR (
     ))";
 
 pub const CLAIM_COLS: &str = "c.id, c.issue_id, c.actor, a.on_behalf_of, c.claimed_at, c.lease_until, c.worktree, \
-     c.host, c.agent, c.terminal, c.released_at, c.release_reason";
+     c.host, c.agent, c.terminal, c.released_at, c.release_reason, c.launcher";
 
 pub fn row_to_claim(r: &rusqlite::Row) -> rusqlite::Result<Claim> {
     Ok(Claim {
@@ -477,6 +482,7 @@ pub fn row_to_claim(r: &rusqlite::Row) -> rusqlite::Result<Claim> {
         terminal: r.get(9)?,
         released_at: r.get(10)?,
         release_reason: r.get(11)?,
+        launcher: r.get(12)?,
     })
 }
 

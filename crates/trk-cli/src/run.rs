@@ -1,12 +1,11 @@
-//! `trk run` and friends: launcher templates and optional Herdr spaces.
+//! `trk run` and friends: launcher profiles and persistent sessions.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Deserialize;
 use serde_json::{Value, json};
-use trk_agent::harness::{self, LaunchInput, subst};
+use trk_agent::harness::{self, LaunchInput};
 use trk_core::error::{Code, Error, Result};
 use trk_core::model::{ActorId, Claim, State};
 use trk_core::ops::ClaimOpts;
@@ -15,64 +14,7 @@ use trk_core::view::With;
 use crate::env::{Env, git, hostname};
 use crate::render::Out;
 
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct Launcher {
-    pub start: Option<Vec<String>>,
-    pub attach: Option<Vec<String>>,
-    pub send: Option<Vec<String>>,
-    /// Non-Herdr terminal probe: exit 0 live, 1 gone, otherwise unknown.
-    pub alive: Option<Vec<String>>,
-    #[serde(default)]
-    pub send_delay: Option<u64>,
-    /// Total send attempts; zero still attempts once. Defaults to 10.
-    pub send_retries: Option<u64>,
-    /// Seconds between send attempts. Defaults to 3.
-    pub send_retry_delay: Option<u64>,
-    /// Launch directly in a new Herdr space when its UI is available.
-    #[serde(default)]
-    pub herdr: bool,
-}
-
-pub fn launcher(env: &Env) -> Result<Launcher> {
-    match &env.user.launcher {
-        None => Ok(Launcher::default()),
-        Some(v) => v
-            .clone()
-            .try_into()
-            .map_err(|e| Error::new(Code::ConfigInvalid, format!("config.toml [launcher]: {e}"))),
-    }
-}
-
-fn run_template(
-    tmpl: &[String],
-    vars: &BTreeMap<&str, String>,
-    inherit: bool,
-) -> Result<(bool, String)> {
-    let argv: Vec<String> = tmpl.iter().map(|a| subst(a, vars)).collect();
-    let (prog, args) = argv
-        .split_first()
-        .ok_or_else(|| Error::new(Code::ConfigInvalid, "empty launcher template"))?;
-    if inherit {
-        let st = Command::new(prog)
-            .args(args)
-            .status()
-            .map_err(|e| Error::new(Code::Internal, format!("cannot run {prog}: {e}")))?;
-        return Ok((st.success(), String::new()));
-    }
-    let out = Command::new(prog)
-        .args(args)
-        .output()
-        .map_err(|e| Error::new(Code::Internal, format!("cannot run {prog}: {e}")))?;
-    let mut text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if !err.is_empty() {
-        if !text.is_empty() {
-            text.push('\n');
-        }
-        text.push_str(&err);
-    }
-    Ok((out.status.success(), text))
-}
+use crate::launcher::{self, Launcher, run_template};
 
 /// A session that is still starting may refuse input.
 fn send_with_retry(
@@ -234,6 +176,11 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let profile = profiles[&hname].clone();
     profile.builtin_args(&agent.harness.builtin_tools, &hname)?;
 
+    let selected = if a.fg || a.print || a.dry_run {
+        None
+    } else {
+        Some(launcher::choose(env)?)
+    };
     // 2. Worktree.
     let checkout = env.checkout();
     let base = env.base();
@@ -299,6 +246,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         host: hostname(),
         agent: Some(agent_name.clone()),
         terminal: if a.fg { None } else { Some(terminal.clone()) },
+        launcher: selected.as_ref().and_then(|(l, _)| l.name.clone()),
         steal: false,
         on_behalf_of: Some(human.clone()),
     };
@@ -402,45 +350,59 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             json!({"issue": id, "actor": actor, "exit_code": st.code()}),
         ));
     }
-    let l = launcher(env)?;
+    let (l, fallback_placement) = selected.expect("background launch selects a profile");
     let mut vars = BTreeMap::new();
     vars.insert("name", terminal.clone());
     vars.insert("cwd", cwd_s.clone());
     vars.insert("shell_command", spec.shell_command.clone());
-    let ui = l.herdr.then(crate::herdr::available);
-    let (output, placement) = if matches!(ui, Some(Ok(()))) {
-        let title = issue["title"].as_str().unwrap_or(&id);
+    let title = issue["title"].as_str().unwrap_or(&id);
+    vars.insert("title", title.to_owned());
+    let (output, placement) = if l.is_herdr() {
         let (address, placement) = crate::herdr::start(title, &cwd_s, &spec.shell_command)
             .map_err(|reason| {
                 Error::new(Code::Internal, format!("Herdr launch unconfirmed: {reason}"))
                     .with_issue(&id)
-                    .with_hint("claim retained to avoid a duplicate launch; inspect `herdr-app ls` and `hc ls` before unclaiming")
+                    .with_hint("claim retained to avoid a duplicate launch; inspect the launcher before unclaiming")
             })?;
         store.write(&actor, false, |c| c.bind_terminal(&id, &address))?;
         terminal = address;
         vars.insert("name", terminal.clone());
         (String::new(), Some(placement))
     } else {
-        let Some(start) = &l.start else {
-            undo(&mut store, "launch failed: no [launcher] start template");
+        let Some(start) = l.start.as_deref().filter(|start| !start.is_empty()) else {
+            undo(&mut store, "launch failed: no launcher start template");
             return Err(Error::new(
                 Code::ConfigInvalid,
-                "no [launcher] start template in config.toml",
+                "no launcher start template in config.toml",
             )
             .with_hint("use --fg to run in this terminal, or configure [launcher]"));
         };
-        let (ok, output) = run_template(start, &vars, false)?;
-        if !ok {
-            undo(&mut store, &format!("launch failed: {output}"));
-            return Err(
-                Error::new(Code::Internal, format!("launcher start failed: {output}"))
-                    .with_issue(&id),
-            );
+        let out = match launcher::capture(start, &vars) {
+            Ok(out) if out.success => out,
+            result => {
+                let reason = match result {
+                    Ok(out) => out.text,
+                    Err(error) => error.to_string(),
+                };
+                undo(&mut store, &format!("launch failed: {reason}"));
+                return Err(
+                    Error::new(Code::Internal, format!("launcher start failed: {reason}"))
+                        .with_issue(&id),
+                );
+            }
+        };
+        if let Some(address) = out
+            .stdout
+            .lines()
+            .next()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            store.write(&actor, false, |c| c.bind_terminal(&id, address))?;
+            terminal = address.to_owned();
+            vars.insert("name", terminal.clone());
         }
-        let placement = ui.map(|result| crate::herdr::Placement::Failed {
-            reason: result.unwrap_err(),
-        });
-        (output, placement)
+        (out.text, fallback_placement)
     };
     if let Some(warning) = placement.as_ref().and_then(|p| p.warning()) {
         eprintln!("warning: {warning}");
@@ -467,7 +429,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     Ok(Out::Text(
         text,
         json!({"issue": id, "agent": agent_name, "harness": hname, "actor": actor, "terminal": terminal,
-               "worktree": wt_str, "session_dir": spec.session_dir, "launcher_output": output, "briefing_sent": sent,
+               "worktree": wt_str, "session_dir": spec.session_dir, "launcher": l.name, "launcher_output": output, "briefing_sent": sent,
                "placement": placement, "type": routing.issue_type, "routing": routing,
                "warnings": warnings}),
     ))
@@ -505,32 +467,16 @@ pub fn session_alive(
         return None;
     }
     let terminal = terminal.filter(|name| !name.trim().is_empty())?;
-    if launcher.herdr {
-        return crate::herdr::has_terminal(terminal).ok();
-    }
-    let (program, args) = launcher.alive.as_ref()?.split_first()?;
-    let vars = BTreeMap::from([("name", terminal.to_owned())]);
-    let status = Command::new(subst(program, &vars))
-        .args(args.iter().map(|arg| subst(arg, &vars)))
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .ok()?;
-    match status.code() {
-        Some(0) => Some(true),
-        Some(1) => Some(false),
-        _ => None,
-    }
+    launcher.exists(terminal)
 }
 
 pub fn runs(env: &Env) -> Result<Out> {
     let store = env.store()?;
     let mut runs = store.read(None, |c| c.runs())?;
-    let launcher = launcher(env)?;
     for r in &mut runs {
         r["mcp_alive"] = json!(mcp_alive(&r["meta"]));
         r["session_alive"] = json!(session_alive(
-            &launcher,
+            &launcher::for_claim(env, r["launcher"].as_str())?,
             r["host"].as_str(),
             r["terminal"].as_str(),
         ));
@@ -570,46 +516,49 @@ pub fn runs(env: &Env) -> Result<Out> {
     Ok(Out::Text(text, Value::Array(runs)))
 }
 
-fn terminal_of(env: &Env, id: &str) -> Result<(String, String)> {
-    let store = env.store()?;
-    store.read(None, |c| {
+fn terminal_of(env: &Env, id: &str) -> Result<(String, Claim)> {
+    env.store()?.read(None, |c| {
         let id = c.resolve_id(id)?;
-        let claim = c.session_claim(&id)?;
-        let t = claim.and_then(|c| c.terminal).ok_or_else(|| {
-            Error::new(
-                Code::NotFound,
-                format!("{id} has no running session terminal"),
-            )
-        })?;
-        Ok((id, t))
+        let claim = c
+            .session_claim(&id)?
+            .filter(|claim| claim.terminal.is_some())
+            .ok_or_else(|| {
+                Error::new(
+                    Code::NotFound,
+                    format!("{id} has no running session terminal"),
+                )
+            })?;
+        Ok((id, claim))
     })
 }
 
 pub fn attach(env: &Env, id: &str) -> Result<Out> {
-    let l = launcher(env)?;
-    let tmpl = l
-        .attach
-        .ok_or_else(|| Error::new(Code::ConfigInvalid, "no [launcher] attach template"))?;
-    let (id, name) = terminal_of(env, id)?;
-    let mut vars = BTreeMap::new();
-    vars.insert("name", name.clone());
-    let (ok, _) = run_template(&tmpl, &vars, true)?;
-    if !ok {
-        return Err(Error::new(Code::Internal, format!("attach to {name} failed")).with_issue(&id));
+    let (id, claim) = terminal_of(env, id)?;
+    let name = claim.terminal.as_deref().expect("filtered terminal");
+    let l = launcher::for_claim(env, claim.launcher.as_deref())?;
+    if !l.focus(name)? {
+        if let Some((false, _)) = l.operation(l.attach.as_deref(), name, None, true)? {
+            return Err(
+                Error::new(Code::Internal, format!("attach to {name} failed")).with_issue(&id),
+            );
+        }
     }
     Ok(Out::Silent(json!({"issue": id, "terminal": name})))
 }
 
 pub fn send(env: &Env, id: &str, text: &str) -> Result<Out> {
-    let l = launcher(env)?;
-    let tmpl = l
-        .send
-        .ok_or_else(|| Error::new(Code::ConfigInvalid, "no [launcher] send template"))?;
-    let (id, name) = terminal_of(env, id)?;
+    let (id, claim) = terminal_of(env, id)?;
+    let l = launcher::for_claim(env, claim.launcher.as_deref())?;
+    let name = claim.terminal.expect("filtered terminal");
+    let Some(tmpl) = l.send.as_deref().filter(|tmpl| !tmpl.is_empty()) else {
+        return Ok(Out::Silent(
+            json!({"issue": id, "terminal": name, "supported": false}),
+        ));
+    };
     let mut vars = BTreeMap::new();
     vars.insert("name", name.clone());
     vars.insert("text", text.to_string());
-    let (ok, out) = send_with_retry(&tmpl, &vars, l.send_retries, l.send_retry_delay)?;
+    let (ok, out) = send_with_retry(tmpl, &vars, l.send_retries, l.send_retry_delay)?;
     if !ok {
         return Err(
             Error::new(Code::Internal, format!("send to {name} failed: {out}")).with_issue(&id),
@@ -661,7 +610,11 @@ pub fn resume(env: &Env, id: &str, message: &str) -> Result<Out> {
         if !ActorId::parse(&previous.actor)?.is_agent() {
             return Err(unavailable());
         }
-        let session = live_waiting_session(&previous, launcher(env)?).ok_or_else(unavailable)?;
+        let session = live_waiting_session(
+            &previous,
+            launcher::for_claim(env, previous.launcher.as_deref())?,
+        )
+        .ok_or_else(unavailable)?;
         let claim = store.write(&actor, false, |c| {
             c.resume(&id, previous.id, revision, message)
         })?;
@@ -746,7 +699,10 @@ pub fn waiting_session(env: &Env, issue: &str) -> Result<Option<WaitingSession>>
     let Some(claim) = waiting_claim(env, issue)? else {
         return Ok(None);
     };
-    Ok(live_waiting_session(&claim, launcher(env)?))
+    Ok(live_waiting_session(
+        &claim,
+        launcher::for_claim(env, claim.launcher.as_deref())?,
+    ))
 }
 
 /// Best-effort UI update and notification to the session that left an issue waiting.
@@ -760,10 +716,11 @@ pub fn notify_waiting_session(env: &Env, issue: &str, text: &str, closed: bool) 
     let Some(name) = &claim.terminal else {
         return Ok(());
     };
-    let launcher = launcher(env)?;
+    let launcher = launcher::for_claim(env, claim.launcher.as_deref())?;
     // Renaming is independent of agent liveness and message delivery.
-    if closed && launcher.herdr {
-        let _ = crate::herdr::mark_closed(name);
+    if closed {
+        let title = env.store()?.read(None, |c| Ok(c.issue(issue)?.title))?;
+        let _ = launcher.rename(name, &format!("[closed] {title}"));
     }
     if let Some(session) = live_waiting_session(&claim, launcher) {
         session.send(text)?;
@@ -776,11 +733,14 @@ pub fn reap(env: &Env) -> Result<Out> {
     let actor = env.actor()?.to_string();
     let mut store = env.store()?;
     let runs = store.read(None, |c| c.runs())?;
-    let launcher = launcher(env)?;
     let mut reaped = vec![];
     for r in runs {
         if r["state"] != "claimed"
-            || session_alive(&launcher, r["host"].as_str(), r["terminal"].as_str()) != Some(false)
+            || session_alive(
+                &launcher::for_claim(env, r["launcher"].as_str())?,
+                r["host"].as_str(),
+                r["terminal"].as_str(),
+            ) != Some(false)
         {
             continue;
         }

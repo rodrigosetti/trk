@@ -17,6 +17,9 @@ mod resume;
 #[path = "cli/gc.rs"]
 mod gc;
 
+#[path = "cli/launcher.rs"]
+mod launcher;
+
 #[path = "cli/type_install.rs"]
 mod type_install;
 
@@ -47,6 +50,33 @@ struct Env {
 
 impl Env {
     fn new() -> Env {
+        let e = Self::named();
+        let path = e.trk_dir().join("config.toml");
+        let config = std::fs::read_to_string(&path).unwrap();
+        let start = config.find("[launcher]").unwrap();
+        let end = config[start..].find("[harness.").unwrap() + start;
+        // Existing Herdr tests intentionally exercise the legacy flat format.
+        // Keep their string replacements independent of the install seed.
+        let legacy = r#"[launcher]
+start      = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
+herdr      = true
+attach     = ["hc", "attach", "{name}"]
+send       = ["hc", "send", "{name}", "{text}"]
+send_delay = 5
+send_retries = 10
+send_retry_delay = 3
+
+"#;
+        std::fs::write(
+            path,
+            format!("{}{legacy}{}", &config[..start], &config[end..]),
+        )
+        .unwrap();
+        e
+    }
+
+    /// Install the actual named-profile seed, without the legacy test fixture.
+    fn named() -> Env {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -1008,7 +1038,7 @@ fn commands_require_an_installed_project() {
 
 #[test]
 fn install_writes_the_project_directory_and_the_skill() {
-    let e = Env::new();
+    let e = Env::named();
     let repo = e.repo();
     let dir = e.trk_dir();
     // Everything is in .trk/, written explicitly, and ignored by git.
@@ -1087,7 +1117,7 @@ fn install_writes_the_project_directory_and_the_skill() {
 
 #[test]
 fn install_reports_outdated_codex_profile_without_overwriting_config() {
-    let e = Env::new();
+    let e = Env::named();
     let path = e.trk_dir().join("config.toml");
     let seed = std::fs::read_to_string(&path).unwrap();
     // Project identity and formatting alone are not profile drift.
@@ -1941,9 +1971,14 @@ fn mcp_server_over_stdio() {
         .find(|tool| tool["name"] == "report_followup")
         .unwrap();
     assert_eq!(
-        followup_tool["inputSchema"]["properties"]["type"]["description"],
-        "Work type for the new issue; default task"
+        followup_tool["inputSchema"]["properties"]["type"]["enum"],
+        json!(["research", "review", "task"])
     );
+    let type_description = followup_tool["inputSchema"]["properties"]["type"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(type_description.contains("default task"));
+    assert!(type_description.contains("task: Project task"));
     let names: Vec<&str> = tools["result"]["tools"]
         .as_array()
         .unwrap()
@@ -2664,9 +2699,15 @@ fn waiting_check_normalizes_edge_markers_and_preserves_embedded_literal_text() {
             "[closed] Append [closed] to task titles",
         ),
         ("Reviewed title [closed]", "[closed] Reviewed title"),
-        ("Reviewed title [closed] [closed]", "[closed] Reviewed title"),
+        (
+            "Reviewed title [closed] [closed]",
+            "[closed] Reviewed title",
+        ),
         ("[closed] Reviewed title", "[closed] Reviewed title"),
-        ("[closed] Reviewed title [closed]", "[closed] Reviewed title"),
+        (
+            "[closed] Reviewed title [closed]",
+            "[closed] Reviewed title",
+        ),
         (
             "Append [closed] to titles [closed]",
             "[closed] Append [closed] to titles",
@@ -2745,18 +2786,17 @@ fn wake_budget_is_shown_in_both_active_states_and_caps_delivered_wakes() {
             let issue = ui.e.ok(&["show", &id]);
             assert_eq!(issue["state"], state);
             assert_eq!(issue["wake_count"], count);
-            let out = ui
-                .e
-                .cmd()
-                .args(["--format", "pretty", "show", &id])
-                .output()
-                .unwrap();
+            let out =
+                ui.e.cmd()
+                    .args(["--format", "pretty", "show", &id])
+                    .output()
+                    .unwrap();
             assert!(out.status.success());
             let pretty = String::from_utf8(out.stdout).unwrap();
             assert!(
-                pretty.lines().any(|line| {
-                    line.contains("wakes") && line.contains(&count.to_string())
-                }),
+                pretty
+                    .lines()
+                    .any(|line| { line.contains("wakes") && line.contains(&count.to_string()) }),
                 "{pretty}"
             );
         }

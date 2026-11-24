@@ -16,7 +16,7 @@ use crate::herdr;
 use crate::render::Out;
 
 #[derive(Serialize)]
-struct Resource {
+pub(crate) struct Resource {
     status: &'static str,
     reason: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -26,7 +26,7 @@ struct Resource {
 }
 
 impl Resource {
-    fn new(status: &'static str, reason: impl Into<String>) -> Self {
+    pub(crate) fn new(status: &'static str, reason: impl Into<String>) -> Self {
         Self {
             status,
             reason: reason.into(),
@@ -35,7 +35,7 @@ impl Resource {
         }
     }
 
-    fn in_space(mut self, space: &str) -> Self {
+    pub(crate) fn in_space(mut self, space: &str) -> Self {
         self.space = Some(space.to_owned());
         self
     }
@@ -127,9 +127,9 @@ fn host_matches(claim: &Claim, host: Option<&str>) -> bool {
 }
 
 fn session(
+    env: &Env,
     claim: &Claim,
     host: Option<&str>,
-    own: Option<&str>,
     protected: &[String],
     dry_run: bool,
     closed_spaces: &mut BTreeSet<String>,
@@ -140,54 +140,35 @@ fn session(
             "terminal belongs to another or unknown host",
         ));
     }
+    let launcher = crate::launcher::for_claim(env, claim.launcher.as_deref())?;
     let terminal = claim.terminal.as_deref().expect("filtered terminal");
-    let ui = match herdr::json_command("herdr-app", &["ls"]) {
-        Ok(ui) => ui,
-        Err(reason) => {
-            return Ok(Resource::new(
-                "skipped",
-                format!("Herdr unavailable: {reason}"),
-            ));
-        }
-    };
-    let Some(space) = herdr::terminal_space(&ui, terminal) else {
-        return Ok(Resource::new("absent", "terminal is already gone"));
-    };
-    let id = space["id"]
-        .as_str()
-        .ok_or_else(|| Error::new(Code::InvalidState, "Herdr space omitted its ID"))?;
-    if closed_spaces.contains(id) {
-        return Ok(Resource::new("absent", "space already handled").in_space(id));
+    if launcher.is_herdr() {
+        return herdr::close_session(terminal, protected, dry_run, closed_spaces);
     }
-    if own.is_some_and(|t| herdr::terminal_space(&ui, t) == Some(space)) {
-        return Ok(Resource::new("skipped", "space contains the current terminal").in_space(id));
-    }
-    if protected
-        .iter()
-        .any(|t| herdr::terminal_space(&ui, t) == Some(space))
-    {
+    let Some(close) = launcher.close.as_deref().filter(|close| !close.is_empty()) else {
         return Ok(Resource::new(
             "skipped",
-            "space contains another issue's active or waiting terminal",
-        )
-        .in_space(id));
+            "launcher does not support closing terminals",
+        ));
+    };
+    if launcher.exists(terminal) == Some(false) {
+        return Ok(Resource::new("absent", "terminal is already gone"));
     }
     if !dry_run {
-        herdr::command(
-            "herdr-app",
-            &["do", "space.close", "--id", id, "--confirmed", "true"],
-        )
-        .map_err(|reason| Error::new(Code::InvalidState, reason))?;
+        if let Some((false, output)) = launcher.operation(Some(close), terminal, None, false)? {
+            return Err(Error::new(
+                Code::InvalidState,
+                format!("launcher close failed: {output}"),
+            ));
+        }
     }
-    closed_spaces.insert(id.to_owned());
     Ok(Resource::new(
         "removed",
         format!(
-            "{} space {id} containing terminal {terminal}",
+            "{} terminal {terminal}",
             if dry_run { "would remove" } else { "removed" }
         ),
-    )
-    .in_space(id))
+    ))
 }
 
 fn worktree(repo: &Path, path: &Path, root: &Path, cwd: &Path, dry_run: bool) -> Result<Resource> {
@@ -392,7 +373,6 @@ pub(crate) fn collect(
 ) -> Result<Value> {
     let age = older_than.map(parse_duration).transpose()?;
     let host = hostname();
-    let own = std::env::var("HC_TERMINAL_ID").ok();
     let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
     let root = resolved(&env.worktrees_dir())?;
     let repo = env.checkout();
@@ -462,9 +442,9 @@ pub(crate) fn collect(
                 {
                     let resource = capture(
                         session(
+                            env,
                             claim,
                             host.as_deref(),
-                            own.as_deref(),
                             &protected,
                             dry_run,
                             &mut closed_spaces,

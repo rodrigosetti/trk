@@ -16,6 +16,7 @@ fn store_at(dir: &tempfile::TempDir, now: &str) -> Store {
     let opts = StoreOpts {
         now: Some(ts(now)),
         prefix: "orch".into(),
+        known_types: vec!["code-change".into(), "research".into(), "review".into()],
         ..Default::default()
     };
     Store::install(&dir.path().join("trk.db"), opts).unwrap()
@@ -142,6 +143,7 @@ fn configured_default_type_and_explicit_override() {
     let dir = tempfile::tempdir().unwrap();
     let opts = StoreOpts {
         default_type: "investigation".into(),
+        known_types: vec!["investigation".into(), "documentation".into()],
         ..Default::default()
     };
     let mut s = Store::install(&dir.path().join("trk.db"), opts).unwrap();
@@ -623,6 +625,7 @@ fn a_failed_check_restores_the_waiting_session_with_a_fresh_claim() {
                     host: Some("session-host".into()),
                     agent: Some("implementer".into()),
                     terminal: Some("session-terminal".into()),
+                    launcher: Some("local-terminal".into()),
                     on_behalf_of: Some(HUMAN.into()),
                     ..Default::default()
                 },
@@ -657,6 +660,11 @@ fn a_failed_check_restores_the_waiting_session_with_a_fresh_claim() {
     assert_eq!(active.host, original.host);
     assert_eq!(active.agent, original.agent);
     assert_eq!(active.terminal, original.terminal);
+    assert_eq!(active.launcher, original.launcher);
+    assert_eq!(
+        s.read(None, |c| c.runs()).unwrap()[0]["launcher"],
+        "local-terminal"
+    );
     assert_eq!(active.claimed_at, "2026-11-20T13:00:00Z");
     assert_eq!(active.lease_until.as_deref(), Some("2026-11-20T13:30:00Z"));
     assert!(active.released_at.is_none());
@@ -693,6 +701,7 @@ fn a_failed_check_restores_the_waiting_session_with_a_fresh_claim() {
     assert_eq!(recent[2].payload["resumed_from"], original.id);
     assert_eq!(recent[2].payload["from"], "waiting");
     assert_eq!(recent[2].payload["by_check"], true);
+    assert_eq!(recent[2].payload["launcher"], "local-terminal");
     assert!(!events.iter().any(|e| e.op == "reopen"));
     // The original actor can immediately work on the issue again.
     s.write(AGENT, false, |c| c.note(&id, "resolving", None, false))
@@ -1157,6 +1166,34 @@ fn migrating_the_check_lock_preserves_its_holder() {
 }
 
 #[test]
+fn migrating_claims_preserves_legacy_launcher_selection() {
+    let (dir, mut s) = setup();
+    let id = create(&mut s, "Legacy session");
+    claim(&mut s, AGENT, &id);
+    let original = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    drop(s);
+    let path = dir.path().join("trk.db");
+    let raw = rusqlite::Connection::open(&path).unwrap();
+    raw.execute_batch("ALTER TABLE claim DROP COLUMN launcher; PRAGMA user_version = 3;")
+        .unwrap();
+    drop(raw);
+
+    let s = Store::open(
+        &path,
+        StoreOpts {
+            now: Some(ts("2026-11-20T10:00:00Z")),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let restored = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    assert_eq!(restored, original);
+    assert!(restored.launcher.is_none());
+    let runs = s.read(None, |c| c.runs()).unwrap();
+    assert!(runs[0].get("launcher").is_none());
+}
+
+#[test]
 fn blocks_edges_are_acyclic() {
     let (_d, mut s) = setup();
     let a = create(&mut s, "A");
@@ -1254,9 +1291,10 @@ fn counts_and_dry_run() {
 }
 
 #[test]
-fn issue_types_are_required_authored_fields() {
+fn issue_types_must_be_known_when_set() {
     let (_dir, mut s) = setup();
-    for invalid in ["", " \n "] {
+    s.opts.known_types.push("investigation".into());
+    for invalid in ["", " \n ", "reserch"] {
         let error = s
             .write(HUMAN, false, |c| {
                 c.create(NewIssue {
@@ -1266,6 +1304,11 @@ fn issue_types_are_required_authored_fields() {
             })
             .unwrap_err();
         assert_eq!(error.code(), Code::InvalidField);
+        assert_eq!(
+            error.to_json()["allowed"],
+            serde_json::json!(s.opts.known_types)
+        );
+        assert!(error.hint().unwrap().contains(".trk/types/"));
     }
     let id = s
         .write(HUMAN, false, |c| {
@@ -1289,7 +1332,7 @@ fn issue_types_are_required_authored_fields() {
         .unwrap();
     assert_eq!(changes["type"]["from"], "review");
     assert_eq!(changes["type"]["to"], "investigation");
-    for invalid in ["", " \n "] {
+    for invalid in ["", " \n ", "reserch"] {
         let error = s
             .write(HUMAN, false, |c| {
                 c.edit(
@@ -1302,6 +1345,11 @@ fn issue_types_are_required_authored_fields() {
             })
             .unwrap_err();
         assert_eq!(error.code(), Code::InvalidField);
+        assert_eq!(
+            error.to_json()["allowed"],
+            serde_json::json!(s.opts.known_types)
+        );
+        assert!(error.hint().unwrap().contains(".trk/types/"));
     }
     assert_eq!(
         s.read(None, |c| c.issue(&id)).unwrap().issue_type,
@@ -1313,6 +1361,39 @@ fn issue_types_are_required_authored_fields() {
     let serialized = serde_json::to_value(s.read(None, |c| c.issue(&id)).unwrap()).unwrap();
     assert_eq!(serialized["type"], "investigation");
     assert!(serialized.get("agent").is_none());
+    // Removing a definition must not invalidate reads or unrelated edits.
+    s.opts.known_types.retain(|name| name != "investigation");
+    assert_eq!(ids(&s, "type=investigation"), [id.clone()]);
+    assert_eq!(
+        s.read(None, |c| c.show(&id, With::default())).unwrap()["type"],
+        "investigation"
+    );
+    s.write(HUMAN, false, |c| {
+        c.edit(
+            &id,
+            Edit {
+                title: Some("Still editable".into()),
+                ..Default::default()
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        s.read(None, |c| c.issue(&id)).unwrap().title,
+        "Still editable"
+    );
+    let error = s
+        .write(HUMAN, false, |c| {
+            c.edit(
+                &id,
+                Edit {
+                    issue_type: Some("investigation".into()),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap_err();
+    assert_eq!(error.code(), Code::InvalidField);
     assert!(
         s.conn()
             .execute("UPDATE issue SET type = '' WHERE id = ?1", [&id])
@@ -1375,7 +1456,7 @@ fn dashboard_groups_issues_by_what_they_need() {
 
     let d = s
         .read(None, |c| {
-            c.dashboard(3, &|_, _| Some(true), &|_| Some(true))
+            c.dashboard(3, &|_, _, _| Some(true), &|_| Some(true))
         })
         .unwrap();
     let group = |id: &str| d.issues.iter().find(|i| i.id == id).unwrap().group;
@@ -1410,7 +1491,7 @@ fn dashboard_groups_issues_by_what_they_need() {
     // Only a terminal known to be gone marks the session ended.
     let d = s
         .read(None, |c| {
-            c.dashboard(0, &|_, _| Some(false), &|_| Some(true))
+            c.dashboard(0, &|_, _, _| Some(false), &|_| Some(true))
         })
         .unwrap();
     let r = d.issues.iter().find(|i| i.id == running).unwrap();
@@ -1419,7 +1500,7 @@ fn dashboard_groups_issues_by_what_they_need() {
     s.opts.now = Some(ts("2026-11-20T12:00:00Z"));
     let d = s
         .read(None, |c| {
-            c.dashboard(0, &|_, _| Some(true), &|_| Some(false))
+            c.dashboard(0, &|_, _, _| Some(true), &|_| Some(false))
         })
         .unwrap();
     let r = d.issues.iter().find(|i| i.id == running).unwrap();
@@ -1445,6 +1526,7 @@ fn dashboard_tracks_terminal_and_mcp_liveness_independently() {
                 ClaimOpts {
                     host: Some("session-host".into()),
                     terminal: Some("original-terminal".into()),
+                    launcher: Some("pinned-profile".into()),
                     ..Default::default()
                 },
             )
@@ -1459,7 +1541,8 @@ fn dashboard_tracks_terminal_and_mcp_liveness_independently() {
                 .read(None, |c| {
                     c.dashboard(
                         0,
-                        &|host, terminal| {
+                        &|launcher, host, terminal| {
+                            assert_eq!(launcher, Some("pinned-profile"));
                             assert_eq!(host, Some("session-host"));
                             assert_eq!(terminal, Some("original-terminal"));
                             terminal_alive
@@ -1475,6 +1558,7 @@ fn dashboard_tracks_terminal_and_mcp_liveness_independently() {
                 let json = serde_json::to_value(session).unwrap();
                 assert_eq!(json["alive"], serde_json::json!(terminal_alive));
                 assert_eq!(json["mcp_alive"], serde_json::json!(mcp_alive));
+                assert_eq!(json["launcher"], "pinned-profile");
             }
             let a = d.issues.iter().find(|i| i.id == active).unwrap();
             if terminal_alive == Some(false) {
