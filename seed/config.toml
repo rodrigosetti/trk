@@ -67,6 +67,10 @@ send_delay = 5
 # Values are rendered once, never recursively. Legacy single-brace placeholders
 # remain supported but deprecated, including {mcp_json}, {opencode_json},
 # {trk_args_toml}, {trk_env_toml} and {trk_tools:PREFIX}.
+# Standalone args elements {builtin_tools_args}, {model_args}, {agent_args}
+# expand in place to zero or more argv entries (not deprecated placeholders).
+# A group without a marker goes before the first briefing argument, or at the
+# end if none; unmarked groups keep builtin/model/agent order. No shell splitting.
 #   files                = files written before launch (relative to the worktree)
 #   args_json            = template rendering a JSON string array prepended to args
 #   model                = default model (agent or --model may override)
@@ -77,7 +81,7 @@ send_delay = 5
 
 [harness.omp]
 command = "omp"
-args    = ["--config", "{{ session_dir }}/omp.yml", "{{ briefing }}"]
+args    = ["--config", "{{ session_dir }}/omp.yml", "{builtin_tools_args}", "{model_args}", "{agent_args}", "{{ briefing }}"]
 model   = "openai-codex/gpt-6-luna"
 model_args = ["--model", "{{ model }}"]
 # .omp/mcp.json goes in the worktree (added to .git/info/exclude). The overlay
@@ -89,7 +93,7 @@ builtin_tools = { read-only = ["--tools", "read,grep,glob,lsp,todo,{% for tool i
 
 [harness.claude-code]
 command = "claude"
-args    = ["--strict-mcp-config", "--mcp-config", "{{ mcp_json_file }}", "{{ briefing }}"]
+args    = ["--strict-mcp-config", "--mcp-config", "{{ mcp_json_file }}", "{builtin_tools_args}", "{model_args}", "{agent_args}", "{{ briefing }}"]
 model_args = ["--model", "{{ model }}"]
 builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdit"], none = ["--tools", ""] }
 
@@ -104,12 +108,13 @@ args_json = '''[
 {% endfor %}
 {% endfor %}
 ]'''
-args    = ["{{ briefing }}"]
+args    = ["{builtin_tools_args}", "{model_args}", "{agent_args}", "{{ briefing }}"]
 model_args = ["--model", "{{ model }}"]
 builtin_tools = { read-only = ["--sandbox", "read-only"] }
 
 [harness.opencode]
 command  = "opencode"
+args     = ["{builtin_tools_args}", "{model_args}", "{agent_args}"]
 model_args = ["--model", "{{ model }}"]
 env      = { OPENCODE_CONFIG_CONTENT = '''{"$schema":"https://opencode.ai/config.json","mcp":{{ '{' }}{% for server in mcp_servers %}{{ server.name | tojson }}:{"type":"local","command":{{ ([server.command] + server.args) | tojson }},"environment":{{ server.env | tojson }},"enabled":true}{% if not loop.last %},{% endif %}{% endfor %}}}''' }
 briefing = "send"
@@ -117,7 +122,7 @@ briefing = "send"
 [harness.pi]
 command = "pi"
 model_args = ["--model", "{{ model }}"]
-args    = ["{{ briefing }}"]
+args    = ["{builtin_tools_args}", "{model_args}", "{agent_args}", "{{ briefing }}"]
 env     = { PI_CODING_AGENT_DIR = "{{ session_dir }}" }
 files   = { "{{ session_dir }}/mcp.json" = '''{"mcpServers":{{ '{' }}{% for server in mcp_servers %}{{ server.name | tojson }}:{"command":{{ server.command | tojson }},"args":{{ server.args | tojson }},"env":{{ server.env | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}}}''' }
 

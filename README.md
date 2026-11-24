@@ -595,7 +595,7 @@ harness names to argument lists; only the selected harness's list is used.
 # .trk/config.toml
 [harness.omp]
 command = "omp"
-args = ["--config", "{{ session_dir }}/omp.yml", "{{ briefing }}"]
+args = ["--config", "{{ session_dir }}/omp.yml", "{builtin_tools_args}", "{model_args}", "{agent_args}", "{{ briefing }}"]
 model = "openai-codex/gpt-6-luna"
 model_args = ["--model", "{{ model }}"]
 ```
@@ -605,9 +605,13 @@ when a model resolves. Set `model_args` to the harness's model-selection flags.
 All seeded profiles provide it; only omp sets a default model. Older installed
 configs need these keys added manually, replacing any literal model flags in `args`.
 `{{ model }}` expands to the resolved model (or an empty string if unset) in profile
-arguments, environment and files, and agent arguments. Optional arguments are inserted
-in this order: built-in tool restrictions, `model_args`, agent `args`, then the first
-argument using `briefing`. Without a briefing argument, they are appended.
+arguments, environment and files, and agent arguments.
+Standalone `args` elements `{builtin_tools_args}`, `{model_args}`, and `{agent_args}`
+expand in place to zero or more argv entries. Place them before a subcommand or
+after `--` as the harness requires. These markers are not deprecated placeholders.
+Each group without a marker keeps its legacy position: before the first argument
+using `briefing`, or at the end when none does. Unmarked groups retain the order
+of built-in tool restrictions, model arguments, then agent arguments.
 Arguments remain separate argv entries; they are not shell-split.
 
 `trk run --dry-run --json` includes the resolved `model` (or null) and `argv`.
@@ -683,7 +687,7 @@ args_json = '''[
 {% endfor %}
 {% endfor %}
 ]'''
-args = ["{{ briefing }}"]
+args = ["{builtin_tools_args}", "{model_args}", "{agent_args}", "{{ briefing }}"]
 model_args = ["--model", "{{ model }}"]
 builtin_tools = { read-only = ["--sandbox", "read-only"] }
 ```
