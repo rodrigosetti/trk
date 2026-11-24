@@ -1,0 +1,20 @@
+# Changelog
+
+## 0.1.0 — release pending
+
+First public beta; the release date and `v0.1.0` tag will be set by a human at release time.
+
+### Added
+
+- Local, per-project SQLite issue tracking with a CLI and per-issue MCP server.
+- Agent launching in dedicated Git worktrees, with claims, leases, and session tracking.
+- Serialized waiting checks for verification and landing, plus a live dashboard and Herdr integration.
+- Embedded installation seeds, configurable agents, harnesses, launchers, and prompts.
+
+### Beta compatibility and upgrades
+
+- The versioned JSON envelope (`schema_version` and error codes) and MCP tool names are intended to be stable.
+- Config keys, seed prompts, the database schema across versions, and the Herdr mod may change without notice.
+- Finish active sessions and back up `.trk/` before upgrading. Update the source checkout, re-run `./install.sh`, then run `trk install` in each project using its original seed options. Database migrations are forward-only; do not assume downgrade compatibility.
+
+See the [upgrade manual](docs/install-upgrade.md) and [human release steps](docs/development.md#releasing-010).
