@@ -62,6 +62,12 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
             let seq = store.write(&sess.actor, false, |c| c.note(&id, &body, None, false))?;
             json!({"note": seq})
         }
+        Action::Link => {
+            let url = str_arg(&a, "url")?.to_string();
+            let label = opt_arg(&a, "label");
+            let changed = store.write(&sess.actor, false, |c| c.link_add(&id, &url, label))?;
+            json!({"linked": url, "changed": changed})
+        }
         Action::ReportFollowup => {
             let title = str_arg(&a, "title")?.to_string();
             let description = str_arg(&a, "description")?.to_string();
@@ -149,7 +155,7 @@ pub fn error_json(e: &Error) -> Value {
         && let Value::Object(m) = &mut v
     {
         m.entry("hint").or_insert(json!(
-            "this write requires your active claim, except notes and follow-ups from your waiting session"
+            "this write requires your active claim, except notes, links and follow-ups from your waiting session"
         ));
     }
     v

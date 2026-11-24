@@ -4,7 +4,7 @@
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use trk_core::config::UserConfig;
-use trk_core::model::{CHECK_RETRY_EXIT, CLOSE_REASONS, PRIORITIES};
+use trk_core::model::{CHECK_RETRY_EXIT, CLOSE_REASONS, LINK_LABEL_MAX, PRIORITIES};
 
 use crate::agent::AgentDef;
 
@@ -13,6 +13,7 @@ use crate::agent::AgentDef;
 pub enum Action {
     GetTask,
     AddNote,
+    Link,
     ReportFollowup,
     HandBack,
     Close,
@@ -73,6 +74,21 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
             Action::AddNote,
             "Record progress, a finding or a decision on the issue. Notes are the issue's memory: the next session reads them.".into(),
             object_schema(vec![("body", text("The note, in markdown"), true)]),
+        ),
+        tool(
+            "link",
+            Action::Link,
+            "Attach a web address to the issue so people can open what your work produced from the dashboard. Linking the same url again changes its label.".into(),
+            object_schema(vec![
+                ("url", text("Absolute http(s) address"), true),
+                (
+                    "label",
+                    text(&format!(
+                        "Short display text, at most {LINK_LABEL_MAX} characters; the address is shown without one"
+                    )),
+                    false,
+                ),
+            ]),
         ),
         tool(
             "report_followup",
@@ -213,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn six_tools() {
+    fn seven_tools() {
         let names: Vec<String> = catalogue(&UserConfig::default())
             .into_iter()
             .map(|t| t.name)
@@ -223,6 +239,7 @@ mod tests {
             [
                 "get_task",
                 "add_note",
+                "link",
                 "report_followup",
                 "hand_back",
                 "close",

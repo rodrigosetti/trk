@@ -198,6 +198,30 @@ pub struct Edge {
     pub priority: String,
 }
 
+/// A pointer from an issue to something outside trk: a pull request, a
+/// preview, a document. trk stores and shows it; it never reads the target.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Link {
+    pub url: String,
+    /// Short display text, e.g. `PR #12`; the URL is shown without one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl Link {
+    /// What a row shows: the label, or the URL without its scheme.
+    pub fn text(&self) -> &str {
+        self.label.as_deref().unwrap_or_else(|| {
+            self.url
+                .split_once("://")
+                .map_or(self.url.as_str(), |(_, rest)| rest)
+        })
+    }
+}
+
+/// Longest link label, in characters: it has to fit in a dashboard row.
+pub const LINK_LABEL_MAX: usize = 40;
+
 #[cfg(test)]
 mod tests {
     use super::*;

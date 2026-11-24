@@ -367,6 +367,17 @@ impl Renderer {
         if let Some(count) = i["wake_count"].as_u64() {
             s.push_str(&format!("{} {count}\n", self.dim("wakes")));
         }
+        for l in i["links"].as_array().into_iter().flatten() {
+            let label = l["label"]
+                .as_str()
+                .map(|l| format!("{l}  "))
+                .unwrap_or_default();
+            s.push_str(&format!(
+                "{} {label}{}\n",
+                self.dim("link"),
+                l["url"].as_str().unwrap_or("")
+            ));
+        }
         if let Some(routing) = i.get("routing").filter(|r| !r.is_null()) {
             s.push_str(&format!("\n{}\n", self.heading("Routing")));
             if let Some(agent) = routing["agent"].as_str() {

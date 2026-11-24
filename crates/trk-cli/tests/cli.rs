@@ -929,6 +929,27 @@ fn check_shell_exit_cleans_up_surviving_descendants_before_release() {
 }
 
 #[test]
+fn link_and_unlink_show_on_the_issue_and_the_dashboard_snapshot() {
+    let e = Env::new();
+    let id = e.create(&["Ship it"]);
+    let pr = "https://example.com/org/repo/pull/12";
+    let linked = e.ok(&["link", &id, pr, "-l", "PR #12"]);
+    assert_eq!(linked["changed"], true);
+    assert_eq!(e.ok(&["link", &id, pr, "-l", "PR #12"])["changed"], false);
+    assert_eq!(
+        e.ok(&["show", &id])["links"],
+        json!([{"url": pr, "label": "PR #12"}])
+    );
+    let dash = e.ok(&["dashboard"]);
+    assert_eq!(dash["issues"][0]["links"][0]["label"], "PR #12");
+    e.err(&["link", &id, "not a url"], 4, "invalid_field");
+
+    assert_eq!(e.ok(&["unlink", &id, pr])["links"], json!([]));
+    assert!(e.ok(&["show", &id]).get("links").is_none());
+    e.err(&["unlink", &id, pr], 3, "not_found");
+}
+
+#[test]
 fn errors_and_exit_codes() {
     let e = Env::new();
     let id = e.create(&["Thing"]);
@@ -1460,6 +1481,7 @@ fn agent_preview_and_run_dry_run() {
         [
             "get_task",
             "add_note",
+            "link",
             "report_followup",
             "hand_back",
             "close",
@@ -1676,9 +1698,10 @@ fn run_resolves_profile_agent_per_harness_and_cli_models_and_args() {
     );
     // Model resolution across all profiles uses an unrestricted agent.
     let agent_path = e.trk_dir().join("agents/reviewer.toml");
-    let original = std::fs::read_to_string(&agent_path)
-        .unwrap()
-        .replace("builtin_tools = \"read-only\"", "builtin_tools = \"default\"");
+    let original = std::fs::read_to_string(&agent_path).unwrap().replace(
+        "builtin_tools = \"read-only\"",
+        "builtin_tools = \"default\"",
+    );
     std::fs::write(&agent_path, &original).unwrap();
     let check = |harness: &str, model: Option<&str>, extra: &[&str], cli: Option<&str>| {
         let mut args = vec!["run", &id, "--harness", harness, "--dry-run"];
@@ -2010,6 +2033,7 @@ fn mcp_server_over_stdio() {
         [
             "get_task",
             "add_note",
+            "link",
             "report_followup",
             "hand_back",
             "close",

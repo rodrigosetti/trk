@@ -289,6 +289,16 @@ enum Cmd {
         #[command(subcommand)]
         cmd: DepCmd,
     },
+    /// Attach a web address to an issue (a pull request, a preview); the dashboard opens it
+    Link {
+        id: String,
+        url: String,
+        /// Short display text, e.g. "PR #12"; again with the same URL to change it
+        #[arg(short, long)]
+        label: Option<String>,
+    },
+    /// Remove a link from an issue
+    Unlink { id: String, url: String },
     /// Timeline: events and notes
     Log { id: String },
     /// Start an agent session; defaults to the first ready issue
@@ -865,6 +875,38 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
                         json!({"blocker": blocker, "blocked": blocked}),
                     ))
                 }
+            })
+        }
+        Cmd::Link { id, url, label } => {
+            let actor = env.actor()?.to_string();
+            with_open(&env, |s| {
+                let (id, changed, links) = s.write(&actor, false, |c| {
+                    let id = c.resolve_id(&id)?;
+                    let changed = c.link_add(&id, &url, label.as_deref())?;
+                    Ok((id.clone(), changed, c.links(&id)?))
+                })?;
+                Ok(Out::Text(
+                    format!(
+                        "linked {id} to {}{}",
+                        url.trim(),
+                        if changed { "" } else { " (already present)" }
+                    ),
+                    json!({"id": id, "changed": changed, "links": links}),
+                ))
+            })
+        }
+        Cmd::Unlink { id, url } => {
+            let actor = env.actor()?.to_string();
+            with_open(&env, |s| {
+                let (id, links) = s.write(&actor, false, |c| {
+                    let id = c.resolve_id(&id)?;
+                    c.link_rm(&id, &url)?;
+                    Ok((id.clone(), c.links(&id)?))
+                })?;
+                Ok(Out::Text(
+                    format!("unlinked {id} from {}", url.trim()),
+                    json!({"id": id, "links": links}),
+                ))
             })
         }
         Cmd::Log { id } => {

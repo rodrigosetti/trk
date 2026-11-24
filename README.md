@@ -432,6 +432,12 @@ trk run orch-4kq --model provider/model --dry-run      # one-run model override 
 trk agent preview implementer --issue orch-4kq        # instructions, briefing, tool schemas
 ```
 
+An issue can carry **links** to what its work produced: a pull request, a preview, a document.
+A session adds one with its `link` tool (the seed PR landing recipe asks for `PR #<number>`), and
+you can with `trk link orch-4kq https://… -l "PR #12"`; `trk unlink` removes it. trk only stores
+and shows them: the first link appears on the issue's row in the dashboard, where `l` opens it
+in the browser, and the details list them all. In Herdr the links are clickable.
+
 In the dashboard, select a waiting / needs-you issue and press `v` to **Resume** the
 original session, including when it has no check. Enter a nonempty continuation message
 (for example, `SSH unlocked; continue`) and press Enter; Esc cancels without changes.
@@ -468,13 +474,14 @@ Model precedence is `--model`, then the agent's model for the selected harness, 
 the profile's `model`. With none set, the harness chooses its own default.
 
 The MCP server (`trk mcp --issue … --actor … --agent …`, started by the harness) serves exactly one
-issue with six tools: `get_task`, `add_note`, `report_followup`, `hand_back`, `close` and `wait`.
+issue with seven tools: `get_task`, `add_note`, `link`, `report_followup`, `hand_back`, `close` and
+`wait`.
 It renews the claim's lease while it runs. The briefing carries the issue's description and every
 note, which is how an issue that came back from a failed check explains itself.
 
 Leaving an issue waiting releases the claim, not the terminal. While the issue stays
 waiting, the actor of its latest claim released with reason `waiting` can still call
-`add_note` and `report_followup`, and receive `--to-agent` notes with its next tool result.
+`add_note`, `link` and `report_followup`, and receive `--to-agent` notes with its next tool result.
 It cannot call `wait`, `close` or `hand_back` again without a claim. `trk send` and
 `trk attach` use that waiting session's terminal when there is no active claim; an
 active claim always takes precedence, even if it has no terminal. `trk runs` marks
@@ -625,7 +632,8 @@ trk herdr uninstall              # remove the mod and layouts unless you edited 
 - Click an issue ID in the list or detail header to copy it to the clipboard. The status line
   confirms the copy; selection and detail visibility stay unchanged.
 - With the panel focused: `j`/`k` move, `Enter` opens, `a` goes to the session, `p` peeks,
-  `s` sends, `m`/`M` note (to the agent), `v` resumes, `x` closes, `c` creates.
+  `s` sends, `m`/`M` note (to the agent), `v` resumes, `x` closes, `c` creates, `l` opens the
+  issue's first link. Link chips on a row and in the details open in the browser on click.
 - `trk.new` and `trk.refresh` are mod commands for `keys.json`, for example
   `"global": { "ctrl-shift-i": "trk.new" }`. They reach a shown copy of the panel.
 - By hand: `herdr-app do tab.new --mod trk --props '{"folder": "/path/to/project"}'`. Without

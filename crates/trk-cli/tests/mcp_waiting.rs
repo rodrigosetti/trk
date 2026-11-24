@@ -124,6 +124,16 @@ fn waiting_mcp_can_note_and_report_followups_but_cannot_end_again() {
         json!({"body": "Review is still pending"}),
     );
     assert_eq!(note["task"]["state"], "waiting");
+    let link = success(
+        &server,
+        "link",
+        json!({"url": "https://example.com/pull/12", "label": "PR #12"}),
+    );
+    assert_eq!(link["result"]["changed"], true);
+    assert_eq!(
+        success(&server, "get_task", json!({}))["links"],
+        json!([{"url": "https://example.com/pull/12", "label": "PR #12"}])
+    );
     let followup = success(
         &server,
         "report_followup",
@@ -166,7 +176,11 @@ fn waiting_mcp_can_note_and_report_followups_but_cannot_end_again() {
             json!({"reason": "done", "note": "Do not close"}),
             "not_permitted",
         ),
-        ("hand_back", json!({"note": "Do not reopen"}), "invalid_state"),
+        (
+            "hand_back",
+            json!({"note": "Do not reopen"}),
+            "invalid_state",
+        ),
     ] {
         let (ok, error) = server.call_sync(tool, args);
         assert!(!ok, "{tool}: {error:#}");

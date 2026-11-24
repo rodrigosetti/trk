@@ -66,6 +66,7 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk check [ID] [--all] [--watch [PAUSE]] [--dry-run] [--no-gc]` | Run waiting checks, one at a time, then optionally sweep closed-as-done resources |
 | `trk note <ID> [TEXT or -] [--amends SEQ] [--to-agent]` | Append a note |
 | `trk dep add or rm <BLOCKER> <BLOCKED>` | Blocker edges |
+| `trk link <ID> <URL> [-l LABEL]`, `trk unlink <ID> <URL>` | Attach or remove an http(s) address the dashboard opens (a pull request, a preview) |
 | `trk log <ID>` | Timeline |
 | `trk run [ID] [--agent A] [--harness H] [--dry-run or --print]` | Start an agent session; without ID, first ready issue by priority then age; agent override is one-off |
 | `trk runs`, `trk send <ID> TEXT`, `trk reap` | List active/waiting sessions by state, steer the active or waiting terminal, release only ended active claims |

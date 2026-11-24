@@ -46,6 +46,22 @@ fn pid_exists(pid: i64) -> bool {
         || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// Hand a link to the desktop's opener. Links are http(s) only (core checks).
+fn open_url(url: &str) -> std::io::Result<()> {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    Command::new(opener)
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(drop)
+}
+
 pub fn snapshot(store: &Store, env: &Env) -> Result<Dashboard> {
     store.read(None, |c| {
         c.dashboard(
@@ -408,6 +424,15 @@ impl App<'_> {
                         self.ui.mode = Mode::Input {
                             kind: Input::NoteToAgent,
                             text: String::new(),
+                        }
+                    }
+                    KeyCode::Char('l') => {
+                        match self.ui.issue().and_then(|i| i.links.first()).cloned() {
+                            None => self.fail(format!("{id} has no link")),
+                            Some(link) => match open_url(&link.url) {
+                                Ok(()) => self.say(format!("opened {}", link.url)),
+                                Err(e) => self.fail(format!("cannot open {}: {e}", link.url)),
+                            },
                         }
                     }
                     KeyCode::Char('x') => self.ui.mode = Mode::CloseReason,
@@ -877,5 +902,54 @@ mod tests {
         ui.refilter(None);
         ui.mode = Mode::Normal;
         assert!(screen(&mut ui, 120, 30).contains("Nothing matches the filter"));
+    }
+
+    #[test]
+    fn links_show_as_a_chip_on_the_row_and_in_full_in_the_details() {
+        let (_d, mut s) = sample();
+        let id = ui_of(&s)
+            .snap
+            .issues
+            .iter()
+            .find(|i| i.title == "Fit the windows")
+            .unwrap()
+            .id
+            .clone();
+        for (url, label) in [
+            ("https://example.com/org/house/pull/12", Some("PR #12")),
+            ("https://preview.example.com/windows", None),
+        ] {
+            s.write(HUMAN, false, |c| c.link_add(&id, url, label).map(|_| ()))
+                .unwrap();
+        }
+        let mut ui = ui_of(&s);
+        let text = screen(&mut ui, 140, 40);
+        let row = text
+            .lines()
+            .find(|l| l.contains("Fit the windows"))
+            .unwrap();
+        assert!(row.contains("Fit the windows  ↗ PR #12 +1"), "{row}");
+        // No other row grows a chip.
+        assert_eq!(text.matches('↗').count(), 1, "{text}");
+
+        // Too narrow for both: the title keeps its room and the chip goes.
+        let narrow = screen(&mut ui, 60, 40);
+        assert!(!narrow.contains('↗'), "{narrow}");
+
+        ui.selected = ui
+            .rows
+            .iter()
+            .position(|i| ui.snap.issues[*i].id == id)
+            .unwrap();
+        assert!(screen(&mut ui, 140, 40).contains("l link"));
+        ui.zoom = true;
+        let text = screen(&mut ui, 140, 40);
+        for want in [
+            "Links",
+            "↗ PR #12  https://example.com/org/house/pull/12  (l opens it)",
+            "↗ https://preview.example.com/windows",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in:\n{text}");
+        }
     }
 }

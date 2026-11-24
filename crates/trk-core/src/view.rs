@@ -149,6 +149,10 @@ impl Ctx<'_> {
                 }),
             );
         }
+        let links = self.links(&issue.id)?;
+        if !links.is_empty() {
+            o.insert("links".into(), json!(links));
+        }
         o.insert("derived".into(), self.derived(issue, &blockers, &blocks));
         o.insert("created_by".into(), json!(issue.created_by));
         o.insert("created_at".into(), json!(issue.created_at));

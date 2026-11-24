@@ -308,6 +308,16 @@ pub fn runnable(i: &DashIssue) -> bool {
     i.state == State::Open && i.blocked_by.iter().all(|b| b.state == State::Closed)
 }
 
+/// The issue's first link as a row chip: `↗ PR #12`, with `+N` for the rest.
+fn link_chip(i: &DashIssue) -> Option<String> {
+    let first = i.links.first()?;
+    let more = match i.links.len() - 1 {
+        0 => String::new(),
+        n => format!(" +{n}"),
+    };
+    Some(format!("↗ {}{more}", fit(first.text(), 24)))
+}
+
 /// The short status at the right of a list row.
 fn row_info(i: &DashIssue, now: jiff::Timestamp) -> String {
     if let Some(why) = i.attention.first() {
@@ -600,8 +610,13 @@ fn list(frame: &mut Frame, area: Rect, ui: &mut Ui) {
                 let st = |s: Style| if selected { Style::new() } else { s };
                 let info = fit(&row_info(i, ui.now), (width * 2 / 5).min(36));
                 let room = width.saturating_sub(title_indent + info.width() + 1);
-                let title = fit(&i.title, room);
-                let pad = room.saturating_sub(title.width()) + 1;
+                // The chip gives way before the title does.
+                let chip = link_chip(i)
+                    .map(|c| format!("  {c}"))
+                    .filter(|c| room >= c.width() + 16)
+                    .unwrap_or_default();
+                let title = fit(&i.title, room - chip.width());
+                let pad = room.saturating_sub(title.width() + chip.width()) + 1;
                 let info_style = if i.group == Group::Attention {
                     Style::new().fg(Color::Red)
                 } else {
@@ -616,6 +631,7 @@ fn list(frame: &mut Frame, area: Rect, ui: &mut Ui) {
                     Span::styled(format!("{:<type_width$}", i.issue_type), st(dim())),
                     Span::raw("  "),
                     Span::raw(title),
+                    Span::styled(chip, st(Style::new().fg(Color::Cyan))),
                     Span::raw(" ".repeat(pad)),
                     Span::styled(info, st(info_style)),
                 ]);
@@ -713,6 +729,27 @@ fn detail_lines(i: &DashIssue, detail: Option<&Detail>, ui: &Ui) -> Vec<Line<'st
             format!("! {why}"),
             Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
+    }
+
+    if !i.links.is_empty() {
+        out.push(Line::default());
+        out.push(section("Links"));
+        for (n, l) in i.links.iter().enumerate() {
+            let mut spans = vec![Span::styled("  ↗ ", Style::new().fg(Color::Cyan))];
+            if let Some(label) = &l.label {
+                spans.push(Span::raw(format!("{label}  ")));
+            }
+            spans.push(Span::styled(
+                l.url.clone(),
+                Style::new()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            ));
+            if n == 0 {
+                spans.push(Span::styled("  (l opens it)", dim()));
+            }
+            out.push(Line::from(spans));
+        }
     }
 
     if let Some(s) = &i.session {
@@ -962,6 +999,9 @@ fn hints(ui: &Ui) -> String {
             keys.push("a session");
             keys.push("s send");
         }
+        if !i.links.is_empty() {
+            keys.push("l link");
+        }
         keys.push("m note");
         keys.push("x close");
         if i.state == State::Waiting {
@@ -1071,6 +1111,7 @@ const HELP: &[(&str, &str)] = &[
         "v",
         "resume waiting: restore original ownership + send instructions",
     ),
+    ("l", "open the issue's first link in the browser"),
     ("m  M", "add a note; M queues it for the agent"),
     ("x", "close as done or abandoned"),
     ("o", "reopen a waiting issue"),

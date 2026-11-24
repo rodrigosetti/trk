@@ -5,8 +5,8 @@ instructions = "prompts/implementer.instructions.md.j2"   # → MCP server instr
 briefing     = "prompts/briefing.md.j2"                   # → initial prompt
 inbox        = true
 
-# The trk tools are fixed: get_task, add_note, report_followup, hand_back,
-# close, wait. An agent gets all of them unless it narrows the list:
+# The trk tools are fixed: get_task, add_note, link, report_followup,
+# hand_back, close, wait. An agent gets all of them unless it narrows the list:
 # [trk_tools]
 # include = ["get_task", "add_note", "close", "hand_back"]
 

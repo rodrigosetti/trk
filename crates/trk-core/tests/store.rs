@@ -1174,8 +1174,11 @@ fn migrating_claims_preserves_legacy_launcher_selection() {
     drop(s);
     let path = dir.path().join("trk.db");
     let raw = rusqlite::Connection::open(&path).unwrap();
-    raw.execute_batch("ALTER TABLE claim DROP COLUMN launcher; PRAGMA user_version = 3;")
-        .unwrap();
+    // A version 3 database has neither the launcher column nor the link table.
+    raw.execute_batch(
+        "ALTER TABLE claim DROP COLUMN launcher; DROP TABLE link; PRAGMA user_version = 3;",
+    )
+    .unwrap();
     drop(raw);
 
     let s = Store::open(
@@ -1576,4 +1579,121 @@ fn dashboard_tracks_terminal_and_mcp_liveness_independently() {
     }
     assert_eq!(state(&s, &active), State::Claimed);
     assert_eq!(state(&s, &waiting), State::Waiting);
+}
+
+#[test]
+fn links_are_stored_shown_and_recorded_without_being_interpreted() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Ship it");
+    let other = create(&mut s, "Unrelated");
+    let pr = "https://example.com/org/repo/pull/12";
+    let show = |s: &Store| s.read(None, |c| c.show(&id, With::default())).unwrap();
+    assert!(show(&s).get("links").is_none());
+
+    claim(&mut s, AGENT, &id);
+    assert!(
+        s.write(AGENT, false, |c| c.link_add(&id, pr, Some(" PR #12 ")))
+            .unwrap()
+    );
+    // The same link again changes nothing; a new label replaces the old one.
+    assert!(
+        !s.write(AGENT, false, |c| c.link_add(&id, pr, Some("PR #12")))
+            .unwrap()
+    );
+    assert!(
+        s.write(AGENT, false, |c| c.link_add(
+            &id,
+            pr,
+            Some("PR #12 (draft)")
+        ))
+        .unwrap()
+    );
+    s.write(HUMAN, false, |c| {
+        c.link_add(&id, "http://preview.example.com/", None)
+    })
+    .unwrap();
+    assert_eq!(
+        show(&s)["links"],
+        serde_json::json!([
+            {"url": pr, "label": "PR #12 (draft)"},
+            {"url": "http://preview.example.com/"},
+        ])
+    );
+
+    for bad in [
+        "",
+        "example.com/pull/12",
+        "file:///etc/passwd",
+        "https://",
+        "https://a b",
+    ] {
+        let e = s
+            .write(HUMAN, false, |c| c.link_add(&id, bad, None))
+            .unwrap_err();
+        assert_eq!(e.code(), Code::InvalidField, "{bad}");
+    }
+    let long = "x".repeat(41);
+    for bad in [long.as_str(), "two\nlines"] {
+        let e = s
+            .write(HUMAN, false, |c| c.link_add(&id, pr, Some(bad)))
+            .unwrap_err();
+        assert_eq!(e.code(), Code::InvalidField, "{bad}");
+    }
+    // An agent links only the issue its session serves.
+    let e = s
+        .write(AGENT, false, |c| c.link_add(&other, pr, None))
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotPermitted);
+
+    // Links outlive the claim: the waiting session keeps them and may add more.
+    wait(&mut s, AGENT, &id, Some("true"), Some("merge"));
+    s.write(AGENT, false, |c| {
+        c.link_add(&id, "https://ci.example.com/runs/7", Some("CI"))
+    })
+    .unwrap();
+    let d = s
+        .read(None, |c| c.dashboard(0, &|_, _, _| None, &|_| None))
+        .unwrap();
+    let row = d.issues.iter().find(|i| i.id == id).unwrap();
+    assert_eq!(
+        row.links.iter().map(|l| l.text()).collect::<Vec<_>>(),
+        ["PR #12 (draft)", "preview.example.com/", "CI"]
+    );
+    assert!(
+        d.issues
+            .iter()
+            .find(|i| i.id == other)
+            .unwrap()
+            .links
+            .is_empty()
+    );
+
+    s.write(HUMAN, false, |c| {
+        c.link_rm(&id, "http://preview.example.com/")
+    })
+    .unwrap();
+    let e = s
+        .write(HUMAN, false, |c| {
+            c.link_rm(&id, "http://preview.example.com/")
+        })
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotFound);
+    assert_eq!(show(&s)["links"].as_array().unwrap().len(), 2);
+
+    let changes: Vec<serde_json::Value> = s
+        .read(None, |c| c.events(&id))
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.op == "set" && !e.payload["changes"]["link"].is_null())
+        .map(|e| e.payload["changes"]["link"].clone())
+        .collect();
+    assert_eq!(changes.len(), 5);
+    assert_eq!(
+        changes[0],
+        serde_json::json!({"from": null, "to": format!("PR #12 {pr}")})
+    );
+    assert_eq!(
+        changes[4],
+        serde_json::json!({"from": "http://preview.example.com/", "to": null})
+    );
 }

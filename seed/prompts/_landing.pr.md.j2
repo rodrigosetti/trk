@@ -1,4 +1,4 @@
-Open a pull request targeting `{{ base }}` and call `wait` with a check for its merge. trk closes the issue when it merges; fix reported base-branch conflicts and failed head-commit CI unattended when woken. Do not resolve review threads or merge the PR unless a person asks.
+Open a pull request targeting `{{ base }}`, call `link` with its URL and the label `PR #<number>`, and call `wait` with a check for its merge. trk closes the issue when it merges; fix reported base-branch conflicts and failed head-commit CI unattended when woken. Do not resolve review threads or merge the PR unless a person asks.
 
 Wait for a pull request (here number 12) to merge, waking only for base-branch conflicts, failed CI on the head commit, or closure without merging (query/authentication errors also fail). This uses `gh`'s built-in jq filter; `statusCheckRollup` contains the head commit's check runs and commit statuses:
 

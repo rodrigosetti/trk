@@ -1298,4 +1298,97 @@ impl Ctx<'_> {
         )?;
         Ok(())
     }
+
+    // ------------------------------------------------------------------
+    // Links
+    // ------------------------------------------------------------------
+
+    /// Attach `url` to the issue, or change its label. Returns false when
+    /// nothing changed. The session may link while it waits, like notes.
+    pub fn link_add(&self, id: &str, url: &str, label: Option<&str>) -> Result<bool> {
+        let id = self.resolve_id(id)?;
+        let claim = self.session_claim(&id)?;
+        self.agent_gate(&id, &claim)?;
+        let link = Link {
+            url: check_link_url(url)?,
+            label: check_link_label(label)?,
+        };
+        let old = self.links(&id)?.into_iter().find(|l| l.url == link.url);
+        if old.as_ref() == Some(&link) {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "INSERT INTO link (issue_id, url, label, created_by, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (issue_id, url) DO UPDATE SET label = excluded.label",
+            params![id, link.url, link.label, self.actor_str(), self.ts()],
+        )?;
+        self.link_event(&id, old.as_ref(), Some(&link))?;
+        Ok(true)
+    }
+
+    pub fn link_rm(&self, id: &str, url: &str) -> Result<()> {
+        let id = self.resolve_id(id)?;
+        let claim = self.session_claim(&id)?;
+        self.agent_gate(&id, &claim)?;
+        let url = url.trim();
+        let old = self
+            .links(&id)?
+            .into_iter()
+            .find(|l| l.url == url)
+            .ok_or_else(|| Error::new(Code::NotFound, format!("{id} has no link {url}")))?;
+        self.conn.execute(
+            "DELETE FROM link WHERE issue_id = ?1 AND url = ?2",
+            params![id, url],
+        )?;
+        self.link_event(&id, Some(&old), None)
+    }
+
+    /// Links change through `set` events, like the authored fields.
+    fn link_event(&self, id: &str, from: Option<&Link>, to: Option<&Link>) -> Result<()> {
+        let show = |l: Option<&Link>| {
+            l.map(|l| match &l.label {
+                Some(label) => format!("{label} {}", l.url),
+                None => l.url.clone(),
+            })
+        };
+        self.event(
+            Some(id),
+            "set",
+            json!({"changes": {"link": {"from": show(from), "to": show(to)}}}),
+        )?;
+        self.conn.execute(
+            "UPDATE issue SET updated_at = ?2 WHERE id = ?1",
+            params![id, self.ts()],
+        )?;
+        self.touch_lease(id)
+    }
+}
+
+/// Links are opened from the dashboard, so only web addresses are accepted.
+fn check_link_url(url: &str) -> Result<String> {
+    let url = url.trim();
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
+    if rest.is_none_or(str::is_empty) || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(
+            Error::new(Code::InvalidField, format!("'{url}' is not an http(s) URL"))
+                .with_hint("give a full address such as https://example.com/pull/12"),
+        );
+    }
+    Ok(url.to_string())
+}
+
+fn check_link_label(label: Option<&str>) -> Result<Option<String>> {
+    let Some(label) = label.map(str::trim).filter(|l| !l.is_empty()) else {
+        return Ok(None);
+    };
+    if label.chars().count() > LINK_LABEL_MAX || label.chars().any(char::is_control) {
+        return Err(Error::new(
+            Code::InvalidField,
+            format!("a link label is one line of at most {LINK_LABEL_MAX} characters"),
+        ));
+    }
+    Ok(Some(label.to_string()))
 }

@@ -49,6 +49,9 @@ function ago(iso, now) {
   return ms < 0 ? `in ${text}` : text;
 }
 
+// What a link shows: its label, else its address without the scheme.
+export const linkText = (link) => link.label || link.url.replace(/^https?:\/\//, "");
+
 // "human:ada@example.com" is ada; "agent:omp:<uuid>" is omp.
 const short = (actor) => (actor ?? "").replace(/^human:([^@]+).*$/, "$1").replace(/^agent:([^:]+):.*$/, "$1");
 
@@ -64,6 +67,11 @@ function eventText(e) {
     case "reopen": return "reopened";
     case "note": return (p.body ?? "note").split("\n")[0];
     case "edit": return "edited";
+    case "set": {
+      const link = p.changes?.link;
+      if (link) return link.to ? `linked ${link.to}` : `unlinked ${link.from ?? ""}`.trim();
+      return `changed ${Object.keys(p.changes ?? {}).join(", ")}`.trim();
+    }
     case "dep_add": return p.blocker === e.issue_id ? `now blocks ${p.blocked}` : `now blocked by ${p.blocker}`;
     case "dep_rm": return p.blocker === e.issue_id ? `no longer blocks ${p.blocked}` : `no longer blocked by ${p.blocker}`;
     default: return e.op.replace(/_/g, " ");
@@ -416,6 +424,7 @@ export default class Trk extends View {
     else if (k === "s" && issue.session?.terminal) { this.open = true; this.ask({ kind: "send", id: issue.id }); cx.notify(); }
     else if (k === "v" && issue.state === "waiting") { this.open = true; this.ask({ kind: "resume", id: issue.id }); cx.notify(); }
     else if (k === "x") { this.open = true; this.ask({ kind: "close", id: issue.id }); cx.notify(); }
+    else if (k === "l" && issue.links?.length) cx.open_url(issue.links[0].url);
     else return;
     cx.stop_propagation();
   }
@@ -445,6 +454,17 @@ export default class Trk extends View {
         cx.notify();
       })
       .child(id);
+  }
+
+  /** A link the issue carries (a pull request, a preview): click opens it in the browser. */
+  link(t, issue, n, place) {
+    const l = issue.links[n];
+    return h_flex().id(`link-${place}-${issue.id}-${n}`).flex_none().max_w(place === "row" ? 130 : 420).h(18).px(6).gap(4).items_center().rounded(5)
+      .bg(t.accent + "26").text_size(10.5).font_medium().text_color(t.accent)
+      .cursor_pointer().hover((s) => s.opacity(0.8)).tooltip(n === 0 ? `Open ${l.url} (l)` : `Open ${l.url}`)
+      .on_click((_e, cx) => { cx.stop_propagation(); cx.open_url(l.url); })
+      .child(div().flex_none().child("↗"))
+      .child(div().min_w(0).truncate().child(linkText(l)));
   }
 
   /** The right end of a row: why it needs you, the agent's state, or the next check. */
@@ -477,6 +497,8 @@ export default class Trk extends View {
       .child(this.issueId(t, issue.id, "row"))
       .child(div().flex_none().text_size(10).text_color(t.dim).child(issue.type))
       .child(div().flex_1().min_w(0).truncate().text_color(on ? t.foreground : issue.group === "blocked" ? t.muted : t.foreground).child(issue.title))
+      .when(Boolean(issue.links?.length), (el) => el.child(this.link(t, issue, 0, "row")))
+      .when((issue.links?.length ?? 0) > 1, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(`+${issue.links.length - 1}`)))
       .child(this.badge(t, issue, now));
   }
 
@@ -554,6 +576,9 @@ export default class Trk extends View {
         .when(Boolean(w?.reason), (el) => el.child(line("waiting", w.reason)))
         .when(Boolean(w?.check), (el) => el.child(line("check", w.check, t.dim))
           .child(line("", [w.due ? "due now" : w.next_check_at ? `next ${ago(w.next_check_at, now)}` : null, w.last_check_at ? `last ${ago(w.last_check_at, now)} ago, exit ${w.last_check_exit}` : "never run"].filter(Boolean).join(" · ")))))
+      .when(Boolean(issue.links?.length), (el) => el.child(h_flex().gap(8).items_start()
+        .child(div().w(64).flex_none().text_size(11).text_color(t.dim).child("links"))
+        .child(h_flex().flex_1().min_w(0).flex_wrap().gap(6).children(issue.links.map((_l, n) => this.link(t, issue, n, "detail"))))))
       .when(issue.blocked_by.length > 0, (el) => el.child(edges("blocked by", issue.blocked_by)))
       .when(issue.blocks.length > 0, (el) => el.child(edges("blocks", issue.blocks)))
       .child(this.prompt?.id === issue.id ? this.promptBox(t) : this.actions(t, issue))

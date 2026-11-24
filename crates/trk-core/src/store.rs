@@ -210,6 +210,17 @@ fn migrations() -> Vec<M<'static>> {
             "ALTER TABLE issue ADD COLUMN wake_count INTEGER NOT NULL DEFAULT 0 CHECK (wake_count >= 0)",
         ),
         M::up("ALTER TABLE claim ADD COLUMN launcher TEXT"),
+        // Current links only; their history is in `set` events.
+        M::up(
+            "CREATE TABLE link (
+               issue_id    TEXT NOT NULL REFERENCES issue(id),
+               url         TEXT NOT NULL CHECK (length(url) > 0),
+               label       TEXT,
+               created_by  TEXT NOT NULL REFERENCES actor(id),
+               created_at  TEXT NOT NULL,
+               PRIMARY KEY (issue_id, url)
+             )",
+        ),
     ]
 }
 
@@ -443,6 +454,22 @@ impl<'a> Ctx<'a> {
                     title: r.get(1)?,
                     state: state_col(r, 2)?,
                     priority: r.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(v)
+    }
+
+    /// The issue's links, oldest first.
+    pub fn links(&self, issue_id: &str) -> Result<Vec<Link>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT url, label FROM link WHERE issue_id = ?1 ORDER BY rowid")?;
+        let v = st
+            .query_map([issue_id], |r| {
+                Ok(Link {
+                    url: r.get(0)?,
+                    label: r.get(1)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;

@@ -187,6 +187,15 @@ trk dep add <BLOCKER> <BLOCKED> --json    # BLOCKED is not ready until BLOCKER i
 trk dep rm <BLOCKER> <BLOCKED> --json
 ```
 
+## Links
+
+```bash
+trk link <ID> https://example.com/org/repo/pull/12 -l "PR #12" --json   # shown on the dashboard row; same URL again changes the label
+trk unlink <ID> https://example.com/org/repo/pull/12 --json
+```
+
+A link points at what the work produced. trk only stores and shows it.
+
 ## Agent sessions
 
 ```bash

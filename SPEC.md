@@ -26,7 +26,7 @@ Issues have routing-only types and share one state machine. An agent work cycle 
 - Custom type fields, configurable workflows, required evidence on close. Types only describe and route work; a check command expresses completion requirements.
 - Issue hierarchies. Grouping is done with `blocks` edges.
 - Sync between machines, multiple users over a network, or a web UI.
-- Storing state that can be read from elsewhere at any time (CI status, PR review state). A check reads it when it runs.
+- Storing state that can be read from elsewhere at any time (CI status, PR review state). A check reads it when it runs. A link stores only where that state lives, never what it says.
 - Sandboxing checks. A check runs as the user (see Trust).
 
 ## The model
@@ -40,8 +40,11 @@ Issues have routing-only types and share one state machine. An agent work cycle 
 | notes | an append-only log, stored as events |
 | `priority` | `P0` urgent, `P1` high, `P2` normal (default), `P3` low; orders `trk list` and `trk ready` by default |
 | `type` | required routing type; defaults to `[issues] default_type` (`code-change` when omitted) |
+| links | zero or more `{url, label?}` pointers to what the work produced (a pull request, a preview, a document) |
 
 Everything else on an issue is state the tool owns: `state`, `close_reason`, the waiting fields, timestamps and `created_by`.
+
+A link is an absolute `http`/`https` address with an optional one-line label of at most 40 characters, keyed by its URL: linking the same URL again changes the label. trk stores and shows links and never reads their targets; it does not know what a pull request is. Which links a session adds is the business of its prompts: the seed PR landing recipe asks for `PR #<n>`. Links belong to the issue, not to a claim, so they survive waking, reopening and a new session. Each change is a `set` event with `changes.link`. Issue JSON carries `links` when there are any; the dashboard snapshot always does, and both dashboards show the first link on the issue's row and open it.
 
 ### States
 
@@ -292,7 +295,7 @@ briefing     = "prompts/briefing.md.j2"                   # → initial prompt
 inbox        = true
 
 # [trk_tools]
-# include = ["get_task", "add_note", "close", "hand_back"]   # default: all six
+# include = ["get_task", "add_note", "close", "hand_back"]   # default: all seven
 
 [[mcp]]
 name    = "github"
@@ -353,12 +356,13 @@ The harness starts `trk mcp --issue <ID> --actor <actor> --agent <name>` over st
 | --- | --- | --- |
 | `get_task` | | The issue: description, state, notes, blockers. Also the resource `trk://task` |
 | `add_note` | `body` | Appends a note |
+| `link` | `url`, `label?` | Attaches an http(s) address to the issue, or changes the label of one already attached |
 | `report_followup` | `title`, `description`, `priority?`, `blocks_this?` | Creates an issue in the same project; with `blocks_this`, it blocks the current one |
 | `hand_back` | `note` | Unclaims with a note: claimed → open |
 | `close` | `reason` (`done`, `abandoned`), `note` | claimed → closed |
 | `wait` | `reason`, `check?`, `interval?` | claimed → waiting |
 
-The set is fixed. An agent definition may narrow it with `trk_tools.include`. `get_task` remains readable without a claim. After `wait`, the waiting session may call `add_note` and `report_followup`; `wait`, `close` and `hand_back` remain refused because it holds no claim. Once the issue leaves waiting, this exception ends. After `close` or `hand_back`, further writes are refused.
+The set is fixed. An agent definition may narrow it with `trk_tools.include`. `get_task` remains readable without a claim. After `wait`, the waiting session may call `add_note`, `link` and `report_followup`; `wait`, `close` and `hand_back` remain refused because it holds no claim. Once the issue leaves waiting, this exception ends. After `close` or `hand_back`, further writes are refused.
 
 With `inbox = true`, `trk note <ID> --to-agent` messages are attached once to the owning active or waiting session's next tool result, including an error result. An old or unrelated session cannot consume them. Waiting sessions do not renew the released claim's lease.
 
@@ -707,6 +711,7 @@ The schema is [`crates/trk-core/src/schema.sql`](crates/trk-core/src/schema.sql)
 | `harness`, `actor` | Who acts; a harness row is added the first time one of its sessions acts |
 | `issue` | One row per issue: authored fields, `state`, `close_reason`, the waiting fields, timestamps |
 | `dep` | `src` blocks `dst` |
+| `link` | The current links of each issue: `url`, optional `label` |
 | `claim` | Every claim, active or released, with worktree, host, agent, terminal and release reason |
 | `event` | The append-only history; ops: `create set claim release wait check close reopen dep_add dep_rm note` |
 | `inbox` | Delivery state of `--to-agent` notes |
@@ -776,6 +781,8 @@ Every command builds one typed result, then renders it in the requested format. 
 | `trk check [ID] [--all] [--watch [PAUSE]] [--dry-run] [--no-gc]` | Run the checks of waiting issues, then optionally sweep closed-as-done resources |
 | `trk note <ID> [TEXT\|-] [--amends SEQ] [--to-agent]` | Append a note; `--to-agent` also queues it for the agent's inbox |
 | `trk dep add\|rm <BLOCKER> <BLOCKED>` | Add or remove a blocks edge |
+| `trk link <ID> <URL> [-l LABEL]` | Attach an http(s) address, or change its label |
+| `trk unlink <ID> <URL>` | Remove a link |
 | `trk log <ID>` | Timeline: events and notes |
 | **Agent sessions** |  |
 | `trk run <ID> [--agent A] [--harness H] [--fg] [--print] [--dry-run]` | Start an agent session; agent override is one-off |

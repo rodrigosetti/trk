@@ -393,7 +393,7 @@ fn cli_and_mcp_with_trk_dir_resolve_the_same_explicit_or_default_user_layer() {
         )
         .unwrap();
         let tools = mcp.request("tools/list", json!({}));
-        assert_eq!(tools["tools"].as_array().unwrap().len(), 6);
+        assert_eq!(tools["tools"].as_array().unwrap().len(), 7);
         let result = mcp.request("tools/call", json!({"name": "get_task", "arguments": {}}));
         assert_ne!(result["isError"], true, "{result:#}");
         let task: Value =
@@ -478,7 +478,10 @@ fn minimal_install_inherits_skill_settings_but_normal_install_pins_them() {
     e.ok(&["install", "--force"]);
     let project: toml::Table =
         toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    assert_eq!(project["skill"]["path"].as_str(), Some("shared/skills/second"));
+    assert_eq!(
+        project["skill"]["path"].as_str(),
+        Some("shared/skills/second")
+    );
     std::fs::remove_dir_all(e.user_dir()).unwrap();
     assert_eq!(e.ok(&["whoami"])["skill"], "current");
 }

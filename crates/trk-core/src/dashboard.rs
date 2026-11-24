@@ -100,6 +100,8 @@ pub struct DashIssue {
     pub blocks: Vec<Edge>,
     pub session: Option<Session>,
     pub waiting: Option<Waiting>,
+    /// Pointers the issue carries (a pull request, a preview), oldest first.
+    pub links: Vec<Link>,
     pub wake_count: u32,
     pub created_at: String,
     pub updated_at: String,
@@ -243,6 +245,26 @@ impl Ctx<'_> {
             .collect();
         drop(st);
 
+        let mut st = self.conn.prepare(
+            "SELECT l.issue_id, l.url, l.label FROM link l
+             JOIN issue i ON i.id = l.issue_id AND i.state != 'closed' ORDER BY l.rowid",
+        )?;
+        let mut links: HashMap<String, Vec<Link>> = HashMap::new();
+        let rows = st.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                Link {
+                    url: r.get(1)?,
+                    label: r.get(2)?,
+                },
+            ))
+        })?;
+        for row in rows {
+            let (id, link) = row?;
+            links.entry(id).or_default().push(link);
+        }
+        drop(st);
+
         let mut out = Vec::with_capacity(issues.len());
         for i in issues {
             let blocked_by = self.edges(&i.id, false)?;
@@ -301,6 +323,7 @@ impl Ctx<'_> {
                     _ => Group::Ready,
                 }
             };
+            let links = links.remove(&i.id).unwrap_or_default();
             out.push(DashIssue {
                 id: i.id,
                 title: i.title,
@@ -311,6 +334,7 @@ impl Ctx<'_> {
                 attention,
                 blocked_by,
                 blocks,
+                links,
                 session,
                 waiting,
                 wake_count: i.wake_count,

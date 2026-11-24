@@ -49,7 +49,7 @@ fn names(tools: &[trk_agent::ToolDef]) -> Vec<&str> {
 }
 
 #[test]
-fn every_agent_gets_the_six_tools_unless_it_narrows_them() {
+fn every_agent_gets_the_seven_tools_unless_it_narrows_them() {
     let (_dir, seed) = seed();
     let a = load_agent(&seed, "implementer").unwrap();
     let tools = agent_tools(&a, &user_config());
@@ -58,6 +58,7 @@ fn every_agent_gets_the_six_tools_unless_it_narrows_them() {
         [
             "get_task",
             "add_note",
+            "link",
             "report_followup",
             "hand_back",
             "close",
@@ -583,4 +584,3 @@ command = "sh"
         );
     }
 }
-
