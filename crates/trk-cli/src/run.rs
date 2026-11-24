@@ -534,12 +534,12 @@ pub fn attach(env: &Env, id: &str) -> Result<Out> {
     let (id, claim) = terminal_of(env, id)?;
     let name = claim.terminal.as_deref().expect("filtered terminal");
     let l = launcher::for_claim(env, claim.launcher.as_deref())?;
-    if !l.focus(name)? {
-        if let Some((false, _)) = l.operation(l.attach.as_deref(), name, None, true)? {
-            return Err(
-                Error::new(Code::Internal, format!("attach to {name} failed")).with_issue(&id),
-            );
-        }
+    if !l.focus(name)?
+        && let Some((false, _)) = l.operation(l.attach.as_deref(), name, None, true)?
+    {
+        return Err(
+            Error::new(Code::Internal, format!("attach to {name} failed")).with_issue(&id),
+        );
     }
     Ok(Out::Silent(json!({"issue": id, "terminal": name})))
 }

@@ -148,13 +148,16 @@ pub struct Detail {
     pub events: Vec<Event>,
 }
 
+/// Probe terminal liveness from its pinned launcher, host and terminal.
+pub type TerminalAlive<'a> = dyn Fn(Option<&str>, Option<&str>, Option<&str>) -> Option<bool> + 'a;
+
 impl Ctx<'_> {
     /// The snapshot. The caller probes terminal liveness from the pinned
     /// launcher, host and terminal, and MCP liveness from actor metadata.
     pub fn dashboard(
         &self,
         activity: usize,
-        alive: &dyn Fn(Option<&str>, Option<&str>, Option<&str>) -> Option<bool>,
+        alive: &TerminalAlive<'_>,
         mcp_alive: &dyn Fn(&Value) -> Option<bool>,
     ) -> Result<Dashboard> {
         let now = self.ts();

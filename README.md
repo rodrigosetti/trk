@@ -122,7 +122,9 @@ upgrade. Otherwise:
 
 Restarting an MCP server does not claim an issue or bypass dependency/ownership checks.
 
-For development: `cargo build` and `cargo test --workspace`.
+For development: `cargo build`, `cargo test --workspace`, and `cargo lint`.
+`cargo lint` runs `cargo clippy --workspace --all-targets -- -D warnings`, rejecting
+compiler and Clippy warnings in every workspace target, including tests and examples.
 Keep build outputs local to each issue worktree; do not point `CARGO_TARGET_DIR`
 or `--target-dir` at the primary checkout. Seed-dependent tests materialize the
 installer's embedded defaults in temporary directories, so their binaries also

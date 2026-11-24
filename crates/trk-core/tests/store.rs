@@ -1366,7 +1366,7 @@ fn issue_types_must_be_known_when_set() {
     assert!(serialized.get("agent").is_none());
     // Removing a definition must not invalidate reads or unrelated edits.
     s.opts.known_types.retain(|name| name != "investigation");
-    assert_eq!(ids(&s, "type=investigation"), [id.clone()]);
+    assert_eq!(ids(&s, "type=investigation"), std::slice::from_ref(&id));
     assert_eq!(
         s.read(None, |c| c.show(&id, With::default())).unwrap()["type"],
         "investigation"
@@ -1416,8 +1416,8 @@ fn queries_and_sorts_use_type_not_issue_agent() {
             })
         })
         .unwrap();
-    assert_eq!(ids(&s, "type=code-change"), [default.clone()]);
-    assert_eq!(ids(&s, "type=review"), [custom.clone()]);
+    assert_eq!(ids(&s, "type=code-change"), std::slice::from_ref(&default));
+    assert_eq!(ids(&s, "type=review"), std::slice::from_ref(&custom));
     let sorted = s.read(None, |c| c.list("", Some("-type"), None)).unwrap();
     assert_eq!(sorted[0]["id"], custom);
     assert_eq!(sorted[1]["id"], default);

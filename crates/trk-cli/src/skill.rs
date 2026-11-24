@@ -15,8 +15,6 @@ use trk_core::error::Result;
 
 use crate::env::{git, git_exclude, home};
 
-pub const NAME: &str = "trk";
-
 /// The skill's files, relative to its directory.
 pub const FILES: &[(&str, &str)] = &[
     ("SKILL.md", include_str!("../../../skills/trk/SKILL.md")),

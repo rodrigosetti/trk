@@ -154,13 +154,13 @@ fn session(
     if launcher.exists(terminal) == Some(false) {
         return Ok(Resource::new("absent", "terminal is already gone"));
     }
-    if !dry_run {
-        if let Some((false, output)) = launcher.operation(Some(close), terminal, None, false)? {
-            return Err(Error::new(
-                Code::InvalidState,
-                format!("launcher close failed: {output}"),
-            ));
-        }
+    if !dry_run
+        && let Some((false, output)) = launcher.operation(Some(close), terminal, None, false)?
+    {
+        return Err(Error::new(
+            Code::InvalidState,
+            format!("launcher close failed: {output}"),
+        ));
     }
     Ok(Resource::new(
         "removed",
@@ -217,7 +217,7 @@ fn worktree(repo: &Path, path: &Path, root: &Path, cwd: &Path, dry_run: bool) ->
         .to_str()
         .ok_or_else(|| Error::new(Code::InvalidState, "non-UTF-8 worktree path"))?;
     let status = checked_git(
-        &path,
+        path,
         &[
             "status",
             "--porcelain",

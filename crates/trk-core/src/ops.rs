@@ -79,6 +79,9 @@ pub struct CheckRun {
     pub output: String,
 }
 
+/// The check runner's pid, host, start time and active subprocess group.
+pub type CheckLock = (i64, Option<String>, String, Option<i64>);
+
 /// What recording a check did to the issue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckResult {
@@ -921,7 +924,7 @@ impl Ctx<'_> {
 
     /// The runner pid, host, start time and active subprocess group, if any.
     /// Ownership must remain until both the runner and its subprocess group are gone.
-    pub fn check_lock(&self) -> Result<Option<(i64, Option<String>, String, Option<i64>)>> {
+    pub fn check_lock(&self) -> Result<Option<CheckLock>> {
         Ok(self
             .conn
             .query_row(

@@ -530,17 +530,19 @@ fn builtin_levels_are_defined_by_profiles_not_a_fixed_list() {
     }
     let agents = dir.path().join("agents");
     let cfg = ConfigDir::new(dir.path());
-    let mut user = UserConfig::default();
-    user.harness = toml::from_str(
-        r#"
+    let user = UserConfig {
+        harness: toml::from_str(
+            r#"
 [enforcing]
 command = "sh"
 builtin_tools = { no-network = ["--offline"], plan-only = [] }
 [preferred]
 command = "sh"
 "#,
-    )
-    .unwrap();
+        )
+        .unwrap(),
+        ..Default::default()
+    };
     for level in [
         "default",
         "no-network",
