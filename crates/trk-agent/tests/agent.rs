@@ -95,67 +95,6 @@ fn seed_agents_check_clean() {
 }
 
 #[test]
-fn builtin_levels_are_defined_by_profiles_not_a_fixed_list() {
-    let dir = tempfile::tempdir().unwrap();
-    let agents = dir.path().join("agents");
-    std::fs::create_dir_all(&agents).unwrap();
-    let cfg = ConfigDir::new(dir.path());
-    let mut user = UserConfig::default();
-    user.harness = toml::from_str(
-        r#"
-[enforcing]
-command = "sh"
-builtin_tools = { no-network = ["--offline"], plan-only = [] }
-[preferred]
-command = "sh"
-"#,
-    )
-    .unwrap();
-    for level in [
-        "default",
-        "no-network",
-        "plan-only",
-        "undefined",
-        "read-only",
-        "none",
-    ] {
-        std::fs::write(
-            agents.join("custom.toml"),
-            format!(
-                "name = 'custom'\n[harness]\nprefer = ['preferred']\nbuiltin_tools = '{level}'\n"
-            ),
-        )
-        .unwrap();
-        let diagnostics = trk_agent::check::check_agents(&cfg, &user);
-        let errors: Vec<_> = diagnostics
-            .iter()
-            .filter(|d| d.level == Level::Error)
-            .collect();
-        if matches!(level, "default" | "no-network" | "plan-only") {
-            assert!(errors.is_empty(), "{level}: {diagnostics:#?}");
-        } else {
-            assert_eq!(errors.len(), 1, "{level}: {diagnostics:#?}");
-            assert!(
-                errors[0]
-                    .message
-                    .contains(&format!("builtin_tools '{level}'"))
-            );
-            assert!(
-                errors[0]
-                    .message
-                    .contains("available levels: default, no-network, plan-only")
-            );
-        }
-        assert_eq!(
-            diagnostics.iter().any(|d| d.level == Level::Warning
-                && d.message.contains("harness 'preferred' cannot enforce")),
-            level != "default",
-            "{level}: {diagnostics:#?}"
-        );
-    }
-}
-
-#[test]
 fn the_briefing_carries_description_notes_and_blockers() {
     let (_dir, seed) = seed();
     let a = load_agent(&seed, "implementer").unwrap();
@@ -435,3 +374,69 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
     );
     assert_eq!(mcp["mcpServers"]["trk"]["env"]["TRK_DIR"], "/tmp/proj/.trk");
 }
+
+#[test]
+fn builtin_levels_are_defined_by_profiles_not_a_fixed_list() {
+    let dir = tempfile::tempdir().unwrap();
+    for (path, content) in trk_core::seed::preset("minimal").unwrap() {
+        let path = dir.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+    let agents = dir.path().join("agents");
+    let cfg = ConfigDir::new(dir.path());
+    let mut user = UserConfig::default();
+    user.harness = toml::from_str(
+        r#"
+[enforcing]
+command = "sh"
+builtin_tools = { no-network = ["--offline"], plan-only = [] }
+[preferred]
+command = "sh"
+"#,
+    )
+    .unwrap();
+    for level in [
+        "default",
+        "no-network",
+        "plan-only",
+        "undefined",
+        "read-only",
+        "none",
+    ] {
+        std::fs::write(
+            agents.join("custom.toml"),
+            format!(
+                "name = 'custom'\n[harness]\nprefer = ['preferred']\nbuiltin_tools = '{level}'\n"
+            ),
+        )
+        .unwrap();
+        let diagnostics = trk_agent::check::check_agents(&cfg, &user);
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.level == Level::Error)
+            .collect();
+        if matches!(level, "default" | "no-network" | "plan-only") {
+            assert!(errors.is_empty(), "{level}: {diagnostics:#?}");
+        } else {
+            assert_eq!(errors.len(), 1, "{level}: {diagnostics:#?}");
+            assert!(
+                errors[0]
+                    .message
+                    .contains(&format!("builtin_tools '{level}'"))
+            );
+            assert!(
+                errors[0]
+                    .message
+                    .contains("available levels: default, no-network, plan-only")
+            );
+        }
+        assert_eq!(
+            diagnostics.iter().any(|d| d.level == Level::Warning
+                && d.message.contains("harness 'preferred' cannot enforce")),
+            level != "default",
+            "{level}: {diagnostics:#?}"
+        );
+    }
+}
+
