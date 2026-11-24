@@ -1,0 +1,101 @@
+## Install and upgrade
+
+```sh
+./install.sh
+```
+
+This builds a release binary and installs it to `~/.cargo/bin/trk`. Nothing else is written.
+trk keeps no global database; an optional user configuration can be shared across projects.
+Set up each project:
+
+```sh
+cd ~/src/orch && trk install
+```
+
+`trk install` creates `.trk/` in the project root (by default, the primary git checkout
+root): the database, the default config with every setting written out, and a `.gitignore`
+that keeps all of it out of git. To install a project in a monorepo subdirectory, run
+`trk --dir .trk install` from that subdirectory. It also installs the agent skill (see below).
+Commands find the project from its subdirectories and corresponding paths in git worktrees.
+Other project commands fail with `not_installed` until it has been installed.
+
+Choose the configuration seed with these install options:
+
+```sh
+trk install --list-presets              # default and minimal; no installation or writes
+trk install --preset default            # implicit default: all three agents and issue types
+trk install --preset minimal            # implementer + code-change, with their common prompts
+trk install --from /path/to/team-seed   # use only this directory's files, recursively
+trk install --minimal                  # project settings only; inherit shared user resources
+```
+
+The built-in `seed/` directory is embedded recursively at build time, so adding or changing
+a seed file is picked up by the next build without maintaining a file list. Common files
+(`config.toml`, `prompts/_rules.md.j2`, and `prompts/briefing.md.j2`) live at the seed root;
+`default_type.txt` supplies the built-in fallback but is not installed.
+The installer also supplies the built-in `.gitignore`. `seed/presets/default/` adds the
+implementer, researcher and reviewer agents,
+the code-change, research and review types, and their instruction prompts.
+`seed/presets/minimal/` adds only implementer, code-change and the implementer's instructions.
+A preset's files replace common files at matching paths.
+
+`--from DIR` instead copies a fully resolved install layout directly into `.trk/`, including
+nested and binary files, with no built-in fallback or preset selection. Only regular files
+and directories are accepted; symlinks and special entries are rejected. Supply your own
+`.gitignore` if wanted. A `presets/` directory inside a custom source is ordinary content.
+`--from`, `--preset`, and `--minimal` cannot be combined. Unlike `--preset minimal`,
+`--minimal` writes no agents, types, or prompts and relies on the user layer.
+`--list-presets` cannot be combined with install modifiers. Listing works outside a project;
+its JSON data is `{"presets":["default","minimal"]}`.
+
+Only `config.toml` substitutes install-time markers: `{{EMAIL_LINE}}` becomes the human email
+setting (or a commented example), `{{PREFIX}}` becomes `--prefix` or the detected project
+prefix, `{{DEFAULT_TYPE}}` becomes the built-in default issue type, and `{{BASE}}` becomes
+the TOML-quoted detected base branch. Other files are copied unchanged, including template markers.
+
+To upgrade after changing or pulling this checkout, run `./install.sh` again, then `trk install`
+in each project, passing the same `--minimal`, `--preset` or `--from` used for its installation.
+trk does not remember that selection. It applies schema migrations, refreshes the agent skill, keeps
+existing configuration files, and lists the ones that differ from the selected seed.
+For `config.toml`, only harness-profile differences count as drift, not project identity
+or formatting. `trk install --force` rewrites files supplied by the selected seed but does
+not prune other files; switching to `--preset minimal` does not remove previously installed agents
+or types. `trk --version` prints the commit the binary was built from. Running agent
+sessions keep the binary they started with.
+
+### Active sessions during upgrades
+
+Opening the shared database with a newer trk can apply forward schema migrations. An older,
+already-running MCP server cannot use a schema newer than its compiled migration set. It returns
+`newer_database`, with the database path, `database_version` (SQLite `user_version`) and
+`supported_version`, plus restart guidance. These numbers are **not** the JSON envelope's
+`schema_version`. The database is not downgraded or reset. Binaries predating this error may
+instead return the internal rusqlite_migration “migration number that is too high” error;
+the recovery is the same.
+
+To avoid interrupted tools and lease renewal, finish active sessions before a schema-changing
+upgrade. Otherwise:
+
+1. Preserve uncommitted work and handoff text. Have the human compare the installed
+   `trk --version` and `trk whoami --json` with the harness's MCP launch command and its
+   `TRK_DIR` (for omp, the worktree's `.omp/mcp.json`). Confirm the executable and
+   project directory match; a working CLI alone does not establish that.
+2. Install a trk that supports the database, then restart the harness's trk MCP connection
+   using that executable. Keep the original issue, actor, agent and project
+   directory. Restart/reconnect through the harness if supported; otherwise preserve the
+   session context and restart the harness with its existing MCP configuration.
+   trk does not hot-reload migrations or automatically replace/re-exec a running MCP server.
+3. Call `get_task` after reconnecting. Reads work without an active claim. If the original
+   claim remains active, resume or hand back normally. Lease renewal cannot access an
+   incompatible database, so do not assume a long-interrupted session still owns its issue.
+4. If this is the waiting session (the latest claim was released with reason `waiting`,
+   and the issue is still waiting), notes and follow-ups still work; lifecycle changes do
+   not. After reconnecting, a human can authorize more work in that live session with
+   `trk resume <ID> -m "Continue with the preserved handoff" --json`. Otherwise stop agent
+   writes. The human can preserve handoff text with `trk note <ID> ...`; if the waiting
+   session is gone, use `trk reopen <ID> -m "Recover the handoff"` then `trk run <ID>`.
+   Resolve blockers first; do not steal claims, impersonate another actor or edit the
+   database to recover a handoff.
+
+Restarting an MCP server does not claim an issue or bypass dependency/ownership checks.
+
