@@ -76,7 +76,7 @@ impl TrkServer {
         )?;
         let resolved = config.load(&routing)?;
         let agent = resolved.agent;
-        let tools = trk_agent::agent_tools(&agent);
+        let tools = trk_agent::agent_tools(&agent, &args.user.check);
         let input = trk_agent::prompt::PromptInput {
             issue: &issue_json,
             project_root: &args.project_root,

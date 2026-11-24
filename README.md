@@ -637,6 +637,12 @@ and `.trk/worktrees`), without path expansion. Example: `{{ project.name }}:
 `trk agent check` renders with sample issue/type/project values (project root `/tmp/project`,
 type `code-change` with description `Sample type description`) and the project's configured settings.
 
+The `wait` tool advertises the configured check interval and wake cap; with
+`max_wakes = 0`, failures reopen the issue instead of waking the session.
+Seed waiting rules render these settings from the template context. Tool descriptions
+cover the check mechanism only; branch landing and pull-request policy live in the
+instruction templates, where projects can change them.
+
 Harness profiles in `config.toml` use a separate MiniJinja context. Every command,
 argument, environment value, file path/content and optional argument is
 rendered once; substituted values are never expanded recursively.

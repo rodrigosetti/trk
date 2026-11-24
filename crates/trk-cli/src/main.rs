@@ -1243,7 +1243,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                     .map(|(name, model)| format!("{name}={}", model.unwrap_or("(harness default)")))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let tools: Vec<String> = trk_agent::agent_tools(a)
+                let tools: Vec<String> = trk_agent::agent_tools(a, &env.user.check)
                     .into_iter()
                     .map(|t| t.name)
                     .collect();
@@ -1325,7 +1325,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             )?;
             let resolved = cfg.load(&routing)?;
             let a = resolved.agent;
-            let tools = trk_agent::agent_tools(&a);
+            let tools = trk_agent::agent_tools(&a, &env.user.check);
             let input = trk_agent::prompt::PromptInput {
                 issue: &issue_json,
                 project_root: &env.root,

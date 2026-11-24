@@ -113,13 +113,13 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
                 ));
             }
         }
-        for miss in unmatched_includes(a) {
+        for miss in unmatched_includes(a, &user.check) {
             d.push(Diagnostic::error(
                 Some(file),
                 format!("trk_tools.include: there is no tool '{miss}'"),
             ));
         }
-        let tools = agent_tools(a);
+        let tools = agent_tools(a, &user.check);
         let ends = |n: &str| tools.iter().any(|t| t.name == n);
         if !ends("close") && !ends("wait") && !ends("hand_back") {
             d.push(Diagnostic::error(

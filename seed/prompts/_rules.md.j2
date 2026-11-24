@@ -17,9 +17,13 @@ Do not stop without calling one of them.
 
 Waiting. `wait` takes a `reason` and usually a `check`: a shell command the tracker runs later, on a schedule, with nobody watching.
 - Exit 0: the issue closes as done.
-- Exit 75: not yet. The tracker runs the check again after `interval`.
-- Any other exit or timeout: something went wrong. The output is saved as a note. If your session is still alive and below `[check] max_wakes` (default 5; 0 disables waking), trk restores your claim and tools and wakes this same session with the output and `wake N of M`. Fix only what the check reported and end the new cycle again, normally with the same `wait`. If the same failure keeps returning, `hand_back` with the evidence instead of repeating indefinitely. If your session is gone, wake delivery fails, or the wake cap is reached, the issue returns to open for a new session.
-While waiting, you can still add notes and may receive requests from the human.
+- Exit 75: not yet. The tracker runs the check again after `interval` (default `{{ config.check.interval }}`).
+{% if config.check.max_wakes == 0 %}
+- Any other exit or timeout: something went wrong. The output is saved as a note and the issue returns to open for a new session. `[check] max_wakes = {{ config.check.max_wakes }}` disables waking.
+{% else %}
+- Any other exit or timeout: something went wrong. The output is saved as a note. If your session is still alive and below `[check] max_wakes` (configured {{ config.check.max_wakes }} per session), trk restores your claim and tools and wakes this same session with the output and `wake N of M`. Fix only what the check reported and end the new cycle again, normally with the same `wait`. If the same failure keeps returning, `hand_back` with the evidence instead of repeating indefinitely. If your session is gone, wake delivery fails, or the wake cap is reached, the issue returns to open for a new session.
+{% endif %}
+While waiting, you can still add notes and may receive requests from the human, but chat or restored access does not authorize lifecycle changes. Ask the human to run `trk resume <ID> -m "continuation instructions"` to restore your live waiting session's claim and tools. Never self-resume, impersonate a human, or use `trk send` as tracker authorization.
 The check runs with `sh -c` in your worktree, with TRK_ISSUE, TRK_WORKTREE, TRK_REPO (the main checkout), TRK_BRANCH, TRK_BASE (the landing branch) and TRK_VERIFY (`[check] verify`, default empty) set. It may do the remaining work itself or only look. It may run more than once, so it must be safe to repeat, non-interactive and non-blocking: do not use `--watch`. Let real failures exit non-zero on their own: do not turn them into 75, or the issue waits forever.
 
 Merge your branch into `{{ base }}` in the main checkout only after verifying the merged result in your issue worktree (checks run one at a time, so merges never race):
@@ -35,7 +39,7 @@ cd "$TRK_REPO" || exit 1
 git merge --ff-only "$TRK_BRANCH" || exit 1
 ```
 
-`[check] verify` is an opaque shell command, exposed to templates as `verify`; empty means skip verification, not skip the worktree merge. Include dependency setup in the command when needed. Verification shares `[check] timeout` (default 10m) with the whole check and holds the serialized queue: use a fast subset or raise the timeout for slow suites. A failed verification, even exit 75, is a failure, not a retry. This local gate applies only when the issue type uses an issue worktree and branch; a type opting out has no issue branch to merge or test. The primary checkout receives only the verified result by fast-forward. The PR recipe below is unchanged by this setting.
+`[check] verify` is an opaque shell command, exposed to templates as `verify`; empty means skip verification, not skip the worktree merge. Include dependency setup in the command when needed. Verification shares `[check] timeout` (configured `{{ config.check.timeout }}`) with the whole check and holds the serialized queue: use a fast subset or raise the timeout for slow suites. A failed verification, even exit 75, is a failure, not a retry. This local gate applies only when the issue type uses an issue worktree and branch; a type opting out has no issue branch to merge or test. The primary checkout receives only the verified result by fast-forward. The PR recipe below is unchanged by this setting.
 
 Wait for a pull request (here number 12) to merge, waking only for base-branch conflicts, failed CI on the head commit, or closure without merging (query/authentication errors also fail). This uses `gh`'s built-in jq filter; `statusCheckRollup` contains the head commit's check runs and commit statuses:
 

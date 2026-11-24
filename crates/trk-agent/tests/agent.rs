@@ -33,7 +33,7 @@ fn names(tools: &[trk_agent::ToolDef]) -> Vec<&str> {
 fn every_agent_gets_the_six_tools_unless_it_narrows_them() {
     let (_dir, seed) = seed();
     let a = load_agent(&seed, "implementer").unwrap();
-    let tools = agent_tools(&a);
+    let tools = agent_tools(&a, &user_config().check);
     assert_eq!(
         names(&tools),
         [
@@ -55,8 +55,14 @@ fn every_agent_gets_the_six_tools_unless_it_narrows_them() {
     );
     let mut narrow = a.clone();
     narrow.trk_tools.include = vec!["get_*".into(), "close".into(), "nope".into()];
-    assert_eq!(names(&agent_tools(&narrow)), ["get_task", "close"]);
-    assert_eq!(trk_agent::tools::unmatched_includes(&narrow), ["nope"]);
+    assert_eq!(
+        names(&agent_tools(&narrow, &user_config().check)),
+        ["get_task", "close"]
+    );
+    assert_eq!(
+        trk_agent::tools::unmatched_includes(&narrow, &user_config().check),
+        ["nope"]
+    );
 }
 
 #[test]
@@ -92,7 +98,7 @@ fn seed_agents_check_clean() {
 fn the_briefing_carries_description_notes_and_blockers() {
     let (_dir, seed) = seed();
     let a = load_agent(&seed, "implementer").unwrap();
-    let tools = agent_tools(&a);
+    let tools = agent_tools(&a, &user_config().check);
     let issue = serde_json::json!({
         "id": "orch-abc", "project": "orch", "title": "Add leases", "priority": "P1",
         "description": "Claims need leases.", "state": "claimed",
@@ -130,6 +136,57 @@ fn the_briefing_carries_description_notes_and_blockers() {
     assert!(!b.contains("## Instructions"));
     let folded = trk_agent::prompt::briefing(&seed, &input, Some(&rules)).unwrap();
     assert!(folded.contains("## Instructions"));
+}
+
+#[test]
+fn seed_waiting_rules_reflect_effective_check_settings() {
+    let (_dir, seed) = seed();
+    let agent = load_agent(&seed, "implementer").unwrap();
+    let issue = trk_agent::check::sample_issue();
+    for max_wakes in [0, 3] {
+        let mut config = user_config();
+        config.check.interval = "1h".into();
+        config.check.timeout = "20m".into();
+        config.check.max_wakes = max_wakes;
+        let tools = agent_tools(&agent, &config.check);
+        let input = trk_agent::prompt::PromptInput {
+            issue: &issue,
+            project_root: std::path::Path::new("/project"),
+            config: &config,
+            issue_type: "code-change",
+            type_description: "code change",
+            agent: &agent,
+            tools: &tools,
+            worktree: Some("/wt/proj-abc"),
+            base: "main",
+            verify: "",
+            actor: "agent:omp:u1",
+            harness: Some("omp"),
+        };
+        let rules = trk_agent::prompt::instructions(&seed, &input).unwrap();
+        assert!(rules.contains("`interval` (default `1h`)"), "{rules}");
+        assert!(
+            rules.contains("`[check] timeout` (configured `20m`)"),
+            "{rules}"
+        );
+        if max_wakes == 0 {
+            assert!(
+                rules.contains("`[check] max_wakes = 0` disables waking"),
+                "{rules}"
+            );
+            assert!(
+                rules.contains("issue returns to open for a new session"),
+                "{rules}"
+            );
+            assert!(!rules.contains("wakes this same session"), "{rules}");
+        } else {
+            assert!(
+                rules.contains("`[check] max_wakes` (configured 3 per session)"),
+                "{rules}"
+            );
+            assert!(rules.contains("wakes this same session"), "{rules}");
+        }
+    }
 }
 
 #[test]

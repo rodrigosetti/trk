@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
+use trk_core::config::CheckSection;
 use trk_core::model::{CHECK_RETRY_EXIT, CLOSE_REASONS, PRIORITIES};
 
 use crate::agent::AgentDef;
@@ -43,12 +44,21 @@ fn text(description: &str) -> Value {
 }
 
 /// Every trk tool, in the order sessions see them.
-pub fn catalogue() -> Vec<ToolDef> {
+pub fn catalogue(check: &CheckSection) -> Vec<ToolDef> {
     let tool = |name: &str, action: Action, description: String, input_schema: Value| ToolDef {
         name: name.to_string(),
         description,
         input_schema,
         action,
+    };
+    let failure = if check.max_wakes == 0 {
+        "Failures reopen the issue for a new session; [check] max_wakes = 0 disables waking.".into()
+    } else {
+        format!(
+            "Failures restore your claim and tools and wake your live session, up to {} times per session ([check] max_wakes); \
+             if your session is gone, wake delivery fails, or the cap is reached, the issue reopens for a new session.",
+            check.max_wakes
+        )
     };
     vec![
         tool(
@@ -113,16 +123,7 @@ pub fn catalogue() -> Vec<ToolDef> {
                 "End this work cycle with the issue not yet done: it waits for something outside this session. \
                  With `check`, a shell command that trk runs later, on a schedule, in your worktree: \
                  exit 0 closes the issue as done; exit {CHECK_RETRY_EXIT} means not yet, check again after `interval`; \
-                 any other exit or timeout records the output as a note and wakes you to fix the failure if your session is still alive. \
-                 Your claim and tools are restored; fix only what the check reported and end the new cycle again, normally with the same wait. \
-                 If your session is gone, wake delivery fails, or [check] max_wakes is reached, the issue returns to open for a new session. \
-                 The wake cap defaults to 5 per session; 0 disables waking. Each wake includes its count; hand_back with evidence if the same failure keeps returning. \
-                 While waiting you can still add notes and may receive requests from the human, but chat or restored access does not authorize lifecycle changes. \
-                 Ask the human to run `trk resume <ID> -m \"continuation instructions\"` to restore your live waiting session's claim and tools. \
-                 Never self-resume, impersonate a human, or use `trk send` as tracker authorization. \
-                 The command may do the remaining work itself (merge the branch) or only look (is the PR merged?). \
-                 For a PR, pass when merged; fail with actionable output for base-branch conflicts, failed head-commit CI, or closure without merging; otherwise return {CHECK_RETRY_EXIT}. \
-                 Pending CI, review threads, approval and unknown mergeability are not failures. Do not resolve review threads or merge the PR unless a person asks. \
+                 any other exit or timeout records the output as a note. {failure} \
                  It runs unattended under sh -c and may run more than once: make it non-interactive, non-blocking (no --watch) and safe to repeat. \
                  Without `check`, the issue waits for a human to close, reopen, or explicitly resume it."
             ),
@@ -135,7 +136,10 @@ pub fn catalogue() -> Vec<ToolDef> {
                 ),
                 (
                     "interval",
-                    text("Time between checks, e.g. 2m, 1h, 1d. Default 5m."),
+                    text(&format!(
+                        "Time between checks, e.g. 2m, 1h, 1d. Default {}.",
+                        check.interval
+                    )),
                     false,
                 ),
             ]),
@@ -168,17 +172,17 @@ pub fn selects(entry: &str, tool: &ToolDef) -> bool {
 }
 
 /// The tools an agent gets: all of them, or those its `include` selects.
-pub fn agent_tools(agent: &AgentDef) -> Vec<ToolDef> {
+pub fn agent_tools(agent: &AgentDef, check: &CheckSection) -> Vec<ToolDef> {
     let inc = &agent.trk_tools.include;
-    catalogue()
+    catalogue(check)
         .into_iter()
         .filter(|t| inc.is_empty() || inc.iter().any(|e| selects(e, t)))
         .collect()
 }
 
 /// Include entries of `agent` that select nothing.
-pub fn unmatched_includes(agent: &AgentDef) -> Vec<String> {
-    let cat = catalogue();
+pub fn unmatched_includes(agent: &AgentDef, check: &CheckSection) -> Vec<String> {
+    let cat = catalogue(check);
     agent
         .trk_tools
         .include
@@ -202,7 +206,10 @@ mod tests {
 
     #[test]
     fn six_tools() {
-        let names: Vec<String> = catalogue().into_iter().map(|t| t.name).collect();
+        let names: Vec<String> = catalogue(&CheckSection::default())
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
         assert_eq!(
             names,
             [
@@ -214,5 +221,49 @@ mod tests {
                 "wait"
             ]
         );
+    }
+
+    #[test]
+    fn wait_describes_configured_check_behavior_without_workflow_policy() {
+        for max_wakes in [0, 3] {
+            let check = CheckSection {
+                interval: "1h".into(),
+                max_wakes,
+                ..Default::default()
+            };
+            let wait = catalogue(&check)
+                .into_iter()
+                .find(|t| t.name == "wait")
+                .unwrap();
+            assert_eq!(
+                wait.input_schema["properties"]["interval"]["description"],
+                "Time between checks, e.g. 2m, 1h, 1d. Default 1h."
+            );
+            let description = &wait.description;
+            assert!(!description.contains("PR"), "{description}");
+            assert!(
+                !description.to_lowercase().contains("pull request"),
+                "{description}"
+            );
+            if max_wakes == 0 {
+                assert!(
+                    description.contains("Failures reopen the issue"),
+                    "{description}"
+                );
+                assert!(
+                    description.contains("max_wakes = 0 disables waking"),
+                    "{description}"
+                );
+                assert!(
+                    !description.contains("wake your live session"),
+                    "{description}"
+                );
+            } else {
+                assert!(
+                    description.contains("up to 3 times per session"),
+                    "{description}"
+                );
+            }
+        }
     }
 }

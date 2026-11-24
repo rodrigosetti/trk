@@ -274,7 +274,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     };
     // In a dry run the claim is rolled back, but the issue is rendered as the
     // agent would see it after claiming.
-    let tools = trk_agent::agent_tools(&agent);
+    let tools = trk_agent::agent_tools(&agent, &env.user.check);
     let issue_now = store.write(&actor, a.dry_run, |c| {
         c.claim(&id, claim_opts)?;
         // Notes go in the briefing: they are how a returning issue explains itself.
