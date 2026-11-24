@@ -76,7 +76,7 @@ impl TrkServer {
         )?;
         let resolved = config.load(&routing)?;
         let agent = resolved.agent;
-        let tools = trk_agent::agent_tools(&agent, &args.user.check);
+        let tools = trk_agent::agent_tools(&agent, &args.user);
         let input = trk_agent::prompt::PromptInput {
             issue: &issue_json,
             project_root: &args.project_root,
@@ -382,6 +382,76 @@ mod tests {
                 "not_permitted"
             };
             assert_eq!(out["error"]["code"], code, "{tool}: {out}");
+        }
+    }
+
+    #[test]
+    fn followups_use_the_configured_default_type_unless_overridden() {
+        let dir = tempfile::tempdir().unwrap();
+        let seed = dir.path().join("seed");
+        for (path, content) in trk_core::seed::preset("default").unwrap() {
+            let path = seed.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        let db = dir.path().join("trk.db");
+        let mut user = UserConfig::default();
+        user.issues.default_type = "task".into();
+        let opts = StoreOpts {
+            default_type: user.issues.default_type.clone(),
+            ..Default::default()
+        };
+        let mut store = Store::install(&db, opts.clone()).unwrap();
+        let issue = store
+            .write(HUMAN, false, |c| {
+                c.create(NewIssue {
+                    title: "Parent issue".into(),
+                    issue_type: Some("code-change".into()),
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+        store
+            .write(ACTOR, false, |c| c.claim(&issue, ClaimOpts::default()))
+            .unwrap();
+        let server = TrkServer::new(McpArgs {
+            db,
+            config: ConfigDir::new(&seed),
+            project_root: dir.path().to_path_buf(),
+            user,
+            opts,
+            issue,
+            actor: ACTOR.into(),
+            agent: "implementer".into(),
+            base: "main".into(),
+        })
+        .unwrap();
+        let followup = server
+            .tools()
+            .iter()
+            .find(|tool| tool.name == "report_followup")
+            .unwrap();
+        let schema = to_tool(followup);
+        assert_eq!(
+            schema.input_schema["properties"]["type"]["description"],
+            "Work type for the new issue; default task"
+        );
+        for (override_type, expected_type) in [(None, "task"), (Some("code-change"), "code-change")]
+        {
+            let mut args = json!({
+                "title": "Follow-up issue",
+                "description": "Work discovered during this session"
+            });
+            if let Some(issue_type) = override_type {
+                args["type"] = json!(issue_type);
+            }
+            let (ok, out) = server.call_sync("report_followup", args);
+            assert!(ok, "{out}");
+            let created = out["result"]["created"].as_str().unwrap();
+            let followup = store
+                .read(None, |c| c.show(created, With::default()))
+                .unwrap();
+            assert_eq!(followup["type"], expected_type);
         }
     }
 

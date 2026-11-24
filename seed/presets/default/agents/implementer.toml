@@ -19,4 +19,7 @@ inbox        = true
 
 [harness]
 prefer        = ["omp", "claude-code"]   # first installed wins; `trk run --harness` overrides
-builtin_tools = "default"                # default | read-only | none
+builtin_tools = "default"                # no extra args; otherwise a profile-defined level
+# Levels are open-ended (e.g. read-only, no-network, plan-only).
+# Non-default levels must exist in a harness profile; trk run refuses a selected
+# harness without that level, even with --harness.

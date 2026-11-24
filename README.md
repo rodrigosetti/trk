@@ -4,7 +4,7 @@ A local issue tracker and agent launcher in one Rust binary. Each project has it
 database in `.trk/`; humans use the CLI, agents work through a per-issue MCP server, and `trk run [ID]` starts
 an agent session on one issue through a named launcher profile (Herdr, `hc`, or tmux). See [SPEC.md](SPEC.md) for the design.
 
-An issue has a title, a description, notes, a priority, a required type (default `code-change`), and one of four states:
+An issue has a title, a description, notes, a priority, a required type (from `[issues] default_type`, initially `code-change`), and one of four states:
 
 ```
 open → claimed → closed
@@ -30,11 +30,12 @@ trk keeps no global database or config. Set it up per project:
 cd ~/src/orch && trk install
 ```
 
-`trk install` creates `.trk/` in the project root (in a git repository, the root of the primary
-checkout): the database, the default config with every setting written out, and a `.gitignore`
-that keeps all of it out of git. It also installs the agent skill (see below). Commands find
-the project from any subdirectory and from any of its git worktrees. Other project commands
-fail with `not_installed` until it has been installed.
+`trk install` creates `.trk/` in the project root (by default, the primary git checkout
+root): the database, the default config with every setting written out, and a `.gitignore`
+that keeps all of it out of git. To install a project in a monorepo subdirectory, run
+`trk --dir .trk install` from that subdirectory. It also installs the agent skill (see below).
+Commands find the project from its subdirectories and corresponding paths in git worktrees.
+Other project commands fail with `not_installed` until it has been installed.
 
 Choose the configuration seed with these install options:
 
@@ -48,7 +49,8 @@ trk install --from /path/to/team-seed   # use only this directory's files, recur
 The built-in `seed/` directory is embedded recursively at build time, so adding or changing
 a seed file is picked up by the next build without maintaining a file list. Common files
 (`config.toml`, `prompts/_rules.md.j2`, and `prompts/briefing.md.j2`) live at the seed root;
-the installer also supplies the built-in `.gitignore`. `seed/presets/default/` adds the
+`default_type.txt` supplies the built-in fallback but is not installed.
+The installer also supplies the built-in `.gitignore`. `seed/presets/default/` adds the
 implementer, researcher and reviewer agents,
 the code-change, research and review types, and their instruction prompts.
 `seed/presets/minimal/` adds only implementer, code-change and the implementer's instructions.
@@ -64,8 +66,8 @@ its JSON data is `{"presets":["default","minimal"]}`.
 
 Only `config.toml` substitutes install-time markers: `{{EMAIL_LINE}}` becomes the human email
 setting (or a commented example), `{{PREFIX}}` becomes `--prefix` or the detected project
-prefix, and `{{BASE}}` becomes the TOML-quoted detected base branch. Other files are copied
-unchanged, including template markers.
+prefix, `{{DEFAULT_TYPE}}` becomes the built-in default issue type, and `{{BASE}}` becomes
+the TOML-quoted detected base branch. Other files are copied unchanged, including template markers.
 
 To upgrade after changing or pulling this checkout, run `./install.sh` again, then `trk install`
 in each project, passing the same `--preset` or `--from` used for its installation. trk does
@@ -264,9 +266,10 @@ trk ready type=research --sort type
 ```
 
 The check runs with `sh -c` in the worktree the issue was claimed in, or the primary
-project root when the claim has no worktree, with `TRK_ISSUE`, `TRK_WORKTREE`,
-`TRK_REPO` (the primary checkout), `TRK_BRANCH`, `TRK_BASE` (the resolved base
-branch) and `TRK_VERIFY` (`[check] verify`, default empty) set. Its exit code decides:
+repository root when the claim has no worktree (the project root outside git), with
+`TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` (the primary checkout, unset outside git),
+`TRK_BRANCH`, `TRK_BASE` (the resolved base branch) and `TRK_VERIFY` (`[check] verify`,
+default empty) set. Its exit code decides:
 
 | Exit | Meaning | Result |
 | --- | --- | --- |
@@ -442,8 +445,12 @@ or `worktree = false`. This is a type-only setting, not an agent or harness sett
 and review seeds set it to `false`. With `true`, the worktree is
 `.trk/worktrees/<ID>` on a branch named after the issue. New issue branches start at
 the resolved `[run] base`; existing issue branches are reused, so a later session
-on the same issue finds the earlier work. With `false`, the session runs in the primary
-project root, creates neither branch nor worktree, and records no worktree path in its claim.
+on the same issue finds the earlier work. The worktree contains the whole repository;
+the session starts at the project's relative path inside it (for example,
+`<worktree>/services/api` for a project at `repo/services/api`). Claims record the
+worktree root, and checks use that root as `TRK_WORKTREE`, with the primary checkout
+root as `TRK_REPO`. With `false`, the session runs in the primary project root,
+creates neither branch nor worktree, and records no worktree path in its claim.
 `trk show --json` routing and `trk run --dry-run --json` expose the resolved `worktree` boolean.
 
 The harness is `--harness`, else the first installed harness the agent prefers (see Configuration).
@@ -609,10 +616,14 @@ Everything trk keeps for a project is in `.trk/` at its root, written by `trk in
 
 `config.toml` is explicit: `trk install` writes the settings. Launcher operations are
 optional. Compatibility defaults include `[launcher] send_retries`, `send_retry_delay`,
-`[check] max_wakes`, `gc`, `gc_grace`, `[run] landing` (default `"merge"`), and the detected
-`[run] base`.
+`[issues] default_type`, `[check] max_wakes`, `gc`, `gc_grace`, `[run] landing`
+(default `"merge"`), and the detected `[run] base`.
 `[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory name,
 or `trk install --prefix NAME`. Changing it later only affects new issues.
+`[issues] default_type` selects the type for CLI and editor creation and MCP follow-ups
+when no explicit type is supplied; `trk whoami` reports it. Install writes `code-change`,
+also the fallback for older configs. Set it to your project's type name (for example,
+`default_type = "task"` with `types/task.toml`) before removing or renaming the seed type.
 
 `[run] base` selects the base branch, for example:
 
@@ -661,6 +672,16 @@ args = { omp = ["--thinking", "high"] }
 `harness.model` also accepts a string, applying it to every harness. A missing entry
 in a model table falls back to the profile default. `harness.args` is a table of
 harness names to argument lists; only the selected harness's list is used.
+
+Agent `harness.builtin_tools` levels are open-ended: `default` is reserved and adds
+no restriction arguments; any other name (for example `no-network` or `plan-only`)
+must be defined by at least one profile's `builtin_tools.<level>` argument list.
+An empty list explicitly declares support without extra arguments.
+`trk agent check` reports undefined levels with the available names and warns
+when a preferred harness lacks a level. `trk run` refuses to launch when the
+selected profile lacks it, including explicit `--harness` selections; it no
+longer silently launches unrestricted. Define the level's enforcement flags in
+that profile or select a profile that supports it.
 
 ```toml
 # .trk/config.toml

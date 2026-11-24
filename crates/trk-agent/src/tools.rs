@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 use serde_json::{Map, Value, json};
-use trk_core::config::CheckSection;
+use trk_core::config::UserConfig;
 use trk_core::model::{CHECK_RETRY_EXIT, CLOSE_REASONS, PRIORITIES};
 
 use crate::agent::AgentDef;
@@ -44,7 +44,8 @@ fn text(description: &str) -> Value {
 }
 
 /// Every trk tool, in the order sessions see them.
-pub fn catalogue(check: &CheckSection) -> Vec<ToolDef> {
+pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
+    let check = &config.check;
     let tool = |name: &str, action: Action, description: String, input_schema: Value| ToolDef {
         name: name.to_string(),
         description,
@@ -89,7 +90,14 @@ pub fn catalogue(check: &CheckSection) -> Vec<ToolDef> {
                     json!({"type": "string", "enum": PRIORITIES, "description": "Default P2"}),
                     false,
                 ),
-                ("type", text("Work type for the new issue; default code-change"), false),
+                (
+                    "type",
+                    text(&format!(
+                        "Work type for the new issue; default {}",
+                        config.issues.default_type
+                    )),
+                    false,
+                ),
                 (
                     "blocks_this",
                     json!({"type": "boolean", "description": "true if this issue cannot finish until the new one is closed. Hand back after filing it."}),
@@ -172,17 +180,17 @@ pub fn selects(entry: &str, tool: &ToolDef) -> bool {
 }
 
 /// The tools an agent gets: all of them, or those its `include` selects.
-pub fn agent_tools(agent: &AgentDef, check: &CheckSection) -> Vec<ToolDef> {
+pub fn agent_tools(agent: &AgentDef, config: &UserConfig) -> Vec<ToolDef> {
     let inc = &agent.trk_tools.include;
-    catalogue(check)
+    catalogue(config)
         .into_iter()
         .filter(|t| inc.is_empty() || inc.iter().any(|e| selects(e, t)))
         .collect()
 }
 
 /// Include entries of `agent` that select nothing.
-pub fn unmatched_includes(agent: &AgentDef, check: &CheckSection) -> Vec<String> {
-    let cat = catalogue(check);
+pub fn unmatched_includes(agent: &AgentDef, config: &UserConfig) -> Vec<String> {
+    let cat = catalogue(config);
     agent
         .trk_tools
         .include
@@ -206,7 +214,7 @@ mod tests {
 
     #[test]
     fn six_tools() {
-        let names: Vec<String> = catalogue(&CheckSection::default())
+        let names: Vec<String> = catalogue(&UserConfig::default())
             .into_iter()
             .map(|t| t.name)
             .collect();
@@ -226,12 +234,10 @@ mod tests {
     #[test]
     fn wait_describes_configured_check_behavior_without_workflow_policy() {
         for max_wakes in [0, 3] {
-            let check = CheckSection {
-                interval: "1h".into(),
-                max_wakes,
-                ..Default::default()
-            };
-            let wait = catalogue(&check)
+            let mut config = UserConfig::default();
+            config.check.interval = "1h".into();
+            config.check.max_wakes = max_wakes;
+            let wait = catalogue(&config)
                 .into_iter()
                 .find(|t| t.name == "wait")
                 .unwrap();

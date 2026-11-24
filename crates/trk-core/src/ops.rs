@@ -302,7 +302,7 @@ impl Ctx<'_> {
                 .with_hint("trk create -t TITLE [-d DESCRIPTION]"));
         }
         let priority = check_priority(new.priority.as_deref().unwrap_or(DEFAULT_PRIORITY))?;
-        let issue_type = check_type(new.issue_type.as_deref().unwrap_or(DEFAULT_TYPE))?;
+        let issue_type = check_type(new.issue_type.as_deref().unwrap_or(&self.opts.default_type))?;
         let followup_of = new
             .followup_of
             .as_deref()
