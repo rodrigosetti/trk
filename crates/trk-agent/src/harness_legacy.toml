@@ -1,0 +1,5 @@
+# Deprecated single-brace aliases. New profiles define dialects in config.toml.
+mcp_json = '''{"mcpServers":{{ '{' }}{% for server in mcp_servers %}{{ server.name|tojson }}:{"command":{{ server.command|tojson }},"args":{{ server.args|tojson }},"env":{{ server.env|tojson }}}{% if not loop.last %},{% endif %}{% endfor %}}}'''
+opencode_json = '''{"$schema":"https://opencode.ai/config.json","mcp":{{ '{' }}{% for server in mcp_servers %}{{ server.name|tojson }}:{"type":"local","command":{{ ([server.command] + server.args)|tojson }},"environment":{{ server.env|tojson }},"enabled":true}{% if not loop.last %},{% endif %}{% endfor %}}}'''
+trk_args_toml = '{{ trk_args|toml }}'
+trk_env_toml = '{{ trk_env|toml }}'

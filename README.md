@@ -578,6 +578,36 @@ and `.trk/worktrees`), without path expansion. Example: `{{ project.name }}:
 `trk agent check` renders with sample issue/type/project values (project root `/tmp/project`,
 type `code-change` with description `Sample type description`) and the project's configured settings.
 
+Harness profiles in `config.toml` use a separate MiniJinja context. Every command,
+argument, environment value, file path/content and `builtin_tools` argument is
+rendered once; substituted values are never expanded recursively.
+
+| Variable | Value |
+| --- | --- |
+| `name`, `issue`, `actor`, `agent`, `harness` | Terminal name, issue ID, actor, agent name and harness name (strings) |
+| `cwd`, `worktree`, `session_dir` | Launch directory, worktree (falls back to `cwd`) and session scratch directory |
+| `briefing`, `briefing_file`, `instructions`, `instructions_file` | Rendered prompt text and corresponding file paths |
+| `mcp_json_file`, `trk_command` | Generic pretty MCP JSON file path and trk executable path |
+| `trk_args`, `trk_env`, `trk_tools` | trk MCP argument list, environment map and available trk tool names |
+| `mcp_servers` | Server list, trk first; each has `name`, `command`, `args` and `env` |
+
+Server environments already expand `${env:NAME}` from trk's environment.
+
+Use `{{ value | tojson }}` for compact JSON without HTML escaping and
+`{{ value | toml }}` for inline TOML (quoted strings, comma-space-separated arrays,
+and tables such as `{key = value}`). MiniJinja loops, expressions and built-in
+`map`/`join` filters let each profile define its MCP dialect in configuration;
+`mcp_json_file` always points to the generic pretty JSON, not a harness dialect.
+The seed profiles include generic MCP and OpenCode examples.
+
+Single-brace harness placeholders remain supported but deprecated: use
+`{{ briefing }}` instead of `{briefing}`, and likewise for scalar names.
+Legacy `{mcp_json}`, `{opencode_json}`, `{trk_args_toml}`, `{trk_env_toml}` and
+`{trk_tools:PREFIX}` also remain supported; replace them with server loops,
+`toml` filtering and tool-name loops as shown in `seed/config.toml`.
+`trk agent check` warns when a profile uses deprecated placeholders.
+Launcher templates retain their existing single-brace syntax.
+
 There is no global configuration and no cross-project view: `trk list`, `trk runs` and
 `trk check --watch` act on the project of the working directory, so each project needs its own
 `trk check --watch`.
@@ -600,7 +630,7 @@ There is no global configuration and no cross-project view: `trk list`, `trk run
   A harness is registered the first time one of its sessions acts.
 - **omp** (verified live): reads `<worktree>/.omp/mcp.json` and shows MCP server instructions to the
   model, so no folding is needed. Its `--tools` flag hides MCP tools that are not listed, so profiles
-  get a `{trk_tools:PREFIX}` placeholder (`{trk_tools:mcp__trk_}`) to list the agent's trk tools.
+  use a MiniJinja loop over `trk_tools` to prefix each tool name with `mcp__trk_`.
   It keeps `write` available even with a restricted `--tools` list, so `builtin_tools = "read-only"`
   is not fully enforced there.
 - **Unverified harness profiles**: the Claude Code, Codex, OpenCode and pi profiles were not run live.

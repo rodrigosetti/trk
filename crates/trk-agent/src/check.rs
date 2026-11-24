@@ -53,6 +53,22 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
             BTreeMap::new()
         }
     };
+    for (name, profile) in &profs {
+        match profile.legacy_placeholders() {
+            Ok(legacy) if !legacy.is_empty() => d.push(Diagnostic::warning(
+                Some("config.toml"),
+                format!(
+                    "[harness.{name}] uses deprecated single-brace placeholders: {}; use MiniJinja templates",
+                    legacy.iter().map(|name| format!("{{{name}}}")).collect::<Vec<_>>().join(", ")
+                ),
+            )),
+            Err(error) => d.push(Diagnostic::error(
+                Some("config.toml"),
+                format!("[harness.{name}]: {error}"),
+            )),
+            _ => {}
+        }
+    }
     for a in agents.values() {
         let file = format!("agents/{}.toml", a.name);
         let file = file.as_str();

@@ -1,0 +1,313 @@
+use std::collections::BTreeMap;
+
+use trk_agent::agent::{AgentDef, McpServer};
+use trk_agent::harness::{self, HarnessProfile, LaunchInput, LaunchSpec};
+use trk_core::config::{ConfigDir, Level, UserConfig};
+use trk_core::error::Code;
+
+const BRIEFING: &str = "Literal { {{ {% and {issue} {trk_tools:evil}\nDon't expand me.";
+
+fn seed_config() -> UserConfig {
+    toml::from_str(
+        &trk_core::seed::CONFIG_TOML
+            .replace("{{EMAIL_LINE}}", "email = \"a@b.c\"")
+            .replace("{{PREFIX}}", "proj")
+            .replace("{{BASE}}", "\"main\""),
+    )
+    .unwrap()
+}
+
+fn agent(level: &str) -> AgentDef {
+    let mut agent: AgentDef = toml::from_str("name = 'reviewer'").unwrap();
+    agent.harness.builtin_tools = level.into();
+    agent
+}
+
+fn launch(
+    profile: &HarnessProfile,
+    name: &str,
+    agent: &AgentDef,
+) -> trk_core::error::Result<LaunchSpec> {
+    harness::build(LaunchInput {
+        issue: "proj-abc",
+        agent,
+        harness: name,
+        profile,
+        actor: "agent:reviewer:session",
+        on_behalf_of: Some("human:a@b.c"),
+        terminal: "trk-proj-abc",
+        cwd: "/work/proj-abc",
+        worktree: None,
+        session_dir: "/state/session",
+        trk_bin: "/bin/trk",
+        trk_env: BTreeMap::from([("TRK_DIR".into(), "/project/.trk".into())]),
+        briefing: BRIEFING.into(),
+        instructions: "rules <&> \"quoted\"".into(),
+        tools: vec!["get_task".into(), "add_note".into()],
+    })
+}
+
+#[test]
+fn seed_profiles_preserve_complete_legacy_launch_specs() {
+    let current = harness::profiles(&seed_config()).unwrap();
+    let fixture: toml::Table =
+        toml::from_str(include_str!("fixtures/harness-legacy.toml")).unwrap();
+    let mut legacy = seed_config();
+    legacy.harness = fixture["harness"].clone().try_into().unwrap();
+    let legacy = harness::profiles(&legacy).unwrap();
+    assert_eq!(current.len(), 5);
+    assert_eq!(
+        current.keys().collect::<Vec<_>>(),
+        legacy.keys().collect::<Vec<_>>()
+    );
+    for level in ["default", "read-only"] {
+        let agent = agent(level);
+        for (name, profile) in &current {
+            let actual = launch(profile, name, &agent).unwrap();
+            let expected = launch(&legacy[name], name, &agent).unwrap();
+            // Compare strings too: embedded MCP JSON key order and shell quoting matter.
+            assert_eq!(
+                serde_json::to_string(&actual).unwrap(),
+                serde_json::to_string(&expected).unwrap(),
+                "{name}, {level}"
+            );
+            let mcp = r#"{"mcpServers":{"trk":{"command":"/bin/trk","args":["mcp","--issue","proj-abc","--actor","agent:reviewer:session","--agent","reviewer"],"env":{"TRK_DIR":"/project/.trk"}}}}"#;
+            if name == "omp" {
+                assert_eq!(actual.files["/work/proj-abc/.omp/mcp.json"], mcp);
+            }
+            if name == "pi" {
+                assert_eq!(actual.files["/state/session/mcp.json"], mcp);
+            }
+            if name == "opencode" {
+                assert_eq!(
+                    actual.env["OPENCODE_CONFIG_CONTENT"],
+                    r#"{"$schema":"https://opencode.ai/config.json","mcp":{"trk":{"type":"local","command":["/bin/trk","mcp","--issue","proj-abc","--actor","agent:reviewer:session","--agent","reviewer"],"environment":{"TRK_DIR":"/project/.trk"},"enabled":true}}}"#
+                );
+            }
+            assert_eq!(actual.briefing, BRIEFING);
+            assert_eq!(actual.files["/state/session/briefing.md"], BRIEFING);
+            if name != "opencode" {
+                assert_eq!(actual.argv.last().unwrap(), BRIEFING, "{name}");
+            }
+        }
+    }
+}
+
+#[test]
+fn structured_context_and_filters_render_every_launch_field() {
+    let mut agent = agent("read-only");
+    agent.mcp.push(McpServer {
+        name: "aaa-extra".into(),
+        command: "extra".into(),
+        args: vec!["--flag".into()],
+        env: BTreeMap::from([("FROM_PATH".into(), "${env:PATH}".into())]),
+    });
+    let mut profile: HarnessProfile = toml::from_str("command = '{{ harness }}'").unwrap();
+    profile.args = vec![
+        "{{ name }}|{{ issue }}|{{ actor }}|{{ agent }}|{{ cwd }}|{{ worktree }}".into(),
+        "{{ session_dir }}|{{ briefing_file }}|{{ instructions_file }}|{{ mcp_json_file }}".into(),
+        "{{ trk_command }}|{{ trk_args | tojson }}|{{ trk_env | toml }}".into(),
+        "{{ briefing }}".into(),
+    ];
+    profile
+        .env
+        .insert("TOOLS".into(), "{{ trk_tools | join(',') }}".into());
+    profile.files.insert(
+        "{{ worktree }}/{{ issue }}.json".into(),
+        "{{ mcp_servers | tojson }}".into(),
+    );
+    profile.files.insert(
+        "{{ session_dir }}/instructions-copy".into(),
+        "{{ instructions | tojson }}".into(),
+    );
+    profile.builtin_tools.insert(
+        "read-only".into(),
+        vec![
+            "{{ mcp_servers | map(attribute='name') | join(',') }}".into(),
+            "{{ trk_args | toml }}".into(),
+        ],
+    );
+    let spec = launch(&profile, "custom", &agent).unwrap();
+    assert_eq!(spec.argv[0], "custom");
+    assert_eq!(
+        spec.argv[1],
+        "trk-proj-abc|proj-abc|agent:reviewer:session|reviewer|/work/proj-abc|/work/proj-abc"
+    );
+    assert_eq!(
+        spec.argv[2],
+        "/state/session|/state/session/briefing.md|/state/session/instructions.md|/state/session/mcp.json"
+    );
+    assert_eq!(
+        spec.argv[3],
+        "/bin/trk|[\"mcp\",\"--issue\",\"proj-abc\",\"--actor\",\"agent:reviewer:session\",\"--agent\",\"reviewer\"]|{TRK_DIR = \"/project/.trk\"}"
+    );
+    assert_eq!(spec.argv[4], "trk,aaa-extra");
+    assert_eq!(
+        spec.argv[5],
+        "[\"mcp\", \"--issue\", \"proj-abc\", \"--actor\", \"agent:reviewer:session\", \"--agent\", \"reviewer\"]"
+    );
+    assert_eq!(spec.argv[6], BRIEFING);
+    assert_eq!(spec.env["TOOLS"], "get_task,add_note");
+    let servers: serde_json::Value =
+        serde_json::from_str(&spec.files["/work/proj-abc/proj-abc.json"]).unwrap();
+    assert_eq!(servers[0]["name"], "trk");
+    assert_eq!(servers[0]["command"], "/bin/trk");
+    assert_eq!(servers[0]["env"]["TRK_DIR"], "/project/.trk");
+    assert_eq!(servers[1]["name"], "aaa-extra");
+    assert_eq!(servers[1]["command"], "extra");
+    assert_eq!(servers[1]["args"], serde_json::json!(["--flag"]));
+    assert_eq!(
+        servers[1]["env"]["FROM_PATH"],
+        std::env::var("PATH").unwrap()
+    );
+    assert_eq!(
+        spec.files["/state/session/instructions-copy"],
+        "\"rules <&> \\\"quoted\\\"\""
+    );
+}
+
+#[test]
+fn legacy_and_jinja_inserted_briefings_are_never_reexpanded() {
+    for template in ["{briefing}", "{{ briefing }}"] {
+        let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+        profile.args = vec![template.into()];
+        profile.env.insert("BRIEFING".into(), template.into());
+        profile.files.insert("copy".into(), template.into());
+        profile
+            .builtin_tools
+            .insert("read-only".into(), vec![template.into()]);
+        let spec = launch(&profile, "test", &agent("read-only")).unwrap();
+        assert_eq!(spec.argv, ["test", BRIEFING, BRIEFING]);
+        assert_eq!(spec.env["BRIEFING"], BRIEFING);
+        assert_eq!(spec.files["/work/proj-abc/copy"], BRIEFING);
+    }
+}
+
+#[test]
+fn malformed_templates_in_each_renderable_field_are_config_invalid() {
+    for field in ["command", "args", "env", "path", "content", "builtin_tools"] {
+        let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+        let bad = "{{ broken".to_string();
+        match field {
+            "command" => profile.command = bad,
+            "args" => profile.args.push(bad),
+            "env" => {
+                profile.env.insert("BAD".into(), bad);
+            }
+            "path" => {
+                profile.files.insert(bad, "content".into());
+            }
+            "content" => {
+                profile.files.insert("file".into(), bad);
+            }
+            "builtin_tools" => {
+                profile.builtin_tools.insert("read-only".into(), vec![bad]);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            launch(&profile, "test", &agent("read-only"))
+                .unwrap_err()
+                .code(),
+            Code::ConfigInvalid,
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn agent_check_warns_for_legacy_placeholders_in_every_profile_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = ConfigDir::new(dir.path());
+    for field in ["command", "args", "env", "path", "content", "builtin_tools"] {
+        let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+        match field {
+            "command" => profile.command = "{issue}".into(),
+            "args" => profile.args.push("{briefing}".into()),
+            "env" => {
+                profile.env.insert("OLD".into(), "{agent}".into());
+            }
+            "path" => {
+                profile
+                    .files
+                    .insert("{session_dir}/file".into(), "content".into());
+            }
+            "content" => {
+                profile.files.insert("file".into(), "{mcp_json}".into());
+            }
+            // No agent uses this level: checking must still inspect it.
+            "builtin_tools" => {
+                profile
+                    .builtin_tools
+                    .insert("none".into(), vec!["{trk_tools:mcp__trk_}".into()]);
+            }
+            _ => unreachable!(),
+        }
+        let mut user = seed_config();
+        user.harness.clear();
+        user.harness
+            .insert("test".into(), toml::Value::try_from(profile).unwrap());
+        let diagnostics = trk_agent::check::check_agents(&config, &user);
+        assert!(diagnostics.iter().any(|d| d.level == Level::Warning && d.message.to_lowercase().contains("deprecat")), "{field}: {diagnostics:#?}");
+    }
+    let mut user = seed_config();
+    user.harness.clear();
+    user.harness.insert(
+        "test".into(),
+        toml::from_str::<toml::Value>(
+            r#"
+command = "test"
+args = ['{{ briefing }}', '{"ordinary": "json"}', '{{ trk_env | tojson }}']
+files = { "{{ session_dir }}/file" = '{{ {"key": issue} | tojson }}' }
+"#,
+        )
+        .unwrap(),
+    );
+    let diagnostics = trk_agent::check::check_agents(&config, &user);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.level == Level::Warning && d.message.to_lowercase().contains("deprecat")),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn jinja_literals_comments_and_raw_blocks_are_not_legacy_tokens() {
+    let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+    profile.args = vec![
+        r#"{{ {"a": {"b": 1}} | tojson }}|{{ "{issue}" }}|{{ "}}" }}|{issue}"#.into(),
+        "{# {issue} #}{% raw %}{issue} {{ {% ' {% endraw %}|{issue}".into(),
+    ];
+    let spec = launch(&profile, "test", &agent("default")).unwrap();
+    assert_eq!(spec.argv[1], r#"{"a":{"b":1}}|{issue}|}}|proj-abc"#);
+    assert_eq!(spec.argv[2], "{issue} {{ {% ' |proj-abc");
+}
+
+#[test]
+fn toml_filter_round_trips_quoted_keys_and_nested_values() {
+    let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+    profile.args = vec![
+        r#"{{ {"a.b": {"quote": "a\"b\nc", "flags": [true, false], "number": 42}} | toml }}"#
+            .into(),
+    ];
+    let spec = launch(&profile, "test", &agent("default")).unwrap();
+    let value: toml::Value = toml::from_str(&format!("value = {}", spec.argv[1])).unwrap();
+    assert_eq!(value["value"]["a.b"]["quote"].as_str(), Some("a\"b\nc"));
+    assert_eq!(value["value"]["a.b"]["flags"][1].as_bool(), Some(false));
+    assert_eq!(value["value"]["a.b"]["number"].as_integer(), Some(42));
+}
+
+#[test]
+fn template_trailing_newlines_survive_in_launch_strings() {
+    let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+    profile.args = vec!["{{ issue }}\n".into()];
+    profile.env.insert("TEXT".into(), "{{ issue }}\r\n".into());
+    profile
+        .files
+        .insert("newlines".into(), "{{ issue }}\n\n".into());
+    let spec = launch(&profile, "test", &agent("default")).unwrap();
+    assert_eq!(spec.argv[1], "proj-abc\n");
+    assert_eq!(spec.env["TEXT"], "proj-abc\r\n");
+    assert_eq!(spec.files["/work/proj-abc/newlines"], "proj-abc\n\n");
+}

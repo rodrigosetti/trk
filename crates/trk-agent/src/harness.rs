@@ -1,8 +1,9 @@
 //! Harness profiles and the launch spec. A profile says how to run an agent in
 //! one harness: command, arguments, environment, files, and how MCP servers
-//! and instructions are passed. Profiles never see issue data except through
-//! placeholders.
+//! and instructions are passed. Profiles render against a structured session
+//! context; deprecated single-brace placeholders remain supported.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -11,7 +12,11 @@ use serde_json::{Value, json};
 use trk_core::config::UserConfig;
 use trk_core::error::{Code, Error, Result};
 
-use crate::agent::{AgentDef, McpServer};
+use crate::agent::AgentDef;
+
+#[path = "harness_template.rs"]
+mod template;
+use template::{Renderer, uses_briefing};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -22,7 +27,7 @@ pub struct HarnessProfile {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     /// Files written before launch: path (relative to the working directory,
-    /// or absolute after placeholders) → content.
+    /// or absolute after rendering) → content.
     #[serde(default)]
     pub files: BTreeMap<String, String>,
     /// Extra arguments per `builtin_tools` level (`read-only`, `none`).
@@ -32,8 +37,8 @@ pub struct HarnessProfile {
     /// false, trk folds the instructions into the briefing.
     #[serde(default = "yes")]
     pub server_instructions: bool,
-    /// How the briefing reaches the harness: "arg" (the `{briefing}`
-    /// placeholder) or "send" (typed in with the launcher's send template).
+    /// How the briefing reaches the harness: "arg" (the `briefing` template
+    /// variable) or "send" (typed in with the launcher's send template).
     #[serde(default)]
     pub briefing: Option<String>,
 }
@@ -47,8 +52,29 @@ impl HarnessProfile {
         match self.briefing.as_deref() {
             Some("send") => true,
             Some(_) => false,
-            None => !self.args.iter().any(|a| a.contains("{briefing}")),
+            None => !self.args.iter().any(|a| uses_briefing(a)),
         }
+    }
+
+    fn strings(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.command.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .chain(self.env.values().map(String::as_str))
+            .chain(
+                self.files
+                    .iter()
+                    .flat_map(|(path, content)| [path.as_str(), content.as_str()]),
+            )
+            .chain(self.builtin_tools.values().flatten().map(String::as_str))
+    }
+
+    pub(crate) fn legacy_placeholders(&self) -> Result<std::collections::BTreeSet<String>> {
+        let renderer = Renderer::new();
+        let mut names = std::collections::BTreeSet::new();
+        for source in self.strings() {
+            names.extend(renderer.validate(source)?);
+        }
+        Ok(names)
     }
 }
 
@@ -149,7 +175,7 @@ pub struct LaunchInput<'a> {
     pub trk_env: BTreeMap<String, String>,
     pub briefing: String,
     pub instructions: String,
-    /// Names of the agent's trk tools, for `{trk_tools:PREFIX}`.
+    /// Names of the agent's trk tools.
     pub tools: Vec<String>,
 }
 
@@ -163,10 +189,6 @@ pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn toml_str(s: &str) -> String {
-    toml::Value::String(s.to_string()).to_string()
-}
-
 /// `${env:NAME}` in agent MCP server env values comes from trk's environment.
 fn expand_env(s: &str) -> String {
     let mut out = String::new();
@@ -177,36 +199,6 @@ fn expand_env(s: &str) -> String {
         match after.find('}') {
             Some(j) => {
                 out.push_str(&std::env::var(&after[..j]).unwrap_or_default());
-                rest = &after[j + 1..];
-            }
-            None => {
-                out.push_str(&rest[i..]);
-                rest = "";
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// `{trk_tools:PREFIX}` → the agent's trk tool names, each with PREFIX,
-/// comma-separated (e.g. `{trk_tools:mcp__trk_}` for omp's `--tools`).
-pub fn expand_tool_lists(s: &str, tools: &[String]) -> String {
-    let mut out = String::new();
-    let mut rest = s;
-    while let Some(i) = rest.find("{trk_tools:") {
-        out.push_str(&rest[..i]);
-        let after = &rest[i + "{trk_tools:".len()..];
-        match after.find('}') {
-            Some(j) => {
-                let prefix = &after[..j];
-                out.push_str(
-                    &tools
-                        .iter()
-                        .map(|t| format!("{prefix}{t}"))
-                        .collect::<Vec<_>>()
-                        .join(","),
-                );
                 rest = &after[j + 1..];
             }
             None => {
@@ -237,133 +229,103 @@ pub fn trk_mcp_args(issue: &str, actor: &str, agent: &str) -> Vec<String> {
         .collect()
 }
 
+#[derive(Serialize)]
+struct SessionServer<'a> {
+    name: &'a str,
+    command: &'a str,
+    args: &'a [String],
+    env: Cow<'a, BTreeMap<String, String>>,
+}
+
 pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
     let trk_args = trk_mcp_args(input.issue, input.actor, &input.agent.name);
-    let others: Vec<&McpServer> = input.agent.mcp.iter().collect();
-
-    // Claude Code / omp style: {"mcpServers": {...}}
-    let mut servers = serde_json::Map::new();
-    servers.insert(
-        "trk".into(),
-        json!({"command": input.trk_bin, "args": trk_args, "env": input.trk_env}),
-    );
-    for m in &others {
-        let env: BTreeMap<String, String> = m
+    let mut session_servers = Vec::with_capacity(1 + input.agent.mcp.len());
+    session_servers.push(SessionServer {
+        name: "trk",
+        command: input.trk_bin,
+        args: &trk_args,
+        env: Cow::Borrowed(&input.trk_env),
+    });
+    for server in &input.agent.mcp {
+        let env: BTreeMap<_, _> = server
             .env
             .iter()
-            .map(|(k, v)| (k.clone(), expand_env(v)))
+            .map(|(key, value)| (key.clone(), expand_env(value)))
             .collect();
+        session_servers.push(SessionServer {
+            name: &server.name,
+            command: &server.command,
+            args: &server.args,
+            env: Cow::Owned(env),
+        });
+    }
+
+    // The launch spec and default MCP file retain their existing generic shape.
+    let mut servers = serde_json::Map::new();
+    for server in &session_servers {
         servers.insert(
-            m.name.clone(),
-            json!({"command": m.command, "args": m.args, "env": env}),
+            server.name.to_string(),
+            json!({
+                "command": server.command, "args": server.args, "env": server.env,
+            }),
         );
     }
     let mcp_servers = json!({"mcpServers": servers});
-
-    // OpenCode runtime config.
-    let mut oc = serde_json::Map::new();
-    let mut trk_cmd = vec![input.trk_bin.to_string()];
-    trk_cmd.extend(trk_args.iter().cloned());
-    oc.insert(
-        "trk".into(),
-        json!({"type": "local", "command": trk_cmd, "environment": input.trk_env, "enabled": true}),
-    );
-    for m in &others {
-        let mut cmd = vec![m.command.clone()];
-        cmd.extend(m.args.iter().cloned());
-        let env: BTreeMap<String, String> = m
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), expand_env(v)))
-            .collect();
-        oc.insert(
-            m.name.clone(),
-            json!({"type": "local", "command": cmd, "environment": env, "enabled": true}),
-        );
-    }
-    let opencode_json = json!({"$schema": "https://opencode.ai/config.json", "mcp": oc});
-
     let session_dir = input.session_dir.to_string();
-    let mut vars: BTreeMap<&str, String> = BTreeMap::new();
-    vars.insert("name", input.terminal.to_string());
-    vars.insert("issue", input.issue.to_string());
-    vars.insert("actor", input.actor.to_string());
-    vars.insert("agent", input.agent.name.clone());
-    vars.insert("harness", input.harness.to_string());
-    vars.insert("cwd", input.cwd.to_string());
-    vars.insert("worktree", input.worktree.unwrap_or(input.cwd).to_string());
-    vars.insert("session_dir", session_dir.clone());
-    vars.insert("briefing", input.briefing.clone());
-    vars.insert("briefing_file", format!("{session_dir}/briefing.md"));
-    vars.insert("instructions", input.instructions.clone());
-    vars.insert(
-        "instructions_file",
-        format!("{session_dir}/instructions.md"),
-    );
-    vars.insert("mcp_json", serde_json::to_string(&mcp_servers)?);
-    vars.insert("mcp_json_file", format!("{session_dir}/mcp.json"));
-    vars.insert("opencode_json", serde_json::to_string(&opencode_json)?);
-    vars.insert("trk_command", input.trk_bin.to_string());
-    vars.insert(
-        "trk_args_toml",
-        format!(
-            "[{}]",
-            trk_args
-                .iter()
-                .map(|a| toml_str(a))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    );
-    vars.insert(
-        "trk_env_toml",
-        format!(
-            "{{{}}}",
-            input
-                .trk_env
-                .iter()
-                .map(|(k, v)| format!("{k} = {}", toml_str(v)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    );
-
+    let context = minijinja::context! {
+        name => input.terminal,
+        issue => input.issue,
+        actor => input.actor,
+        agent => input.agent.name.as_str(),
+        harness => input.harness,
+        cwd => input.cwd,
+        worktree => input.worktree.unwrap_or(input.cwd),
+        session_dir => input.session_dir,
+        briefing => input.briefing.as_str(),
+        briefing_file => format!("{session_dir}/briefing.md"),
+        instructions => input.instructions.as_str(),
+        instructions_file => format!("{session_dir}/instructions.md"),
+        mcp_json_file => format!("{session_dir}/mcp.json"),
+        trk_command => input.trk_bin,
+        trk_args => &trk_args,
+        trk_env => &input.trk_env,
+        trk_tools => &input.tools,
+        mcp_servers => minijinja::value::Serde(&session_servers),
+    };
+    let renderer = Renderer::new();
+    let render = |source: &str| renderer.render(source, &context);
     let level = input.agent.harness.builtin_tools.as_str();
-    let extra: Vec<String> = if level == "default" {
-        vec![]
+    let extra = if level == "default" {
+        None
     } else {
-        input
-            .profile
-            .builtin_tools
-            .get(level)
-            .cloned()
-            .unwrap_or_default()
+        input.profile.builtin_tools.get(level)
     };
     let extra: Vec<String> = extra
-        .iter()
-        .map(|x| expand_tool_lists(x, &input.tools))
-        .collect();
-    let mut argv = vec![subst(&input.profile.command, &vars)];
+        .into_iter()
+        .flatten()
+        .map(|source| render(source))
+        .collect::<Result<_>>()?;
+    let mut argv = vec![render(&input.profile.command)?];
     let pos = input
         .profile
         .args
         .iter()
-        .position(|a| a.contains("{briefing}"))
+        .position(|source| uses_briefing(source))
         .unwrap_or(input.profile.args.len());
-    for (i, a) in input.profile.args.iter().enumerate() {
+    let mut extra = Some(extra);
+    for (i, source) in input.profile.args.iter().enumerate() {
         if i == pos {
-            argv.extend(extra.iter().map(|x| subst(x, &vars)));
+            argv.extend(extra.take().unwrap());
         }
-        argv.push(subst(a, &vars));
+        argv.push(render(source)?);
     }
-    if pos == input.profile.args.len() {
-        argv.extend(extra.iter().map(|x| subst(x, &vars)));
+    if let Some(extra) = extra {
+        argv.extend(extra);
     }
 
-    let mut env: BTreeMap<String, String> = BTreeMap::new();
-    env.insert("TRK_ACTOR".into(), input.actor.to_string());
-    for (k, v) in &input.profile.env {
-        env.insert(k.clone(), subst(v, &vars));
+    let mut env = BTreeMap::from([("TRK_ACTOR".into(), input.actor.to_string())]);
+    for (key, source) in &input.profile.env {
+        env.insert(key.clone(), render(source)?);
     }
 
     let mut files = BTreeMap::new();
@@ -376,14 +338,14 @@ pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
         format!("{session_dir}/mcp.json"),
         serde_json::to_string_pretty(&mcp_servers)?,
     );
-    for (p, content) in &input.profile.files {
-        let p = subst(p, &vars);
-        let abs = if Path::new(&p).is_absolute() {
-            p
+    for (path, content) in &input.profile.files {
+        let path = render(path)?;
+        let abs = if Path::new(&path).is_absolute() {
+            path
         } else {
-            format!("{}/{}", input.cwd, p)
+            format!("{}/{}", input.cwd, path)
         };
-        files.insert(abs, subst(content, &vars));
+        files.insert(abs, render(content)?);
     }
 
     let mut sh = format!("cd {} && exec env", sh_quote(input.cwd));

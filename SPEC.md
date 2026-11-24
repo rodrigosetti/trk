@@ -445,19 +445,59 @@ Replacing hc with tmux or a plain process is a config change: replace the templa
 ```toml
 [harness.claude-code]
 command = "claude"
-args    = ["--strict-mcp-config", "--mcp-config", "{mcp_json_file}", "{briefing}"]
+args    = ["--strict-mcp-config", "--mcp-config", "{{ mcp_json_file }}", "{{ briefing }}"]
 builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdit"], none = ["--tools", ""] }
 
 [harness.omp]
 command = "omp"
-args    = ["--model", "openai-codex/gpt-6-luna", "--config", "{session_dir}/omp.yml", "{briefing}"]
-files   = { ".omp/mcp.json" = "{mcp_json}", "{session_dir}/omp.yml" = "skills:\n  ignoredSkills: [trk]\n" }
+args    = ["--model", "openai-codex/gpt-6-luna", "--config", "{{ session_dir }}/omp.yml", "{{ briefing }}"]
+files   = { ".omp/mcp.json" = '''{"mcpServers":{{ '{' }}{% for server in mcp_servers %}{{ server.name | tojson }}:{"command":{{ server.command | tojson }},"args":{{ server.args | tojson }},"env":{{ server.env | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}}}''', "{{ session_dir }}/omp.yml" = "skills:\n  ignoredSkills: [trk]\n" }
 ```
+
+All profile command strings, arguments, environment values, file paths and
+contents, and `builtin_tools` arguments are MiniJinja templates. Each is rendered
+once: braces in a substituted value are literal, not recursively expanded.
+Built-in-tool arguments are inserted before the first argument using the briefing,
+including a MiniJinja briefing expression.
+
+The harness context (distinct from the agent prompt context) contains:
+
+| Variable | Value |
+| --- | --- |
+| `name`, `issue`, `actor`, `agent`, `harness` | Terminal name, issue ID, actor, agent name and harness name, all strings |
+| `cwd`, `worktree`, `session_dir` | Launch directory, worktree (or `cwd` when absent) and scratch directory |
+| `briefing`, `briefing_file`, `instructions`, `instructions_file` | Rendered prompt strings and their file paths |
+| `mcp_json_file`, `trk_command` | Generic pretty MCP JSON file path and trk executable path |
+| `trk_args`, `trk_env`, `trk_tools` | trk argument list, environment map and available trk tool-name list |
+| `mcp_servers` | Server list with trk first; each object has `name`, `command`, `args` and `env` |
+
+Each server's environment has `${env:NAME}` expanded from trk's environment;
+the remaining servers follow the agent's `[[mcp]]` declaration order.
+
+`tojson` serializes compact JSON without HTML escaping. `toml` serializes inline
+TOML, quoting strings, separating array entries with comma-space and formatting
+tables as `{key = value}` without extra padding. Built-in `map` and `join` filters,
+loops and expressions are available. MCP dialects belong to profiles: omp and pi
+loop over `mcp_servers` to build `mcpServers`; OpenCode builds `$schema` and `mcp`,
+with each server's `type = "local"`, command list `[server.command] + server.args`,
+`environment = server.env` and `enabled = true`. Codex filters `trk_command`,
+`trk_args` and `trk_env` through `toml`. `mcp_json_file` always refers to generic
+pretty JSON regardless of the harness.
+
+Legacy single-brace harness placeholders are supported but deprecated, including
+scalar placeholders such as `{briefing}`, and `{mcp_json}`, `{opencode_json}`,
+`{trk_args_toml}`, `{trk_env_toml}` and `{trk_tools:PREFIX}`. Use MiniJinja scalar
+expressions, server loops, `toml` and tool-name loops instead; see
+`seed/config.toml`. Compatibility expansion is not recursive and does not expand
+placeholder-looking text supplied by a context value. Launcher templates are
+unchanged and retain single-brace placeholders.
+`trk agent check` warns on deprecated placeholders anywhere in a profile,
+including inactive `builtin_tools` levels.
 
 | Harness | MCP attachment | Confidence |
 | --- | --- | --- |
 | omp | Worktree `.omp/mcp.json`; a `--config` overlay hides the trk skill | Verified live |
-| Claude Code | `--mcp-config` with inline JSON, `--strict-mcp-config` to exclude other servers | High |
+| Claude Code | `--mcp-config` with generic JSON file, `--strict-mcp-config` to exclude other servers | High |
 | OpenCode | `OPENCODE_CONFIG_CONTENT` inline runtime config | High |
 | Codex CLI | `-c mcp_servers.*` overrides of `config.toml` | Medium |
 | pi | Per-session agent directory with `mcp.json` | Medium |
