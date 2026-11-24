@@ -122,13 +122,18 @@ upgrade. Otherwise:
 
 Restarting an MCP server does not claim an issue or bypass dependency/ownership checks.
 
-For development: `cargo build`, `cargo test --workspace`, and `cargo lint`.
+For development: `cargo build`, `cargo test --workspace --locked`, and `cargo lint`.
 `cargo lint` runs `cargo clippy --workspace --all-targets -- -D warnings`, rejecting
 compiler and Clippy warnings in every workspace target, including tests and examples.
 Keep build outputs local to each issue worktree; do not point `CARGO_TARGET_DIR`
 or `--target-dir` at the primary checkout. Seed-dependent tests materialize the
 installer's embedded defaults in temporary directories, so their binaries also
 work after the checkout they were compiled in has been removed.
+
+GitHub Actions runs the workspace tests, lint, and Herdr mod tests on
+`ubuntu-latest` and `macos-latest` for pushes and pull requests. CI reads the Rust
+toolchain version from `workspace.package.rust-version` in `Cargo.toml` and uses
+Node.js 24 for `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
 
 ## Quick start
 
