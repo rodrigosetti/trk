@@ -1534,7 +1534,8 @@ fn agent_preview_and_run_dry_run() {
             "report_followup",
             "hand_back",
             "close",
-            "wait"
+            "wait",
+            "resume"
         ]
     );
     let id = e.create(&["Fix", "-d", "The thing is broken."]);
@@ -2086,7 +2087,8 @@ fn mcp_server_over_stdio() {
             "report_followup",
             "hand_back",
             "close",
-            "wait"
+            "wait",
+            "resume"
         ]
     );
     let call =
@@ -2489,7 +2491,10 @@ fn waiting_sessions_accept_send_and_attach_and_runs_labels_both_states() {
         assert!(out.status.success(), "{args:?}: {v:#}");
         assert_eq!(v["data"]["terminal"], "exact-origin");
     }
-    assert_eq!(ui.text("messages"), "exact-origin\nkeep going\n");
+    assert_eq!(
+        ui.text("messages"),
+        "exact-origin\n[trk-delivery source=trk-send actor=\"human:alice@example.com\"]\nkeep going\n[/trk-delivery]\n"
+    );
     assert_eq!(ui.text("attachments"), "exact-origin\n");
 
     let runs = resume::success(ui.cmd(), &["runs"]);
@@ -2565,7 +2570,10 @@ fn send_and_attach_prefer_active_claim_even_without_a_terminal() {
             }
         }
         if terminal.is_some() {
-            assert_eq!(ui.text("messages"), "new-session\nreplacement only\n");
+            assert_eq!(
+                ui.text("messages"),
+                "new-session\n[trk-delivery source=trk-send actor=\"human:alice@example.com\"]\nreplacement only\n[/trk-delivery]\n"
+            );
             assert_eq!(ui.text("attachments"), "new-session\n");
         } else {
             assert_eq!(ui.text("messages"), "");

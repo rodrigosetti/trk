@@ -391,8 +391,6 @@ fn cli_and_mcp_with_trk_dir_resolve_the_same_explicit_or_default_user_layer() {
             json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
         )
         .unwrap();
-        let tools = mcp.request("tools/list", json!({}));
-        assert_eq!(tools["tools"].as_array().unwrap().len(), 7);
         let result = mcp.request("tools/call", json!({"name": "get_task", "arguments": {}}));
         assert_ne!(result["isError"], true, "{result:#}");
         let task: Value =
