@@ -172,22 +172,17 @@ fn session(
 }
 
 fn worktree(repo: &Path, path: &Path, root: &Path, cwd: &Path, dry_run: bool) -> Result<Resource> {
-    let path = match resolved(path) {
-        Ok(path) => path,
-        Err(e) => {
-            return Ok(Resource::new(
-                "skipped",
-                format!("cannot resolve worktree path: {e}"),
-            ));
-        }
-    };
+    // Absence is not a deletion: legacy paths outside today's root are harmless.
+    if !path.try_exists()? {
+        return Ok(Resource::new("absent", "worktree is already absent"));
+    }
     if path == root || !path.starts_with(root) {
         return Ok(Resource::new(
             "skipped",
             "worktree is outside the configured worktrees directory",
         ));
     }
-    if cwd.starts_with(&path) {
+    if cwd.starts_with(path) {
         return Ok(Resource::new(
             "skipped",
             "worktree contains the current working directory",
@@ -209,19 +204,10 @@ fn worktree(repo: &Path, path: &Path, root: &Path, cwd: &Path, dry_run: bool) ->
             locked = true;
         }
     }
-    if !registered && !path.exists() {
-        return Ok(Resource::new("absent", "worktree is already absent"));
-    }
     if !registered {
         return Ok(Resource::new(
             "skipped",
             "path is not a registered worktree of this repository",
-        ));
-    }
-    if !path.exists() {
-        return Ok(Resource::new(
-            "absent",
-            "worktree directory is already absent (git registration remains)",
         ));
     }
     if locked {
@@ -464,10 +450,18 @@ pub(crate) fn collect(
                     let resource = if !host_matches(claim, host.as_deref()) {
                         Resource::new("skipped", "worktree belongs to another or unknown host")
                     } else if let Some(repo) = &repo {
-                        capture(
-                            worktree(repo, Path::new(path), &root, &cwd, dry_run),
-                            &mut errors,
-                        )
+                        match resolved(Path::new(path)) {
+                            // Legacy worktreeless runs recorded their cwd here.
+                            // The primary checkout is not an issue-owned resource.
+                            Ok(path) if path == *repo => continue,
+                            Ok(path) => {
+                                capture(worktree(repo, &path, &root, &cwd, dry_run), &mut errors)
+                            }
+                            Err(e) => Resource::new(
+                                "skipped",
+                                format!("cannot resolve worktree path: {e}"),
+                            ),
+                        }
                     } else {
                         Resource::new("skipped", "project has no primary git checkout")
                     };
@@ -483,9 +477,9 @@ pub(crate) fn collect(
                     paths.push(item);
                 }
             }
-            // Claims, not the current type configuration or a matching branch
-            // name, establish whether this issue ever owned git resources.
-            let branch = if seen_paths.is_empty() {
+            // Only recorded issue worktrees establish branch ownership, not a
+            // primary-checkout cwd, today's type configuration or a matching name.
+            let branch = if paths.is_empty() {
                 Resource::new("absent", "no recorded worktrees or associated branch")
             } else if let Some(repo) = &repo {
                 capture(

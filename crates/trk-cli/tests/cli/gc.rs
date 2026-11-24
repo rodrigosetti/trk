@@ -378,6 +378,24 @@ fn gc_keeps_worktrees_outside_the_configured_directory() {
     gc_status(issue, "session", "removed");
     assert!(path.exists());
     assert!(fixture.branch_exists(&id));
+    assert!(
+        issue["worktree"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("outside the configured worktrees directory")
+    );
+
+    // A new check process must still warn about genuinely protected resources.
+    let output = fixture
+        .cmd()
+        .env("TRK_NOW", "2026-11-20T12:00:00Z")
+        .arg("check")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains(&id), "{stdout}");
+    assert!(stdout.contains("outside the configured"), "{stdout}");
 }
 
 #[test]
@@ -415,6 +433,31 @@ fn gc_never_removes_its_current_worktree() {
     gc_status(issue, "branch", "skipped");
     assert!(path.exists());
     assert!(fixture.branch_exists(&id));
+}
+
+#[test]
+fn gc_keeps_locked_worktrees_and_their_branches() {
+    let fixture = GcEnv::new();
+    let (id, path) = fixture.closed("done", "missing-terminal");
+    fixture.git_at(
+        &fixture.e.repo(),
+        &["worktree", "lock", path.to_str().unwrap()],
+    );
+
+    for args in [&["gc", &id, "--dry-run"][..], &["gc", &id][..]] {
+        let data = fixture.run(args);
+        let issue = gc_issue(&data, &id);
+        gc_status(issue, "worktree", "skipped");
+        gc_status(issue, "branch", "skipped");
+        assert!(
+            issue["worktree"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("locked")
+        );
+        assert!(path.is_dir());
+        assert!(fixture.branch_exists(&id));
+    }
 }
 
 #[test]
@@ -523,6 +566,13 @@ fn gc_dry_run_reports_removals_without_changing_resources_or_notes() {
 fn gc_collects_every_historical_local_claim_not_only_the_latest() {
     let fixture = GcEnv::new();
     let id = fixture.e.create(&["Closed issue"]);
+    fixture.claim(
+        &id,
+        Some(&fixture.e.repo()),
+        "term-history",
+        &fixture.host,
+    );
+    fixture.e.ok(&["unclaim", &id]);
     let first = fixture.worktree(&id);
     fixture.claim(&id, Some(&first), "term-history", &fixture.host);
     fixture.e.ok(&["unclaim", &id]);
@@ -533,6 +583,13 @@ fn gc_collects_every_historical_local_claim_not_only_the_latest() {
     );
     fixture.claim(&id, Some(&second), "term-target", &fixture.host);
     fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
+
+    let preview = fixture.run(&["gc", &id, "--dry-run"]);
+    let issue = gc_issue(&preview, &id);
+    gc_status(issue, "worktree", "removed");
+    gc_status(issue, "branch", "removed");
+    assert!(first.is_dir());
+    assert!(second.is_dir());
 
     let data = fixture.run(&["gc", &id]);
     let issue = gc_issue(&data, &id);
@@ -643,6 +700,111 @@ fn gc_without_recorded_worktrees_keeps_an_unrelated_issue_named_branch() {
         gc_status(issue, "branch", "absent");
         assert!(fixture.branch_exists(&id));
         assert_eq!(fixture.notes(&id), notes);
+    }
+}
+
+#[test]
+fn gc_primary_checkout_claims_do_not_own_git_resources() {
+    let fixture = GcEnv::new();
+    let id = fixture.e.create(&["Legacy run in the primary checkout"]);
+    let alias = fixture.e.dir.path().join("primary-alias");
+    std::os::unix::fs::symlink(fixture.e.repo(), &alias).unwrap();
+    fixture.claim(&id, Some(&alias), "missing-terminal", &fixture.host);
+    fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
+    fixture.git_at(&fixture.e.repo(), &["branch", &id]);
+    let notes = fixture.notes(&id);
+
+    for args in [&["gc", &id, "--dry-run"][..], &["gc", &id][..]] {
+        let data = fixture.run(args);
+        let issue = gc_issue(&data, &id);
+        assert_eq!(issue["worktree"]["status"], "absent", "{issue:#}");
+        gc_status(issue, "branch", "absent");
+        assert!(fixture.e.repo().is_dir());
+        assert!(fixture.branch_exists(&id));
+        assert_eq!(fixture.notes(&id), notes);
+    }
+
+    // Classification survives executable restarts; no in-process skip cache needed.
+    for _ in 0..2 {
+        let output = fixture
+            .cmd()
+            .env("TRK_NOW", "2026-11-20T12:00:00Z")
+            .arg("check")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(!stdout.contains("gc:"), "{stdout}");
+        assert!(fixture.e.repo().is_dir());
+        assert!(fixture.branch_exists(&id));
+        assert_eq!(fixture.notes(&id), notes);
+    }
+}
+
+#[test]
+fn gc_absent_legacy_worktrees_are_not_outside_directory_skips() {
+    for registered in [false, true] {
+        let fixture = GcEnv::new();
+        let id = fixture.e.create(&["Legacy worktree already removed"]);
+        fixture.claim(
+            &id,
+            Some(&fixture.e.repo()),
+            "missing-terminal",
+            &fixture.host,
+        );
+        fixture.e.ok(&["unclaim", &id]);
+        let path = fixture.worktree_at(
+            &id,
+            &fixture
+                .e
+                .dir
+                .path()
+                .join("Library/Application Support/trk/worktrees")
+                .join(&id),
+        );
+        fixture.claim(&id, Some(&path), "missing-terminal", &fixture.host);
+        fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
+        if registered {
+            std::fs::remove_dir_all(&path).unwrap();
+        } else {
+            fixture.git_at(
+                &fixture.e.repo(),
+                &["worktree", "remove", path.to_str().unwrap()],
+            );
+        }
+
+        let preview = fixture.run(&["gc", &id, "--dry-run"]);
+        let issue = gc_issue(&preview, &id);
+        gc_status(issue, "worktree", "absent");
+        gc_status(
+            issue,
+            "branch",
+            if registered { "skipped" } else { "removed" },
+        );
+        assert!(fixture.branch_exists(&id));
+
+        let data = fixture.run(&["gc", &id]);
+        let issue = gc_issue(&data, &id);
+        gc_status(issue, "worktree", "absent");
+        gc_status(
+            issue,
+            "branch",
+            if registered { "skipped" } else { "removed" },
+        );
+        assert_eq!(fixture.branch_exists(&id), registered);
+        assert!(fixture.e.repo().is_dir());
+
+        for _ in 0..2 {
+            let data = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
+            let issue = gc_issue(&data["gc"], &id);
+            gc_status(issue, "worktree", "absent");
+            gc_status(
+                issue,
+                "branch",
+                if registered { "skipped" } else { "absent" },
+            );
+            assert_eq!(fixture.branch_exists(&id), registered);
+        }
     }
 }
 
