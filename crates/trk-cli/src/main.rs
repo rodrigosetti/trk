@@ -350,6 +350,9 @@ enum Cmd {
         /// Keep issues closed more recently than this duration, e.g. 1d
         #[arg(long, value_name = "DURATION")]
         older_than: Option<String>,
+        /// Recover unnamed historical hc sessions (requires explicit issue IDs and verified provenance)
+        #[arg(long, requires = "ids")]
+        legacy_hc: bool,
     },
     /// The per-issue MCP server (started by the harness)
     Mcp {
@@ -929,7 +932,8 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
             dry_run,
             abandoned,
             older_than,
-        } => gc::run(&env, ids, dry_run, abandoned, older_than.as_deref()),
+            legacy_hc,
+        } => gc::run(&env, ids, dry_run, abandoned, older_than.as_deref(), legacy_hc),
         Cmd::Run {
             id,
             agent,

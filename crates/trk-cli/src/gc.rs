@@ -1,5 +1,7 @@
 //! Conservative cleanup of resources left by closed issues.
 
+mod legacy_hc;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -129,9 +131,11 @@ fn host_matches(claim: &Claim, host: Option<&str>) -> bool {
 fn session(
     env: &Env,
     claim: &Claim,
+    c: &mut Ctx<'_>,
     host: Option<&str>,
     protected: &[String],
     dry_run: bool,
+    recovery: &mut legacy_hc::Recovery,
     closed_spaces: &mut BTreeSet<String>,
 ) -> Result<Resource> {
     if !host_matches(claim, host) {
@@ -141,10 +145,7 @@ fn session(
         ));
     }
     let Some(launcher) = crate::launcher::for_claim(env, claim.launcher.as_deref())? else {
-        return Ok(Resource::new(
-            "skipped",
-            "terminal has no named launcher profile",
-        ));
+        return legacy_hc::recover(env, c, claim, protected, dry_run, recovery);
     };
     let terminal = claim.terminal.as_deref().expect("filtered terminal");
     if launcher.is_herdr() {
@@ -361,12 +362,26 @@ pub(crate) fn collect(
     older_than: Option<&str>,
     sweep: bool,
 ) -> Result<Value> {
+    collect_with_recovery(env, c, ids, dry_run, abandoned, older_than, sweep, false)
+}
+
+fn collect_with_recovery(
+    env: &Env,
+    c: &mut Ctx<'_>,
+    ids: &[String],
+    dry_run: bool,
+    abandoned: bool,
+    older_than: Option<&str>,
+    sweep: bool,
+    legacy_hc: bool,
+) -> Result<Value> {
     let age = older_than.map(parse_duration).transpose()?;
     let host = hostname();
     let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
     let root = resolved(&env.worktrees_dir())?;
     let repo = env.checkout();
     let mut errors = Vec::new();
+    let mut recovery = legacy_hc::Recovery::new(legacy_hc);
     let issues = {
         let ids = if ids.is_empty() {
             let mut stmt = c
@@ -434,9 +449,11 @@ pub(crate) fn collect(
                         session(
                             env,
                             claim,
+                            c,
                             host.as_deref(),
                             &protected,
                             dry_run,
+                            &mut recovery,
                             &mut closed_spaces,
                         ),
                         &mut errors,
@@ -522,9 +539,16 @@ pub fn run(
     dry_run: bool,
     abandoned: bool,
     older_than: Option<&str>,
+    legacy_hc: bool,
 ) -> Result<Out> {
+    if legacy_hc && ids.is_empty() {
+        return Err(Error::new(
+            Code::InvalidState,
+            "--legacy-hc requires explicit issue IDs and independently verified hc provenance",
+        ));
+    }
     let data = crate::check::with_gc_lock(env, dry_run, |c| {
-        collect(env, c, &ids, dry_run, abandoned, older_than, false)
+        collect_with_recovery(env, c, &ids, dry_run, abandoned, older_than, false, legacy_hc)
     })?;
     if let Some(errors) = data["errors"].as_array() {
         let message = errors

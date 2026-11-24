@@ -16,6 +16,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Native draggable list/details split in the Herdr dashboard, retaining pane sizes while browsing issues.
 - Theme-colored issue-type badges in Herdr dashboard rows and details, with readable labels and stable colors for custom types.
 - Aligned Herdr dashboard issue IDs, type badges, and text across sections, with wrapped titles and custom type names that stay within narrow list panes.
+- Explicit ID-scoped `trk gc --legacy-hc` recovery for independently verified historical hc sessions missing launcher profiles, with finished-session identity checks and append-only GC receipts.
 
 ### Beta compatibility and upgrades
 
