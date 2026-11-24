@@ -186,12 +186,21 @@ fn legacy_and_jinja_inserted_briefings_are_never_reexpanded() {
 
 #[test]
 fn malformed_templates_in_each_renderable_field_are_config_invalid() {
-    for field in ["command", "args", "env", "path", "content", "builtin_tools"] {
+    for field in [
+        "command",
+        "args",
+        "args_json",
+        "env",
+        "path",
+        "content",
+        "builtin_tools",
+    ] {
         let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
         let bad = "{{ broken".to_string();
         match field {
             "command" => profile.command = bad,
             "args" => profile.args.push(bad),
+            "args_json" => profile.args_json = Some(bad),
             "env" => {
                 profile.env.insert("BAD".into(), bad);
             }
@@ -223,6 +232,7 @@ fn agent_check_warns_for_legacy_placeholders_in_every_profile_field() {
     for field in [
         "command",
         "args",
+        "args_json",
         "env",
         "path",
         "content",
@@ -233,6 +243,7 @@ fn agent_check_warns_for_legacy_placeholders_in_every_profile_field() {
         match field {
             "command" => profile.command = "{issue}".into(),
             "args" => profile.args.push("{briefing}".into()),
+            "args_json" => profile.args_json = Some(r#"["{issue}"]"#.into()),
             "model_args" => profile.model_args.push("{model}".into()),
             "env" => {
                 profile.env.insert("OLD".into(), "{agent}".into());
@@ -329,6 +340,7 @@ fn model_and_agent_arguments_share_single_pass_template_rendering() {
     profile.model = Some(model.into());
     profile.model_args = vec!["--model".into(), "{{ model }}".into()];
     profile.args = vec!["base".into(), "{{ briefing }}".into()];
+    profile.args_json = Some(r#"{{ ["first", model, ""] | tojson }}"#.into());
     profile
         .builtin_tools
         .insert("read-only".into(), vec!["{{ trk_tools|join(',') }}".into()]);
@@ -343,6 +355,9 @@ fn model_and_agent_arguments_share_single_pass_template_rendering() {
         spec.argv,
         [
             "test",
+            "first",
+            model,
+            "",
             "base",
             "get_task,add_note",
             "--model",
@@ -351,4 +366,21 @@ fn model_and_agent_arguments_share_single_pass_template_rendering() {
             BRIEFING
         ]
     );
+}
+
+#[test]
+fn args_json_rejects_invalid_json_and_non_string_arguments() {
+    for source in [
+        "not json",
+        r#"{"flag": true}"#,
+        "[42]",
+        "[null]",
+        r#"["ok", []]"#,
+    ] {
+        let mut profile: HarnessProfile = toml::from_str("command = 'test'").unwrap();
+        profile.args_json = Some(source.into());
+        let error = launch(&profile, "test", &agent("default")).unwrap_err();
+        assert_eq!(error.code(), Code::ConfigInvalid, "{source}");
+        assert!(error.message().contains("args_json"), "{error}");
+    }
 }

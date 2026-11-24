@@ -960,7 +960,21 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
         let p = dir.join(rel);
         if p.exists() && !force {
             kept.push(rel.to_string());
-            if rel != "config.toml" && std::fs::read_to_string(&p).is_ok_and(|s| s != content) {
+            if std::fs::read_to_string(&p).is_ok_and(|s| {
+                if rel == "config.toml" {
+                    // Compare profiles, not project identity or formatting.
+                    let installed = toml::from_str::<toml::Table>(&s);
+                    let seed = toml::from_str::<toml::Table>(&content);
+                    match (installed, seed) {
+                        (Ok(installed), Ok(seed)) => {
+                            installed.get("harness") != seed.get("harness")
+                        }
+                        _ => true,
+                    }
+                } else {
+                    s != content
+                }
+            }) {
                 differ.push(rel.to_string());
             }
             continue;

@@ -68,6 +68,7 @@ send_delay = 5
 # remain supported but deprecated, including {mcp_json}, {opencode_json},
 # {trk_args_toml}, {trk_env_toml} and {trk_tools:PREFIX}.
 #   files                = files written before launch (relative to the worktree)
+#   args_json            = template rendering a JSON string array prepended to args
 #   model                = default model (agent or --model may override)
 #   model_args           = extra args added only when a model is set
 #   builtin_tools.<lvl>  = extra args enforcing an agent's builtin_tools level
@@ -94,10 +95,16 @@ builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdi
 
 [harness.codex]
 command = "codex"
-args    = ["-c", "mcp_servers.trk.command={{ trk_command | toml }}",
-           "-c", "mcp_servers.trk.args={{ trk_args | toml }}",
-           "-c", "mcp_servers.trk.env={{ trk_env | toml }}",
-           "{{ briefing }}"]
+args_json = '''[
+{% for server in mcp_servers %}
+{% if not loop.first %},{% endif %}
+{% for field in ["command", "args", "env"] %}
+{% if not loop.first %},{% endif %}
+"-c", {{ ("mcp_servers." ~ server.name ~ "." ~ field ~ "=" ~ (server[field] | toml)) | tojson }}
+{% endfor %}
+{% endfor %}
+]'''
+args    = ["{{ briefing }}"]
 model_args = ["--model", "{{ model }}"]
 builtin_tools = { read-only = ["--sandbox", "read-only"] }
 

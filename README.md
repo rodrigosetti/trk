@@ -666,6 +666,33 @@ and tables such as `{key = value}`). MiniJinja loops, expressions and built-in
 `mcp_json_file` always points to the generic pretty JSON, not a harness dialect.
 The seed profiles include generic MCP and OpenCode examples.
 
+The Codex seed emits individual overrides for trk and every agent `[[mcp]]`
+server, without replacing other servers configured in Codex. `args_json` renders
+a JSON array of strings prepended to the static `args`; this allows loops to
+generate a variable number of flags without shell splitting:
+
+```toml
+[harness.codex]
+command = "codex"
+args_json = '''[
+{% for server in mcp_servers %}
+{% if not loop.first %},{% endif %}
+{% for field in ["command", "args", "env"] %}
+{% if not loop.first %},{% endif %}
+"-c", {{ ("mcp_servers." ~ server.name ~ "." ~ field ~ "=" ~ (server[field] | toml)) | tojson }}
+{% endfor %}
+{% endfor %}
+]'''
+args = ["{{ briefing }}"]
+model_args = ["--model", "{{ model }}"]
+builtin_tools = { read-only = ["--sandbox", "read-only"] }
+```
+
+`trk install` reports `config.toml` in `differ` when its harness profiles differ
+from the seed, ignoring project identity and formatting. Existing config is kept
+unless `--force` is explicitly requested; copy the profile above to update Codex
+without replacing project settings.
+
 Single-brace harness placeholders remain supported but deprecated: use
 `{{ briefing }}` instead of `{briefing}`, and likewise for scalar names.
 Legacy `{mcp_json}`, `{opencode_json}`, `{trk_args_toml}`, `{trk_env_toml}` and

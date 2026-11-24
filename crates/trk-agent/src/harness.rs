@@ -24,6 +24,9 @@ pub struct HarnessProfile {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Additional arguments prepended to `args`, rendered as a JSON string array.
+    #[serde(default)]
+    pub args_json: Option<String>,
     /// Default model; omitted leaves model selection to the harness.
     #[serde(default)]
     pub model: Option<String>,
@@ -69,12 +72,17 @@ impl HarnessProfile {
         match self.briefing.as_deref() {
             Some("send") => true,
             Some(_) => false,
-            None => !self.args.iter().any(|a| uses_briefing(a)),
+            None => !self
+                .args_json
+                .iter()
+                .chain(&self.args)
+                .any(|a| uses_briefing(a)),
         }
     }
 
     fn strings(&self) -> impl Iterator<Item = &str> {
         std::iter::once(self.command.as_str())
+            .chain(self.args_json.as_deref())
             .chain(self.args.iter().map(String::as_str))
             .chain(self.model_args.iter().map(String::as_str))
             .chain(self.env.values().map(String::as_str))
@@ -325,13 +333,29 @@ pub fn build(input: LaunchInput) -> Result<LaunchSpec> {
         .flatten();
     let agent_args = input.agent.harness.args.get(input.harness);
     let model_args = model.map(|_| &input.profile.model_args);
+    let prefix_args: Vec<String> = input
+        .profile
+        .args_json
+        .as_deref()
+        .map(|source| {
+            serde_json::from_str(&render(source)?).map_err(|e| {
+                Error::new(
+                    Code::ConfigInvalid,
+                    format!("harness args_json must render a JSON array of strings: {e}"),
+                )
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
     let mut argv = Vec::with_capacity(
-        1 + input.profile.args.len()
+        1 + prefix_args.len()
+            + input.profile.args.len()
             + builtin_args.map_or(0, Vec::len)
             + model_args.map_or(0, Vec::len)
             + agent_args.map_or(0, Vec::len),
     );
     argv.push(render(&input.profile.command)?);
+    argv.extend(prefix_args);
     let pos = input
         .profile
         .args

@@ -1082,6 +1082,43 @@ fn install_writes_the_project_directory_and_the_skill() {
 }
 
 #[test]
+fn install_reports_outdated_codex_profile_without_overwriting_config() {
+    let e = Env::new();
+    let path = e.trk_dir().join("config.toml");
+    let seed = std::fs::read_to_string(&path).unwrap();
+    // Project identity and formatting alone are not profile drift.
+    let customized = format!(
+        "# project settings\n{}",
+        seed.replace("prefix = \"orch\"", "prefix = \"custom\"")
+    );
+    std::fs::write(&path, &customized).unwrap();
+    assert_eq!(e.ok(&["install"])["differ"], json!([]));
+    let mut config: toml::Table = toml::from_str(&customized).unwrap();
+    let legacy: toml::Table = toml::from_str(include_str!(
+        "../../trk-agent/tests/fixtures/harness-legacy.toml"
+    ))
+    .unwrap();
+    config["harness"]["codex"] = legacy["harness"]["codex"].clone();
+    let outdated = toml::to_string(&config).unwrap();
+    std::fs::write(&path, &outdated).unwrap();
+    let result = e.ok(&["install"]);
+    assert_eq!(result["differ"], json!(["config.toml"]));
+    assert!(
+        result["kept"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("config.toml"))
+    );
+    assert!(
+        !result["written"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("config.toml"))
+    );
+    assert_eq!(std::fs::read_to_string(path).unwrap(), outdated);
+}
+
+#[test]
 fn the_project_is_found_from_subdirectories_worktrees_and_trk_dir() {
     let e = Env::new();
     let id = e.create(&["Visible everywhere"]);
@@ -1444,6 +1481,79 @@ fn agent_preview_and_run_dry_run() {
     let done = e.create(&["Done"]);
     e.ok(&["close", &done]);
     e.err(&["run", &done, "--dry-run"], 4, "invalid_state");
+}
+
+#[test]
+fn codex_dry_run_passes_every_mcp_server_as_toml_overrides() {
+    let e = Env::new();
+    std::fs::write(
+        e.trk_dir().join("agents/extra-mcp.toml"),
+        r#"
+name = "extra-mcp"
+[harness]
+prefer = ["codex"]
+[[mcp]]
+name = "extra-search"
+command = '/path with spaces/quote"and\slash'
+args = ["--label", "quotes ' \" \\ \n {{ issue }}", ""]
+[mcp.env]
+TOKEN = "${env:TRK_TEST_CODEX_TOKEN}"
+"key.with.dots" = "literal {{ issue }}"
+[[mcp]]
+name = "empty"
+command = "empty-server"
+"#,
+    )
+    .unwrap();
+    let id = e.create(&["Codex MCP overrides"]);
+    let token = "secret ' \" \\ \n ${env:DO_NOT_EXPAND} {{ issue }}";
+    let output = e
+        .cmd()
+        .env("TRK_TEST_CODEX_TOKEN", token)
+        .args([
+            "--json",
+            "run",
+            &id,
+            "--agent",
+            "extra-mcp",
+            "--harness",
+            "codex",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(output.status.success(), "{envelope:#}");
+    let spec = &envelope["data"];
+    assert_eq!(spec["argv"][0], "codex");
+    assert_eq!(
+        spec["argv"].as_array().unwrap().last().unwrap(),
+        &spec["briefing"]
+    );
+    let servers = &spec["mcp_servers"]["mcpServers"];
+    assert_eq!(servers["extra-search"]["env"]["TOKEN"], token);
+    let argv = spec["argv"].as_array().unwrap();
+    let overrides = &argv[1..argv.len() - 1];
+    assert_eq!(overrides.len(), 18, "{argv:?}");
+    for (server_index, server) in ["trk", "extra-search", "empty"].iter().enumerate() {
+        for (field_index, field) in ["command", "args", "env"].iter().enumerate() {
+            let index = 6 * server_index + 2 * field_index;
+            assert_eq!(overrides[index], "-c");
+            let prefix = format!("mcp_servers.{server}.{field}=");
+            let value = overrides[index + 1]
+                .as_str()
+                .unwrap()
+                .strip_prefix(&prefix)
+                .unwrap();
+            let parsed: toml::Table = toml::from_str(&format!("value = {value}")).unwrap();
+            assert_eq!(
+                serde_json::to_value(&parsed["value"]).unwrap(),
+                servers[server][field],
+                "{server}.{field}"
+            );
+        }
+    }
+    assert_eq!(e.ok(&["show", &id])["claim"], Value::Null);
 }
 
 #[test]
