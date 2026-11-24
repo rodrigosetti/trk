@@ -278,6 +278,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             config: &env.user,
             issue_type: &routing.issue_type,
             type_description: &routing.description,
+            type_guidance: routing.guidance.as_deref(),
             agent: &agent,
             tools: &tools,
             worktree: wt_str.as_deref(),
@@ -321,6 +322,9 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         spec_json["type"] = json!(routing.issue_type);
         spec_json["routing"] = json!(routing);
         spec_json["templates"] = serde_json::to_value(prompts.sources)?;
+        if let Some(guidance) = prompts.guidance {
+            spec_json["guidance"] = json!(guidance);
+        }
         if !a.dry_run {
             for (path, content) in &spec.files {
                 let p = PathBuf::from(path);

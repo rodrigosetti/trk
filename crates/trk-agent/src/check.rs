@@ -70,8 +70,20 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
         }
     }
     let routing = crate::routing::RoutingConfig::new(cfg);
-    if let Err(e) = routing.types() {
-        d.push(Diagnostic::error(Some("types"), e.message()));
+    for path in cfg.files_in("types", "toml") {
+        let name = path.file_stem().unwrap().to_string_lossy();
+        let file = format!("types/{name}.toml");
+        let result = routing.resolve(&name, None).and_then(|route| {
+            if let Some(agent) = agents.get(&route.agent) {
+                crate::prompt::type_prompts(cfg, agent, user, &route).map(|_| ())
+            } else {
+                // Invalid agent definitions already have their own diagnostics.
+                Ok(())
+            }
+        });
+        if let Err(e) = result {
+            d.push(Diagnostic::error(Some(&file), e.message()));
+        }
     }
     let profs = match profiles(user) {
         Ok(p) => p,
@@ -160,6 +172,7 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
             config: user,
             issue_type: &user.issues.default_type,
             type_description: "Sample type description",
+            type_guidance: None,
             agent: a,
             tools: &tools,
             worktree: Some("/tmp/wt"),

@@ -105,6 +105,7 @@ impl TrkServer {
             config: &args.user,
             issue_type: &routing.issue_type,
             type_description: &routing.description,
+            type_guidance: routing.guidance.as_deref(),
             agent: &agent,
             tools: &tools,
             worktree: worktree.as_deref(),
@@ -394,6 +395,53 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn server_info_includes_type_guidance_with_an_agent_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let seed = dir.path().join("seed");
+        write_seed(&seed);
+        std::fs::write(
+            seed.join("types/code-change.toml"),
+            "agent = 'implementer'\ndescription = 'Code change'\nworktree = false\nguidance = '''{% include \"prompts/type-guidance.md.j2\" %}'''",
+        )
+        .unwrap();
+        std::fs::write(
+            seed.join("prompts/type-guidance.md.j2"),
+            "GUIDANCE {{ type.name }} {{ agent.name }} {{ issue.id }}",
+        )
+        .unwrap();
+        let db = dir.path().join("trk.db");
+        let opts = StoreOpts::default();
+        let mut store = Store::install(&db, opts.clone()).unwrap();
+        let issue = store
+            .write(HUMAN, false, |c| {
+                c.create(NewIssue {
+                    title: "Guided MCP session".into(),
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+        let server = TrkServer::new(McpArgs {
+            db,
+            config: ConfigDir::with_user_dir(&seed, None),
+            project_root: dir.path().to_path_buf(),
+            user: UserConfig::default(),
+            opts,
+            issue: issue.clone(),
+            actor: ACTOR.into(),
+            agent: "researcher".into(),
+            base: "main".into(),
+        })
+        .unwrap();
+        let info = server.get_info();
+        assert!(
+            info.instructions
+                .as_deref()
+                .unwrap()
+                .contains(&format!("GUIDANCE code-change researcher {issue}"))
+        );
     }
 
     fn active_claim(store: &Store, issue: &str) -> Option<Claim> {

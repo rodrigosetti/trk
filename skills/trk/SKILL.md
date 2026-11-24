@@ -246,9 +246,20 @@ CLI session liveness requires a known claim host matching this machine and a non
 Without an ID, `trk run` selects by priority, then oldest creation time, then ID, matching
 `trk ready`. No ready issues is an error. `trk run --dry-run --json` previews the selection.
 
-`trk run --agent NAME` overrides routing for that run only. Inspect routing sources with `trk show`
-or `trk run --dry-run`. Types, agents and prompts live in the project's `.trk/` directory
-(`types/*.toml`, `agents/*.toml`, `prompts/`), shared by all its worktrees.
+`trk run --agent NAME` overrides the agent for that run only, retaining the issue type's
+optional guidance. Types can define inline TOML `guidance` as a MiniJinja string,
+including `{% include "prompts/_bug.md.j2" %}`, with the same context as instructions.
+The rendered snippet is appended automatically under `## Type guidance`; omitting
+guidance leaves existing prompt output unchanged. Types, agents and prompts resolve
+by whole filename, project `.trk/` before the user configuration directory, without
+merging fields; includes use the same search order. Project files are shared by
+all its worktrees.
+
+Inspect rendered guidance and source provenance with `trk agent preview <agent> --issue ID`
+or `trk run ID --dry-run --json`. Sources identify inline guidance as
+`types/<name>.toml#guidance` and include referenced templates. `trk agent check`
+validates every routed type with a sample issue as well as the representative agent
+context, so invalid guidance or missing includes are reported before launch.
 
 ## Clean up closed issues
 

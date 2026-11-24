@@ -1584,9 +1584,18 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 )?);
             }
             for route in cfg.types()?.values() {
+                let resolved = cfg.load(route)?;
+                let prompts = trk_agent::prompt::type_prompts(
+                    &resolved.config,
+                    &resolved.agent,
+                    &env.user,
+                    route,
+                )?;
+                templates.extend(prompts.sources);
                 resources["types"].as_array_mut().unwrap().push(json!({
                     "name": route.issue_type, "source": route.type_source,
                     "source_layer": route.type_layer,
+                    "agent": route.agent, "guidance": prompts.guidance,
                 }));
                 resource_text.push_str(&format!(
                     "\ntype {}: {} ({})",
@@ -1594,6 +1603,9 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                     route.type_source.display(),
                     route.type_layer,
                 ));
+                if let Some(guidance) = &prompts.guidance {
+                    resource_text.push_str(&format!("\n  guidance:\n{guidance}"));
+                }
             }
             for (name, template) in &templates {
                 resource_text.push_str(&format!(
@@ -1643,6 +1655,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 config: &env.user,
                 issue_type: &routing.issue_type,
                 type_description: &routing.description,
+                type_guidance: routing.guidance.as_deref(),
                 agent: &a,
                 tools: &tools,
                 worktree: issue_json["claim"]["worktree"].as_str(),
@@ -1651,8 +1664,9 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 base: &env.base(),
                 verify: &env.user.check.verify,
             };
-            let instructions = trk_agent::prompt::instructions(&resolved.config, &input)?;
-            let briefing = trk_agent::prompt::briefing(&resolved.config, &input, None)?;
+            let prompts = trk_agent::prompt::render_prompts(&resolved.config, &input, false)?;
+            let instructions = prompts.instructions;
+            let briefing = prompts.briefing;
             let tool_json: Vec<Value> = tools
                 .iter()
                 .map(|t| json!({"name": t.name, "description": t.description, "input_schema": t.input_schema}))
@@ -1663,12 +1677,23 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
                 .map(|m| json!({"name": m.name, "command": m.command, "args": m.args}))
                 .collect();
             let mut text = format!(
-                "== routing ==\ntype: {} · agent: {}\nagent source: {}\nprompts: {}\n\n== instructions (MCP server) ==\n{instructions}\n\n== briefing (initial prompt) ==\n{briefing}\n\n== trk tools ==\n",
+                "== routing ==\ntype: {} · agent: {}\ntype source: {} ({})\nagent source: {} ({})\nprompts: {}\n\n== instructions (MCP server) ==\n{instructions}\n\n== briefing (initial prompt) ==\n{briefing}\n",
                 routing.issue_type,
                 routing.agent,
+                routing.type_source.display(),
+                routing.type_layer,
                 routing.agent_source.display(),
+                routing.agent_layer,
                 routing.prompt_directory.display(),
             );
+            for (name, template) in &prompts.sources {
+                text.push_str(&format!(
+                    "\ntemplate {name}: {} ({})\n",
+                    template.source.display(),
+                    template.layer,
+                ));
+            }
+            text.push_str("\n== trk tools ==\n");
             for tl in &tools {
                 let req: Vec<String> = tl.input_schema["required"]
                     .as_array()
@@ -1696,7 +1721,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             }
             Ok(Out::Text(
                 text,
-                json!({"agent": a.name, "type": routing.issue_type, "routing": routing, "instructions": instructions, "briefing": briefing, "tools": tool_json, "mcp": others}),
+                json!({"agent": a.name, "type": routing.issue_type, "routing": routing, "instructions": instructions, "briefing": briefing, "guidance": prompts.guidance, "templates": prompts.sources, "tools": tool_json, "mcp": others}),
             ))
         }
     }

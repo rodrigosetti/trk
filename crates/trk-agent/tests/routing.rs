@@ -50,6 +50,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
         config: &trk_core::config::UserConfig::default(),
         issue_type: &route.issue_type,
         type_description: &route.description,
+        type_guidance: route.guidance.as_deref(),
         agent: &resolved.agent,
         tools: &[],
         worktree: None,
@@ -73,6 +74,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
         agent: &resolved.agent,
         issue_type: &route.issue_type,
         type_description: &route.description,
+        type_guidance: route.guidance.as_deref(),
         ..input
     };
     assert_eq!(

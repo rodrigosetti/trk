@@ -43,6 +43,9 @@ mod skill;
 #[path = "cli/monorepo.rs"]
 mod monorepo;
 
+#[path = "cli/type_guidance.rs"]
+mod type_guidance;
+
 fn local_host() -> String {
     let output = StdCommand::new("hostname").output().unwrap();
     assert!(output.status.success());

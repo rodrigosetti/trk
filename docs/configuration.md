@@ -9,7 +9,7 @@ Project state stays in `.trk/` at its root, written by `trk install`:
   config.toml             user, issue id prefix, leases, check interval and timeout, worktrees,
                           launcher templates, harness profiles, saved views
   agents/*.toml           instructions, briefing, other MCP servers, harness preferences
-  types/*.toml            name, description, agent routing
+  types/*.toml            name, description, agent routing, optional guidance
   prompts/*.j2            MiniJinja templates
   worktrees/<ID>/         git worktrees made by `trk run` ([run] worktrees)
   sessions/<uuid>/        per-session files
@@ -80,6 +80,39 @@ There is no schema to apply: states, the close reasons (`done`, `abandoned`), pr
 one dependency kind (`blocks`) are fixed. Agents and prompts are read when a session starts;
 `trk agent check` validates them. `trk agents`, `trk agent check`, and `trk run --dry-run`
 report the project/user origins of agents, types and templates.
+
+### Type guidance
+
+A type can add task-specific instructions without defining another agent. For example,
+an optional `.trk/types/bug.toml` could route bugs to the existing implementer:
+
+```toml
+name = "bug"
+description = "Fix a defect"
+agent = "implementer"
+guidance = """
+Reproduce the defect in {{ project.name }} before changing code.
+Add a regression test for the reported behavior.
+Explain the root cause and verify the fix.
+"""
+```
+
+`guidance` is optional inline TOML text rendered as MiniJinja with the same context
+as agent instructions (see the context table below). For a reusable external snippet,
+use `guidance = '{% include "prompts/_bug.md.j2" %}'` instead. Includes use the same
+project-first, then user template loader. Type files resolve as whole files: a project
+`types/bug.toml` replaces the user copy, including its guidance; fields do not merge.
+
+The rendered snippet is appended automatically to agent instructions under
+`## Type guidance`, including when instructions are folded into the briefing.
+`trk run --agent NAME` changes the agent, not the issue's type or its guidance.
+Omitting `guidance` preserves the previous prompt output without an extra heading.
+
+Use `trk agent preview <agent> --issue ID` or `trk run ID --dry-run --json` to inspect
+the rendered instructions. Preview, dry-run and `trk agent check` report guidance
+provenance as `types/<name>.toml#guidance` resolved to the type file, alongside any
+included templates. `trk agent check` validates guidance syntax, rendering and includes
+for every actual routed type; a broken snippet is an error, not ignored.
 
 Set the default harness preference once in either layer's `config.toml`:
 
@@ -178,8 +211,8 @@ Arguments remain separate argv entries; they are not shell-split.
 configured `model`, effective `models` by harness (null means harness default),
 and extra `args`.
 
-Agent instructions and briefings are MiniJinja templates with the same context in `trk run`,
-the MCP server and `trk agent preview`:
+Agent instructions, type guidance and briefings are MiniJinja templates with the same
+context in `trk run`, the MCP server and `trk agent preview`:
 
 | Variable | Value |
 | --- | --- |
@@ -199,8 +232,10 @@ the MCP server and `trk agent preview`:
 Durations and `config.run.worktrees` retain their configured strings (for example `5m`
 and `.trk/worktrees`), without path expansion. Example: `{{ project.name }}:
 {{ type.description }}; wake cap {{ config.check.max_wakes }}`.
-`trk agent check` renders with sample issue/type/project values (project root `/tmp/project`,
-type `code-change` with description `Sample type description`) and the project's configured settings.
+`trk agent check` renders each actual routed type, including its guidance, with a
+sample issue and its resolved agent. It also retains the representative agent render
+with sample issue/type/project values (project root `/tmp/project`, type `code-change`
+with description `Sample type description`), using the project's configured settings.
 
 The `wait` tool advertises the configured check interval and wake cap; with
 `max_wakes = 0`, failures reopen the issue instead of waking the session.

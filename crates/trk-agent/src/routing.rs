@@ -17,6 +17,7 @@ struct TypeDef {
     description: Option<String>,
     agent: Option<String>,
     worktree: Option<bool>,
+    guidance: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,8 @@ pub struct Routing {
     pub agent: String,
     pub override_agent: bool,
     pub worktree: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<String>,
     pub type_source: PathBuf,
     pub agent_source: PathBuf,
     pub type_layer: &'static str,
@@ -119,6 +122,7 @@ impl RoutingConfig {
             agent,
             override_agent: override_agent.is_some(),
             worktree: def.worktree.unwrap_or(true),
+            guidance: def.guidance,
             type_layer: self.config.source_layer(&path),
             agent_layer: self.config.source_layer(&agent_source),
             type_source: path,

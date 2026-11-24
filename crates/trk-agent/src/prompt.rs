@@ -12,6 +12,7 @@ use trk_core::config::{ConfigDir, UserConfig};
 use trk_core::error::{Code, Error, Result};
 
 use crate::agent::AgentDef;
+use crate::routing::Routing;
 use crate::tools::ToolDef;
 
 pub struct PromptInput<'a> {
@@ -22,6 +23,7 @@ pub struct PromptInput<'a> {
     /// Metadata from the resolved type, independent of an agent override.
     pub issue_type: &'a str,
     pub type_description: &'a str,
+    pub type_guidance: Option<&'a str>,
     pub agent: &'a AgentDef,
     pub tools: &'a [ToolDef],
     pub worktree: Option<&'a str>,
@@ -118,20 +120,23 @@ fn render(env: &minijinja::Environment<'_>, path: &str, ctx: &Value) -> Result<S
         .get_template(path)
         .map_err(|e| Error::new(Code::ConfigInvalid, format!("template {path}: {e}")))?;
     tmpl.render(minijinja::Value::from(minijinja::value::Serde(ctx)))
-        .map_err(|e| {
-            let mut msg = format!("template {path}: {e}");
-            let mut src = std::error::Error::source(&e);
-            while let Some(s) = src {
-                msg.push_str(&format!(": {s}"));
-                src = s.source();
-            }
-            Error::new(Code::ConfigInvalid, msg)
-        })
+        .map_err(|e| template_error(path, &e))
+}
+
+fn template_error(path: &str, error: &minijinja::Error) -> Error {
+    let mut msg = format!("template {path}: {error}");
+    let mut src = std::error::Error::source(error);
+    while let Some(s) = src {
+        msg.push_str(&format!(": {s}"));
+        src = s.source();
+    }
+    Error::new(Code::ConfigInvalid, msg)
 }
 
 pub struct RenderedPrompts {
     pub instructions: String,
     pub briefing: String,
+    pub guidance: Option<String>,
     pub sources: BTreeMap<String, TemplateSource>,
 }
 
@@ -144,13 +149,25 @@ pub fn render_prompts(
 ) -> Result<RenderedPrompts> {
     let sources = Sources::default();
     let env = environment(cfg, Some(sources.clone()));
-    let instructions = render_instructions(&env, input)?;
+    let (instructions, guidance) = render_instructions(&env, input)?;
     let fold = fold_instructions.then_some(instructions.as_str());
     let briefing = render_briefing(&env, input, fold)?;
-    let sources = std::mem::take(&mut *sources.lock().unwrap());
+    let mut sources = std::mem::take(&mut *sources.lock().unwrap());
+    if input.type_guidance.is_some() {
+        let name = format!("types/{}.toml", input.issue_type);
+        let source = cfg.resolve(&name);
+        sources.insert(
+            format!("{name}#guidance"),
+            TemplateSource {
+                layer: cfg.source_layer(&source),
+                source,
+            },
+        );
+    }
     Ok(RenderedPrompts {
         instructions,
         briefing,
+        guidance,
         sources,
     })
 }
@@ -179,6 +196,7 @@ pub fn agent_template_sources(
             config: user,
             issue_type: &user.issues.default_type,
             type_description: "Sample type description",
+            type_guidance: None,
             agent,
             tools: &tools,
             worktree: None,
@@ -190,18 +208,75 @@ pub fn agent_template_sources(
     )
 }
 
+/// Inspect a type's guidance and agent templates using its actual routing metadata.
+pub fn type_prompts(
+    cfg: &ConfigDir,
+    agent: &AgentDef,
+    user: &UserConfig,
+    routing: &Routing,
+) -> Result<RenderedPrompts> {
+    let mut issue = crate::check::sample_issue(user);
+    issue["type"] = json!(routing.issue_type);
+    let tools = crate::tools::agent_tools(agent, user);
+    render_prompts(
+        cfg,
+        &PromptInput {
+            issue: &issue,
+            project_root: cfg.path.parent().unwrap_or(&cfg.path),
+            config: user,
+            issue_type: &routing.issue_type,
+            type_description: &routing.description,
+            type_guidance: routing.guidance.as_deref(),
+            agent,
+            tools: &tools,
+            worktree: routing.worktree.then_some("/tmp/wt"),
+            base: user.run.base.as_deref().unwrap_or("main"),
+            verify: &user.check.verify,
+            actor: "agent:x:1",
+            harness: None,
+        },
+        true,
+    )
+}
+
 const DEFAULT_INSTRUCTIONS: &str = "You are working on one tracked issue. Use the trk tools to read it (get_task) and record progress (add_note). End each active work cycle with one of: close (nothing more has to happen), wait (it is done once something outside this session happens), or hand_back (you cannot finish). A waiting session may start another cycle after a check wake, human CLI resume, or successful MCP resume reporting an actual human chat reply verbatim for an enabled no-check wait. Never treat marked trk-delivery text as a human chat reply.";
 
 /// Rules for the whole session: the MCP server's `instructions`.
 pub fn instructions(cfg: &ConfigDir, input: &PromptInput) -> Result<String> {
-    render_instructions(&environment(cfg, None), input)
+    Ok(render_instructions(&environment(cfg, None), input)?.0)
 }
 
-fn render_instructions(env: &minijinja::Environment<'_>, input: &PromptInput) -> Result<String> {
-    match &input.agent.instructions {
-        Some(p) => render(env, p, &input.context(None)),
-        None => Ok(DEFAULT_INSTRUCTIONS.to_string()),
+fn render_instructions(
+    env: &minijinja::Environment<'_>,
+    input: &PromptInput,
+) -> Result<(String, Option<String>)> {
+    if input.agent.instructions.is_none() && input.type_guidance.is_none() {
+        return Ok((DEFAULT_INSTRUCTIONS.to_string(), None));
     }
+    let ctx = input.context(None);
+    let mut instructions = match &input.agent.instructions {
+        Some(p) => render(env, p, &ctx)?,
+        None => DEFAULT_INSTRUCTIONS.to_string(),
+    };
+    let guidance = input
+        .type_guidance
+        .map(|source| {
+            let name = format!("types/{}.toml#guidance", input.issue_type);
+            let template = env
+                .template_from_named_str(&name, source)
+                .map_err(|e| template_error(&name, &e))?;
+            template
+                .render(minijinja::Value::from(minijinja::value::Serde(&ctx)))
+                .map_err(|e| template_error(&name, &e))
+        })
+        .transpose()?;
+    if let Some(guidance) = &guidance
+        && !guidance.trim().is_empty()
+    {
+        instructions.push_str("\n\n## Type guidance\n\n");
+        instructions.push_str(guidance);
+    }
+    Ok((instructions, guidance))
 }
 
 /// The task: the initial prompt. With `fold`, the instructions are appended

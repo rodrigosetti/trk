@@ -6,9 +6,9 @@ the CLI and dashboards. Sessions launched for an issue use its per-issue MCP
 server, so their tracker context and tools stay focused on that issue.
 
 An **agent** is instructions plus tools; a **harness** runs the agent; a
-**launcher** provides its terminal/session. Types route issues to agents and
-choose whether a run uses an issue worktree. They do not introduce different
-state machines or custom issue fields.
+**launcher** provides its terminal/session. Types route issues to agents, choose
+whether a run uses an issue worktree, and may supply optional task-specific guidance.
+They do not introduce different state machines or custom issue fields.
 
 ## Goals and boundaries
 
@@ -26,6 +26,19 @@ networked multi-user service or web issue editor. Types do not require evidence 
 close: completion requirements belong in instructions and checks, not a built-in
 review/CI model. External status is read by checks when needed, not mirrored into
 issue fields. Checks and agent identities are not security sandboxes.
+
+Type guidance is optional inline MiniJinja text in `types/<name>.toml`, rendered
+with the agent instruction context and appended under `## Type guidance`. It can
+include shared prompt templates rather than duplicating agent definitions. An
+explicit `--agent` override changes the selected agent but retains the issue type's
+guidance. Absent guidance leaves existing prompt output unchanged.
+
+Types resolve project-over-user as whole files, not merged fields; included templates
+use that same project-first search order. Guidance provenance identifies the resolved
+type file as `types/<name>.toml#guidance` and records included templates. Agent check
+validates every routed type with a sample issue in addition to its representative
+agent context; preview and run dry-run expose the rendered result and sources.
+See [type guidance](configuration.md#type-guidance) for configuration examples.
 
 ## Issues, readiness and blockers
 
