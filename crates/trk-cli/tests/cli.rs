@@ -26,6 +26,9 @@ mod base;
 #[path = "cli/verify.rs"]
 mod verify;
 
+#[path = "cli/monorepo.rs"]
+mod monorepo;
+
 fn local_host() -> String {
     let output = StdCommand::new("hostname").output().unwrap();
     assert!(output.status.success());

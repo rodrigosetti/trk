@@ -30,11 +30,12 @@ trk keeps no global database or config. Set it up per project:
 cd ~/src/orch && trk install
 ```
 
-`trk install` creates `.trk/` in the project root (in a git repository, the root of the primary
-checkout): the database, the default config with every setting written out, and a `.gitignore`
-that keeps all of it out of git. It also installs the agent skill (see below). Commands find
-the project from any subdirectory and from any of its git worktrees. Other project commands
-fail with `not_installed` until it has been installed.
+`trk install` creates `.trk/` in the project root (by default, the primary git checkout
+root): the database, the default config with every setting written out, and a `.gitignore`
+that keeps all of it out of git. To install a project in a monorepo subdirectory, run
+`trk --dir .trk install` from that subdirectory. It also installs the agent skill (see below).
+Commands find the project from its subdirectories and corresponding paths in git worktrees.
+Other project commands fail with `not_installed` until it has been installed.
 
 Choose the configuration seed with these install options:
 
@@ -264,9 +265,10 @@ trk ready type=research --sort type
 ```
 
 The check runs with `sh -c` in the worktree the issue was claimed in, or the primary
-project root when the claim has no worktree, with `TRK_ISSUE`, `TRK_WORKTREE`,
-`TRK_REPO` (the primary checkout), `TRK_BRANCH`, `TRK_BASE` (the resolved base
-branch) and `TRK_VERIFY` (`[check] verify`, default empty) set. Its exit code decides:
+repository root when the claim has no worktree (the project root outside git), with
+`TRK_ISSUE`, `TRK_WORKTREE`, `TRK_REPO` (the primary checkout, unset outside git),
+`TRK_BRANCH`, `TRK_BASE` (the resolved base branch) and `TRK_VERIFY` (`[check] verify`,
+default empty) set. Its exit code decides:
 
 | Exit | Meaning | Result |
 | --- | --- | --- |
@@ -441,8 +443,12 @@ or `worktree = false`. This is a type-only setting, not an agent or harness sett
 and review seeds set it to `false`. With `true`, the worktree is
 `.trk/worktrees/<ID>` on a branch named after the issue. New issue branches start at
 the resolved `[run] base`; existing issue branches are reused, so a later session
-on the same issue finds the earlier work. With `false`, the session runs in the primary
-project root, creates neither branch nor worktree, and records no worktree path in its claim.
+on the same issue finds the earlier work. The worktree contains the whole repository;
+the session starts at the project's relative path inside it (for example,
+`<worktree>/services/api` for a project at `repo/services/api`). Claims record the
+worktree root, and checks use that root as `TRK_WORKTREE`, with the primary checkout
+root as `TRK_REPO`. With `false`, the session runs in the primary project root,
+creates neither branch nor worktree, and records no worktree path in its claim.
 `trk show --json` routing and `trk run --dry-run --json` expose the resolved `worktree` boolean.
 
 The harness is `--harness`, else the first installed harness the agent prefers (see Configuration).
