@@ -34,6 +34,8 @@ pub struct Env {
     pub actor: Option<String>,
     /// The git checkout of the working directory, if any.
     pub git: Option<GitInfo>,
+    /// The repository containing the project root, independent of the cwd.
+    pub project_git: Option<GitInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,9 +123,11 @@ fn exclude_file(dir: &Path) -> Option<PathBuf> {
     Some(common.join("info/exclude"))
 }
 
-/// Add a pattern to the repository's `.git/info/exclude` (shared by its worktrees).
+/// Exclude a root-anchored pattern relative to `dir`, shared by all worktrees.
 pub fn git_exclude(dir: &Path, pattern: &str) {
     let Some(ex) = exclude_file(dir) else { return };
+    let prefix = git(dir, &["rev-parse", "--show-prefix"]).unwrap_or_default();
+    let pattern = format!("/{prefix}{}", pattern.trim_start_matches('/'));
     let current = std::fs::read_to_string(&ex).unwrap_or_default();
     if current.lines().any(|l| l == pattern) {
         return;
@@ -133,7 +137,7 @@ pub fn git_exclude(dir: &Path, pattern: &str) {
     if !s.is_empty() && !s.ends_with('\n') {
         s.push('\n');
     }
-    s.push_str(pattern);
+    s.push_str(&pattern);
     s.push('\n');
     let _ = std::fs::write(&ex, s);
 }
@@ -153,10 +157,9 @@ pub struct Location {
 }
 
 impl Location {
-    /// `--dir` / `TRK_DIR` when given. Otherwise the nearest ancestor of the
-    /// working directory with a `.trk/trk.db`, then the primary checkout of
-    /// the working directory's git repository (a `trk run` worktree does not
-    /// contain `.trk/`), then the working directory itself.
+    /// `--dir` / `TRK_DIR` when given. Otherwise the nearest ancestor with
+    /// `.trk/trk.db` within this checkout, then the corresponding ancestors
+    /// in the primary checkout, then the primary root (or cwd outside git).
     pub fn find(g: &Global) -> Location {
         let cwd = canonical(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let git = git_info(&cwd);
@@ -171,8 +174,21 @@ impl Location {
         }
         let root = cwd
             .ancestors()
+            .take_while(|a| git.as_ref().is_none_or(|g| a.starts_with(&g.toplevel)))
             .find(|a| a.join(DIR_NAME).join(DB_NAME).is_file())
             .map(Path::to_path_buf)
+            .or_else(|| {
+                let g = git.as_ref()?;
+                if g.toplevel == g.primary {
+                    return None;
+                }
+                let mirrored = g.primary.join(cwd.strip_prefix(&g.toplevel).ok()?);
+                mirrored
+                    .ancestors()
+                    .take_while(|a| a.starts_with(&g.primary))
+                    .find(|a| a.join(DIR_NAME).join(DB_NAME).is_file())
+                    .map(Path::to_path_buf)
+            })
             .or_else(|| git.as_ref().map(|g| g.primary.clone()))
             .unwrap_or(cwd);
         Location {
@@ -218,6 +234,7 @@ impl Env {
             None => user.user.email.as_ref().map(|e| format!("human:{e}")),
         };
         Ok(Env {
+            project_git: git_info(&loc.root),
             db: loc.db(),
             root: loc.root,
             dir: loc.dir,
@@ -255,10 +272,10 @@ impl Env {
         Store::open(&self.db, self.store_opts()?)
     }
 
-    /// The project's git checkout, when its root is one: where `trk run`
+    /// The primary checkout of the project's repository: where `trk run`
     /// makes worktrees from, and `TRK_REPO` for checks.
     pub fn checkout(&self) -> Option<PathBuf> {
-        self.root.join(".git").exists().then(|| self.root.clone())
+        self.project_git.as_ref().map(|g| g.primary.clone())
     }
 
     /// `[run] base`, with repository detection for older configs.
@@ -274,7 +291,7 @@ impl Env {
     /// project: the project root or one of its worktrees.
     pub fn here(&self) -> Option<PathBuf> {
         let g = self.git.as_ref()?;
-        (g.primary == canonical(&self.root)).then(|| g.toplevel.clone())
+        (g.primary == self.project_git.as_ref()?.primary).then(|| g.toplevel.clone())
     }
 
     pub fn check_timeout(&self) -> Result<std::time::Duration> {

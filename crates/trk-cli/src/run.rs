@@ -247,10 +247,23 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let actor = format!("agent:{hname}:{uuid}");
     let mut terminal = terminal_name(&id);
     let session_dir = env.sessions_dir().join(&uuid);
-    let cwd = if routing.worktree {
-        worktree.as_ref().unwrap_or(&session_dir)
+    let cwd = if let (Some(wt), Some(project)) = (&worktree, &env.project_git) {
+        let root = std::fs::canonicalize(&env.root)?;
+        let relative = root.strip_prefix(&project.toplevel).map_err(|e| {
+            Error::new(
+                Code::Internal,
+                format!("project is outside its checkout: {e}"),
+            )
+        })?;
+        if relative.as_os_str().is_empty() {
+            wt.clone()
+        } else {
+            wt.join(relative)
+        }
+    } else if routing.worktree {
+        session_dir.clone()
     } else {
-        &env.root
+        env.root.clone()
     };
 
     let mut warnings: Vec<String> = vec![];
@@ -258,9 +271,10 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         if let (Some(co), Some(wt)) = (&checkout, &worktree) {
             // The branch is always the issue id: a later session finds the same one.
             ensure_worktree(co, wt, &id, &base)?;
+            std::fs::create_dir_all(&cwd)?;
             // Agents reach trk through MCP only; a committed skill would reach them anyway.
             for rel in [".agents/skills/trk", ".claude/skills/trk"] {
-                if wt.join(rel).exists() {
+                if cwd.join(rel).exists() {
                     let w = format!(
                         "{rel} is tracked in this repo, so the session will see the trk CLI skill"
                     );
@@ -357,9 +371,9 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         }
         std::fs::write(&p, content)?;
         if checkout.is_some()
-            && let Ok(rel) = p.strip_prefix(cwd)
+            && let Ok(rel) = p.strip_prefix(&cwd)
         {
-            crate::env::git_exclude(cwd, &format!("/{}", rel.to_string_lossy()));
+            crate::env::git_exclude(&cwd, &format!("/{}", rel.to_string_lossy()));
         }
     }
     if a.print {
