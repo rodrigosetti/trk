@@ -47,6 +47,7 @@ fn install_preserves_legacy_files_and_issue_types_even_when_forced() {
 const DEFAULT_FILES: &[&str] = &[
     ".gitignore",
     "agents/implementer.toml",
+    "agents/operator.toml",
     "agents/researcher.toml",
     "config.toml",
     "prompts/_landing.merge.md.j2",
@@ -54,9 +55,11 @@ const DEFAULT_FILES: &[&str] = &[
     "prompts/_rules.md.j2",
     "prompts/briefing.md.j2",
     "prompts/implementer.instructions.md.j2",
+    "prompts/operator.instructions.md.j2",
     "prompts/researcher.instructions.md.j2",
     "types/bug.toml",
     "types/change.toml",
+    "types/ops.toml",
     "types/research.toml",
 ];
 
@@ -92,6 +95,7 @@ fn install_presets_share_files_and_route_types_with_distinct_landings() {
             ("change", "implementer", true),
             ("bug", "implementer", true),
             ("research", "researcher", false),
+            ("ops", "operator", false),
         ] {
             let route: toml::Value = toml::from_str(
                 &std::fs::read_to_string(e.trk_dir().join(format!("types/{kind}.toml"))).unwrap(),
@@ -107,6 +111,18 @@ fn install_presets_share_files_and_route_types_with_distinct_landings() {
                 for expected in ["reproduc", "root cause", "regression test"] {
                     assert!(guidance.contains(expected), "{guidance}");
                 }
+            }
+            if kind == "ops" {
+                assert!(route.get("guidance").is_none());
+                let spec = e.ok(&["run", &id, "--harness", "omp", "--dry-run"]);
+                assert_eq!(spec["agent"], "operator");
+                assert_eq!(spec["routing"]["worktree"], false);
+                assert!(spec["worktree"].is_null());
+                assert_eq!(
+                    Path::new(spec["cwd"].as_str().unwrap()),
+                    e.repo().canonicalize().unwrap()
+                );
+                assert!(!e.trk_dir().join("worktrees").exists());
             }
         }
         e.ok(&["agent", "check"]);

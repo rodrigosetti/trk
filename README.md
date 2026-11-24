@@ -53,9 +53,13 @@ The `local` preset merges into the base branch with no review or approval gate;
 `[check] verify` is its sole verification gate, and empty skips verification.
 Use `trk install --preset github` for PR landing; it requires installed,
 authenticated `gh` (installation warns if missing). Both presets provide `change`
-(default) and `bug` through the implementer in worktrees, and `research` through
-the researcher without a worktree. Bug guidance requires reproducing first,
-recording the root cause, and a regression test.
+(default) and `bug` through the implementer in worktrees, `research` through
+the researcher, and `ops` through the operator, both without worktrees. Bug guidance
+requires reproducing first, recording the root cause, and a regression test.
+Ops covers running-service operations with a before/after record, notes before
+state-changing commands, and direct user approval for destructive or irreversible
+actions. Repository fixes become follow-up `change` issues; ops closes with the
+operation's outcome, without a landing recipe.
 Existing configurations and legacy types are kept; follow the
 [migration procedure](docs/install-upgrade.md#upgrading-existing-projects) to change
 the default type and landing setting manually.

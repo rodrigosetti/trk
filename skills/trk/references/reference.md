@@ -90,14 +90,22 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 
 Issue creation (including MCP `report_followup`) and setting a type require a project `.trk/types/<name>.toml` definition. Unknown or empty types return `invalid_field`: the core error's `detail.allowed` is serialized as `error.allowed`, listing accepted names, with a hint naming `.trk/types/`. The editor uses the same validation. `report_followup` advertises those names as an enum and includes each type's description in the field description. Existing issues whose type definition was removed remain listable, showable and editable without changing their type; leaving it unchanged in the editor is allowed, but explicitly setting an unknown type is refused. `trk agent check` reports an `[issues] default_type` with no matching type file.
 
-Both built-in presets install implementer/researcher agents and `change` (default),
-`bug`, and `research` types. Change and bug use implementer worktrees; research uses
-the researcher without a worktree. Bug guidance requires reproducing first, a
-root-cause note, and a regression test. Local selects merge landing with no review
-or approval gate; GitHub selects PR landing and requires authenticated `gh`
-(install warns when the command is missing). The config's unquoted `{{LANDING}}`
-install marker becomes the selected TOML-quoted landing value; `--from` uses
-`"merge"`. `--minimal` still installs no agents, types, or prompts.
+Both built-in presets install implementer/researcher/operator agents and `change`
+(default), `bug`, `research`, and `ops` types. Change and bug use implementer
+worktrees; research uses the researcher and ops uses the operator, without worktrees.
+Bug guidance requires reproducing first, a root-cause note, and a regression test.
+Ops performs running-service work with full shell access, shared tracker rules,
+no type guidance and no landing recipe. It records initial state, notes every
+state-changing command before running it, verifies and records evidence, and
+closes with the outcome. Destructive/irreversible actions require direct
+in-session approval, not trk `wait`. Repository fixes become follow-up `change`
+issues instead of edits. Its agent config has a commented cloud/observability
+MCP example; no extra servers ship enabled.
+Local selects merge landing with no review or approval gate; GitHub selects PR
+landing and requires authenticated `gh` (install warns when the command is missing).
+The config's unquoted `{{LANDING}}` install marker becomes the selected
+TOML-quoted landing value; `--from` uses `"merge"`. `--minimal` still installs no
+agents, types, or prompts.
 
 Finish sessions and back up `.trk/` before upgrading. Installing local/github adds
 missing resources without pruning, even under `--force`; existing config and

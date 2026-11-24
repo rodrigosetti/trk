@@ -1518,7 +1518,7 @@ fn agent_preview_and_run_dry_run() {
         .iter()
         .map(|agent| agent["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["implementer", "researcher"]);
+    assert_eq!(names, ["implementer", "operator", "researcher"]);
     assert!(list[0].get("default").is_none());
     let p = e.ok(&["agent", "preview", "implementer"]);
     assert!(

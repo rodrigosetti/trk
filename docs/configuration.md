@@ -67,7 +67,7 @@ for opening a GitHub pull request against that branch and waiting on its merge.
 New configs select `"merge"` with the implicit `local` preset or `"pr"` with
 `--preset github`. Existing configs are preserved: switching presets does not change
 their landing setting. Only the implementer includes the selected recipe; researchers
-receive the generic tracker rules. Local landing has no review or approval gate:
+and operators receive the generic tracker rules. Local landing has no review or approval gate:
 `[check] verify` is the sole verification gate, and an empty value skips verification
 while still merging. GitHub landing requires installed, authenticated `gh`; install
 warns if it is missing.
@@ -88,7 +88,11 @@ report the project/user origins of agents, types and templates.
 ### Type guidance
 
 Both presets install `change` (the default) and `bug`, routed to `implementer` with
-issue worktrees, and `research`, routed to `researcher` without a worktree.
+issue worktrees, `research` routed to `researcher`, and `ops` routed to `operator`,
+both without worktrees. `ops` has no guidance snippet: service-operation rules
+live in the operator instructions. The operator has full shell access through
+`builtin_tools = "default"` and a commented cloud/observability `[[mcp]]` example
+in `agents/operator.toml`; no extra MCP servers are enabled.
 The built-in `bug` guidance requires reproducing first, a root-cause note, and a
 regression test. A type can add task-specific instructions without another agent:
 

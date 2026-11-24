@@ -1,0 +1,4 @@
+name = "ops"
+description = "service operation"
+agent = "operator"
+worktree = false

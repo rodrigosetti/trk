@@ -1,0 +1,16 @@
+name        = "operator"
+description = "Performs a service operation and records the outcome with evidence"
+
+instructions = "prompts/operator.instructions.md.j2"
+briefing     = "prompts/briefing.md.j2"
+inbox        = true
+
+# Extend with project cloud or observability MCP servers, e.g.:
+# [[mcp]]
+# name    = "observability"
+# command = "observability-mcp-server"
+# args    = ["stdio"]
+# env     = { API_TOKEN = "${env:OBSERVABILITY_API_TOKEN}" }
+
+[harness]
+builtin_tools = "default"                # full shell access

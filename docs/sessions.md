@@ -34,12 +34,13 @@ creation time, then ID, matching `trk ready`. If there are no ready issues, the 
 returns an error without launching a session. `trk run --dry-run` previews the selection.
 
 The agent for a run is `--agent` (a one-off override), else the issue type's `agent` mapping.
-The seed types are `code-change` → `implementer`, `research` → `researcher`, and `review` → `reviewer`.
-Use `trk create ... --type review`, `trk edit <ID> --type research`, and `trk list 'type=review'`.
+The seed types are `change` (default) and `bug` → `implementer`, `research` →
+`researcher`, and `ops` → `operator`.
+Use `trk create ... --type ops`, `trk edit <ID> --type research`, and `trk list 'type=ops'`.
 Each `.trk/types/<name>.toml` may set `worktree = true` (the default when omitted)
 or `worktree = false`. This is a type-only setting, not an agent or harness setting;
-`--agent` does not override it. `code-change` keeps the default, while the research
-and review seeds set it to `false`. With `true`, the worktree is
+`--agent` does not override it. `change` and `bug` use worktrees, while the research
+and ops seeds set it to `false`. With `true`, the worktree is
 `.trk/worktrees/<ID>` on a branch named after the issue. New issue branches start at
 the resolved `[run] base`; existing issue branches are reused, so a later session
 on the same issue finds the earlier work. The worktree contains the whole repository;
@@ -49,6 +50,15 @@ worktree root, and checks use that root as `TRK_WORKTREE`, with the primary chec
 root as `TRK_REPO`. With `false`, the session runs in the primary project root,
 creates neither branch nor worktree, and records no worktree path in its claim.
 `trk show --json` routing and `trk run --dry-run --json` expose the resolved `worktree` boolean.
+
+The operator performs work on a running service (deploy, rollback, migration,
+credential rotation or incident investigation), not a repository change to land.
+It records the initial state, notes every state-changing command before execution,
+and verifies and records the result. Before destructive or irreversible work it
+asks the user in the session and proceeds only on their authorizing answer; this
+approval does not use trk `wait`. Repository code/config fixes are filed as
+follow-up `change` issues instead of edited. The operator closes with the outcome
+and evidence; its instructions include shared tracker rules but no landing recipe.
 
 The harness is `--harness`, else the first installed harness the agent prefers (see Configuration).
 The seed config prefers `omp` running `openai-codex/gpt-6-luna`.

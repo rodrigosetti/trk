@@ -15,8 +15,9 @@ They do not introduce different state machines or custom issue fields.
 - Keep the model small: four states, one blocker relationship, attributed claims.
 - Keep project state local and configuration portable, without registering projects.
 - Preserve the history of decisions and handoffs as append-only events.
-- Treat completion as landed work: awaiting merge, review or a decision is waiting,
-  not done. Waiting still blocks dependent work.
+- Treat completion as delivered work: landed repository changes, an answered research
+  question, or a verified service operation with a record. Awaiting merge, review
+  or a decision is waiting, not done. Waiting still blocks dependent work.
 - Return failed checks as actionable work, with evidence, rather than silently retrying
   errors forever.
 - Share domain rules across CLI, MCP and the check runner through `trk-core`.
@@ -39,6 +40,21 @@ type file as `types/<name>.toml#guidance` and records included templates. Agent 
 validates every routed type with a sample issue in addition to its representative
 agent context; preview and run dry-run expose the rendered result and sources.
 See [type guidance](configuration.md#type-guidance) for configuration examples.
+
+Both install presets (`local` and `github`) seed `change` and `bug` through
+`implementer` in issue worktrees, `research` through `researcher` without a
+worktree, and `ops` through `operator` without a worktree or type guidance.
+Operations cover deploys, rollbacks, migrations, credential rotation and incident
+investigation on running services. The operator has default built-in tools
+(full shell), shared tracker rules and no landing recipe. Projects can add cloud
+or observability MCP servers; none are enabled in the seed.
+
+The operations contract lives in the operator instructions: establish and note
+current state, note each state-changing command before running it, then verify
+and note evidence. Destructive or irreversible actions require asking the user
+in the session and proceeding only on their authorizing answer, not a trk `wait`.
+Repository code/config fixes become follow-up `change` issues rather than edits.
+The deliverable is the operation plus its record; `close` records the outcome.
 
 ## Issues, readiness and blockers
 

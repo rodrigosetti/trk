@@ -185,7 +185,7 @@ fn landing_selection_only_changes_implementer_instructions() {
                 diagnostics.iter().all(|d| d.level != Level::Error),
                 "{diagnostics:#?}"
             );
-            let agents: &[&str] = &["implementer", "researcher"];
+            let agents: &[&str] = &["implementer", "operator", "researcher"];
             for &name in agents {
                 let agent = load_agent(&seed, name).unwrap();
                 let tools = agent_tools(&agent, &config);

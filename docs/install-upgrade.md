@@ -48,11 +48,18 @@ The built-in `seed/` directory is embedded recursively at build time, so adding 
 a seed file is picked up by the next build without maintaining a file list. Common files
 (`config.toml`, `prompts/_rules.md.j2`, and `prompts/briefing.md.j2`) live at the seed root;
 `default_type.txt` supplies the built-in fallback but is not installed.
-Both presets install the same implementer and researcher agents and the `change`,
-`bug`, and `research` types, plus their shared instruction prompts and both landing
-recipes. `change` is the default and uses an implementer worktree; `bug` uses the
-same agent/worktree with guidance to reproduce first, record the root cause in a
-note, and add a regression test. `research` uses the researcher without a worktree.
+Both presets install the same implementer, researcher and operator agents and the
+`change`, `bug`, `research` and `ops` types, plus their shared instruction prompts
+and both landing recipes. `change` is the default and uses an implementer
+worktree; `bug` uses the same agent/worktree with guidance to reproduce first,
+record the root cause in a note, and add a regression test. `research` uses the
+researcher without a worktree. `ops` uses the operator without a worktree for
+running-service operations; it has no type guidance or landing recipe. Its
+instructions require before/after evidence, notes before state-changing commands,
+and direct in-session approval for destructive or irreversible actions, not `wait`.
+Repository fixes become follow-up `change` issues. The operator has full shell
+access and a commented MCP example for project cloud/observability extensions,
+with none enabled by default. It closes with the operation's outcome and record.
 The installer also supplies the built-in `.gitignore`.
 Preset `landing.txt` metadata selects `merge` for `local` or `pr` for `github` and
 is not installed. A preset's files replace common files at matching paths.

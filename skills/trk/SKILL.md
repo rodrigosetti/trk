@@ -51,7 +51,7 @@ not filtered. If no launcher is usable, install one, edit `[launcher] use`, or u
 
 Built-in installs use `--preset local` implicitly; `--preset github` selects PR
 landing and requires installed, authenticated `gh` (install warns when missing).
-Both install implementer/researcher agents and change/bug/research types.
+Both install implementer/researcher/operator agents and change/bug/research/ops types.
 Local landing has no review or approval gate: `[check] verify` is the sole
 verification gate, and empty skips verification, not merging. `--minimal` remains
 a shared-config install without agents, types, or prompts.
@@ -85,7 +85,12 @@ trk create "Enable leases in prod" --json --blocked-by orch-4kq
 trk create "Investigate lease behavior" --json --type research --blocks orch-9xa
 ```
 
-`--blocked-by ID` and `--blocks ID` add blocker edges at creation. Built-in types route `change` (default) and `bug` to `implementer` in issue worktrees, and `research` to `researcher` without a worktree. Bug guidance requires reproducing first, recording the root cause in a note, and adding a regression test. Change a type with `trk edit <ID> --type research --json`; query with `trk list 'type=bug' --json`. Types do not change lifecycle rules.
+`--blocked-by ID` and `--blocks ID` add blocker edges at creation. Built-in types route:
+- `change` (default) and `bug` → `implementer` in issue worktrees. Bug guidance requires reproducing first, recording the root cause in a note, and adding a regression test.
+- `research` → `researcher` without a worktree.
+- `ops` → `operator` without a worktree: deploys, rollbacks, migrations, credential rotation and incident investigation on running services. No type guidance or landing recipe; the operator instructions require initial-state notes, notes before every state-changing command, and verification evidence afterwards. Destructive or irreversible actions require asking the user in the session and proceeding only on their authorizing answer, not trk `wait`. Repository fixes become follow-up `change` issues, not edits. The deliverable is the operation plus its record; close with the outcome.
+
+Change a type with `trk edit <ID> --type research --json`; query with `trk list 'type=ops' --json`. Types do not change lifecycle rules.
 
 Create and type edits accept only names defined in the project's `.trk/types/*.toml`. Unknown types return `invalid_field` with allowed names in `allowed` and a hint pointing to `.trk/types/`; do not guess a type. The editor and MCP `report_followup` enforce the same rule; the MCP schema lists the project types and their descriptions. Removing a definition does not prevent listing, showing or editing other fields of existing issues. `trk agent check` reports a configured `default_type` without a matching definition.
 
