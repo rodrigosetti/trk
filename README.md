@@ -519,13 +519,16 @@ through the normal lease sweep. Terminal liveness does not prevent expiry.
 
 ### Launcher profiles
 
-`[launcher] use = ["herdr", "hc"]` tries named profiles in order and selects the first
-available one. The seed includes `[launcher.herdr]`, `[launcher.hc]` and
-`[launcher.tmux]`; set `use = ["tmux"]` to use tmux. An `available` argv must succeed;
+`[launcher] use` tries named profiles in order and selects the first available one.
+When writing a built-in config, `trk install` probes Herdr's UI, `hc ls` and
+`tmux -V`, then keeps available profiles in that order, including tmux automatically.
+All three profile definitions remain in the config. An `available` argv must succeed;
 without it a profile is usable (the Herdr driver probes its UI). No available profile
-is an error before claiming or starting a session. The selected name is recorded on
-the claim, and attach/focus, send, resume, checks and GC keep using that profile even
-after `use` changes. Keep profiles needed by historical sessions in the config.
+is an error before claiming or starting a session; the hint lists profiles tried and
+suggests installing a launcher, editing `[launcher] use`, or `trk run --fg`.
+The selected name is recorded on the claim, and attach/focus, send, resume, checks and
+GC keep using that profile even after `use` changes. Keep profiles needed by historical
+sessions in the config.
 
 Profiles accept optional `available`, `start`, `attach`, `send`, `exists`, `focus`,
 `close` and `rename` argv arrays. Missing operations are skipped. Entries remain
@@ -551,7 +554,7 @@ with the issue title and rooted in the launch directory, leaving the launching s
 and tabs intact. JSON includes the actual terminal address and `placement` (`visible`
 or `failed`). Observation timeout warns without ending the session. An uncertain
 creation response retains the claim and never starts a duplicate session. When
-Herdr is unavailable, the seed selects `hc` before attempting a launch.
+Herdr is unavailable, selection tries the next profile in `[launcher] use`.
 
 Existing flat `[launcher] start/attach/send` configurations remain supported,
 including `herdr = true` and the `alive` alias for `exists`. Claims without a named
@@ -745,6 +748,13 @@ prefer = ["omp", "claude-code"]
 Agents inherit this list unless their own `[harness] prefer` is present. An explicit
 `prefer = []` disables the inherited ordering; `--harness` overrides selection.
 Seed agents inherit the preference from the project config rather than repeating it.
+
+New built-in configs detect commands on PATH and keep installed harnesses in this
+order: `omp`, `claude-code` (`claude`), `codex`, `opencode`, `pi`. Install reports both
+launcher and harness detection and warns if either list is empty. All harness profiles
+remain available for explicit selection. Later installs preserve existing configs and
+preferences unless `--force` is given; `--from` sources and `--minimal` shared-config
+installs do not filter preferences.
 
 Agents can choose models and add arguments without duplicating harness profiles:
 
