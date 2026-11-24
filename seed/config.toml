@@ -57,6 +57,11 @@ send       = ["hc", "send", "{name}", "{text}"]
 # alive = ["tmux", "has-session", "-t", "{name}"]
 # Seconds to wait before sending the briefing to harnesses that take it by `send`.
 send_delay = 5
+# Total attempts for all sends (briefing, trk send, resume, check wakes/notifications).
+# 0 means a single attempt.
+send_retries = 10
+# Seconds between failed send attempts; separate from the initial send_delay.
+send_retry_delay = 3
 
 # Harness profiles use MiniJinja in command, args, env values, file paths/content
 # and optional args. Scalars: name issue actor agent harness model cwd worktree
