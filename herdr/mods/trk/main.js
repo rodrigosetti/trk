@@ -728,10 +728,10 @@ export default class Trk extends View {
         .child(div().flex_1().min_w(0).whitespace_normal().text_color(this.status?.level === "error" ? t.blocked : t.muted).child(this.busy ? `${this.busy}…` : this.status.text))
       : null;
 
-    // Native pane sizes belong to this stable group, not the selected issue.
+    // Unsized panes share the initial width equally; this stable group keeps user resizing.
     const body = this.wide && this.open && selected
       ? h_resizable("trk-list-details").w_full().flex_1().min_h(0)
-        .child(resizable_panel().size(380).size_range(280)
+        .child(resizable_panel().size_range(280)
           .child(v_flex().w_full().h_full().min_w(0).min_h(0).child(list)))
         .child(resizable_panel().size_range(300)
           .child(v_flex().id("trk-detail").w_full().h_full().min_w(0).min_h(0).p(10).overflow_y_scrollbar()
