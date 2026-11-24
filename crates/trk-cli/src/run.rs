@@ -47,22 +47,6 @@ pub struct RunArgs {
     pub dry_run: bool,
 }
 
-/// Terminal names: 1-32 of a-z 0-9 - _.
-fn terminal_name(id: &str) -> String {
-    let s: String = format!("trk-{id}")
-        .to_ascii_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    s.chars().take(32).collect()
-}
-
 fn ensure_worktree(checkout: &Path, path: &Path, branch: &str, base: &str) -> Result<()> {
     if path.join(".git").exists() {
         return Ok(());
@@ -192,7 +176,19 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     // 3. Actor.
     let uuid = uuid::Uuid::new_v4().to_string();
     let actor = format!("agent:{hname}:{uuid}");
-    let mut terminal = terminal_name(&id);
+    let project = env.root.file_name().unwrap_or_default().to_string_lossy();
+    let default_naming = Launcher::default();
+    let naming = selected
+        .as_ref()
+        .map(|(launcher, _)| launcher)
+        .unwrap_or(&default_naming);
+    let mut terminal = naming.terminal_name(&[
+        ("id", &id),
+        ("prefix", &env.user.issues.prefix),
+        ("project", &project),
+        ("agent", &agent_name),
+        ("type", &routing.issue_type),
+    ]);
     let session_dir = env.sessions_dir().join(&uuid);
     let cwd = if let (Some(wt), Some(project)) = (&worktree, &env.project_git) {
         let root = std::fs::canonicalize(&env.root)?;
@@ -220,8 +216,13 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             ensure_worktree(co, wt, &id, &base)?;
             std::fs::create_dir_all(&cwd)?;
             // Agents reach trk through MCP only; a committed skill would reach them anyway.
-            for rel in [".agents/skills/trk", ".claude/skills/trk"] {
-                if cwd.join(rel).exists() {
+            let settings = crate::skill::settings(&env.root, env.user.skill.as_ref());
+            for rel in crate::skill::paths(&settings) {
+                let full = env.root.join(rel);
+                if let Ok(relative) = full.strip_prefix(&env.root)
+                    && git(&cwd, &["ls-files", "--", &relative.to_string_lossy()])
+                        .is_some_and(|s| !s.is_empty())
+                {
                     let w = format!(
                         "{rel} is tracked in this repo, so the session will see the trk CLI skill"
                     );

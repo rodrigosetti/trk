@@ -455,3 +455,30 @@ fn dry_run_reports_only_templates_loaded_by_the_selected_harness_folding_mode() 
     );
     assert!(folded["templates"].get("prompts/separate.md.j2").is_none());
 }
+
+#[test]
+fn minimal_install_inherits_skill_settings_but_normal_install_pins_them() {
+    let e = Env::with_install(true);
+    let repo = e.repo().canonicalize().unwrap();
+    let config_path = e.trk_dir().join("config.toml");
+    for path in ["shared/skills/first", "shared/skills/second"] {
+        write_file(
+            &e.user_dir(),
+            "config.toml",
+            &format!("[skill]\npath = \"{path}\"\nlinks = []\n"),
+        );
+        let installed = e.ok(&["install", "--minimal"]);
+        assert_eq!(installed["skill"]["path"], json!(repo.join(path)));
+        assert_eq!(e.ok(&["whoami"])["skill"], "current");
+        let project: toml::Table =
+            toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert!(!project.contains_key("skill"));
+    }
+
+    e.ok(&["install", "--force"]);
+    let project: toml::Table =
+        toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    assert_eq!(project["skill"]["path"].as_str(), Some("shared/skills/second"));
+    std::fs::remove_dir_all(e.user_dir()).unwrap();
+    assert_eq!(e.ok(&["whoami"])["skill"], "current");
+}

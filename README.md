@@ -516,6 +516,15 @@ empty stdout retains it. Stderr is diagnostics, never a session address.
 The tmux seed requests a stable session ID so rename does not break later operations.
 Retry settings on `[launcher]` apply to profiles unless overridden there.
 
+Each profile can set `name = "trk-{id}"`, `name_max = 32` and
+`name_chars = "a-z0-9_-"` (the defaults). Templates accept `{id}` (full issue ID),
+`{prefix}`, `{project}` (project-root directory name), `{agent}` and `{type}`.
+Use, for example, `name = "{project}-{id}"` to distinguish projects sharing a prefix.
+Names are ASCII-lowercased, characters outside `name_chars` become `-`, and the
+result is limited to `name_max` characters. Character sets accept inclusive ranges
+and literal characters; a trailing `-` is literal. Changing naming rules does not
+rename existing sessions: later operations use the address recorded on the claim.
+
 `driver = "herdr"` supplies Herdr's start, exists, focus, close and rename defaults;
 the seed's attach and send still use `hc`. Each run opens a **new Herdr space** named
 with the issue title and rooted in the launch directory, leaving the launching space
@@ -534,6 +543,25 @@ profile continue using that flat configuration, not the current `use` order.
 binary) that teaches your interactive agent sessions to use the trk CLI: `.agents/skills/trk`
 (omp, Codex), linked from `.claude/skills/trk` when Claude Code is in use. `trk whoami` reports
 whether the installed copy matches the binary; run `trk install` again to refresh it.
+
+Configure its locations in `.trk/config.toml`:
+
+```toml
+[skill]
+path = ".agents/skills/trk"       # "" disables skill installation
+links = [".claude/skills/trk"]    # [] disables symlink creation
+```
+
+Paths are relative to the project root (absolute paths also work). Any number of links
+can point to the installed directory. Installation, git excludes, tracked-path warnings,
+and `whoami` follow this section; a disabled skill reports `"disabled"` and adds no excludes
+or warnings. Changing the section does not remove previously installed files, links, or excludes.
+Install JSON reports symlinks in `skill.links` as `{path, linked}` entries.
+
+When the section is absent, older configs use the original locations and detect Claude Code
+from `~/.claude` or `<project>/.claude`. `trk install` writes these detected defaults once;
+later installs follow the saved config, without detecting harnesses again. This also applies
+to custom `--from` sources without a `[skill]` section.
 
 Sessions started by `trk run` should reach trk only through their MCP server (see SPEC.md). That is
 why the skill is kept out of git with `.git/info/exclude`: the worktrees `trk run` creates do not
@@ -631,6 +659,8 @@ but do not supply agent/type/template files or harness profiles.
 Compatibility defaults also apply to `[launcher] send_retries`, `send_retry_delay`,
 `[issues] default_type`, `[check] max_wakes`, `gc`, `gc_grace`, and `[run] landing` (default `"merge"`).
 Launcher operations are optional.
+Normal installs also pin legacy `[skill]` detection (see Agent skill); minimal installs
+leave absent skill settings inherited from the user layer or compatibility defaults.
 `[issues] prefix` names new issues (`<prefix>-<base32>`); normal installation writes the
 directory name, or `trk install --prefix NAME`. Changing it later only affects new issues.
 `[issues] default_type` selects the type for CLI and editor creation and MCP follow-ups

@@ -63,6 +63,9 @@ pub struct UserConfig {
     pub claims: ClaimsSection,
     pub check: CheckSection,
     pub run: RunSection,
+    /// Absent in older configs: the CLI detects the legacy skill locations.
+    #[serde(default)]
+    pub skill: Option<SkillSection>,
     /// Launcher templates; parsed by trk-cli.
     #[serde(default)]
     pub launcher: Option<toml::Value>,
@@ -76,6 +79,13 @@ pub struct UserConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct UserSection {
     pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SkillSection {
+    /// Relative to the project root, or absolute. Empty disables installation.
+    pub path: String,
+    pub links: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

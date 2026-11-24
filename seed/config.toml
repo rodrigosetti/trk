@@ -69,6 +69,15 @@ attach = ["hc", "attach", "{name}"]
 send = ["hc", "send", "{name}", "{text}"]
 
 [launcher.hc]
+# Generated names are ASCII-lowercased. Template values: {id} (full issue id),
+# {prefix} (project id prefix), {project} (project-root directory name),
+# {agent} (resolved agent name), {type} (issue type).
+# Count characters, not bytes; name_chars accepts inclusive ranges and literals
+# (a trailing '-' is literal). Characters outside the set become '-'.
+# These are the defaults for every profile; include {project} to separate projects.
+name = "trk-{id}"
+name_max = 32
+name_chars = "a-z0-9_-"
 available = ["hc", "ls"]
 start = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
 attach = ["hc", "attach", "{name}"]
