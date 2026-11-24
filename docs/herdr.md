@@ -49,9 +49,10 @@ trk herdr uninstall              # remove the mod and layouts unless you edited 
 - Select an issue for its description, notes and timeline, and to go to or peek at its session,
   run it, send text, resume, check now, add notes, change priority, unclaim, reopen or close.
   Destructive buttons ask for a second click. Edit opens `trk edit` in a pane below.
-  At widths of 720px or more, drag the divider between the list and details to resize them;
-  each scrolls independently. Herdr keeps the split across repaints, issue selection, and
-  hiding/reopening details in that window. Below 720px, details appear inline below the selected row.
+  At widths of 720px or more, the list and details start at an equal 50/50 split;
+  drag the divider to resize them. Each scrolls independently. Herdr keeps the split
+  across repaints, issue selection, and hiding/reopening details in that window.
+  Below 720px, details appear inline below the selected row.
   **Hide details** (or `Esc`) closes the details pane so the issue list fills the panel.
   Click an issue or press `Enter` to reopen details; `j`/`k` keep them hidden while browsing.
 - Click an issue ID in the list or detail header to copy it to the clipboard. The status line
