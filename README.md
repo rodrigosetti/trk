@@ -50,7 +50,11 @@ and [live verification notes](docs/development.md#notes-on-the-implementation).
 
 ## Reference
 
+Read the [published manual](https://rodrigosetti.github.io/trk/) for the complete guide,
+or browse the chapter sources below.
+
 - [Issues and CLI basics](docs/issues.md)
+- [Queries and saved views](docs/queries.md)
 - [Installation and upgrades](docs/install-upgrade.md)
 - [Waiting, checks, and human-authorized resume](docs/waiting-and-checks.md)
 - [Sessions and the agent skill](docs/sessions.md)
@@ -59,6 +63,8 @@ and [live verification notes](docs/development.md#notes-on-the-implementation).
 - [Herdr dashboard](docs/herdr.md)
 - [Cleanup](docs/cleanup.md)
 - [Development and implementation notes](docs/development.md)
-- [Design specification](SPEC.md)
+- [Design and state machine](docs/design.md)
+- [MCP tool contract](docs/mcp.md)
+- [JSON API and errors](docs/json.md)
 
 Licensed under the [MIT License](LICENSE).

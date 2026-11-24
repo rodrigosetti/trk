@@ -1,3 +1,5 @@
+# Development
+
 For development: `cargo build`, `cargo test --workspace --locked`, and `cargo lint`.
 `cargo lint` runs `cargo clippy --workspace --all-targets -- -D warnings`, rejecting
 compiler and Clippy warnings in every workspace target, including tests and examples.
@@ -48,3 +50,25 @@ Node.js 24 for `node --experimental-vm-modules --test herdr/mods/trk/main.test.m
   is gone on this machine is replaced; a holder on another host is never replaced automatically.
 - **`TRK_NOW`** fixes the clock, for tests.
 
+## Building the manual
+
+The [manual](https://rodrigosetti.github.io/trk/) is built with
+[mdBook](https://rust-lang.github.io/mdBook/). Install the version pinned in
+`.github/workflows/pages.yml`, then build or preview from the repository root:
+
+```sh
+cargo install mdbook --version 0.5.4 --locked
+mdbook build
+mdbook serve --open
+```
+
+`book.toml` uses `docs/` as its source and `docs/SUMMARY.md` as its navigation.
+Add new chapters to the summary; generated HTML goes in the ignored `book/`
+directory. Use relative links between chapters and absolute GitHub URLs for
+repository files outside `docs/`, so links work both in source and on Pages.
+
+The **Manual** workflow builds pull requests, pushes to `main`, and manual runs.
+Only builds on `main` deploy, using the `github-pages` environment. A repository
+administrator must enable **Settings → Pages → Build and deployment → Source:
+GitHub Actions** before the first deployment. No deployment branch or token
+secret is required; the deploy job uses the workflow's Pages and OIDC permissions.

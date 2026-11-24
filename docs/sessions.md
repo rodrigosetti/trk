@@ -96,7 +96,7 @@ through the normal lease sweep. Terminal liveness does not prevent expiry.
 
 ## Agent skill
 
-`trk install` also installs a skill (from [`skills/trk/`](../skills/trk/SKILL.md), embedded in the
+`trk install` also installs a skill (from [`skills/trk/`](https://github.com/rodrigosetti/trk/blob/main/skills/trk/SKILL.md), embedded in the
 binary) that teaches your interactive agent sessions to use the trk CLI at `.agents/skills/trk`.
 Configure links for other harnesses explicitly. `trk whoami` reports whether the installed
 copy matches the binary; run `trk install` again to refresh it.
@@ -115,7 +115,7 @@ and `whoami` follow this section; a disabled skill reports `"disabled"` and adds
 or warnings. Changing the section does not remove previously installed files, links, or excludes.
 Install JSON reports symlinks in `skill.links` as `{path, linked}` entries.
 
-Sessions started by `trk run` should reach trk only through their MCP server (see SPEC.md). That is
+Sessions started by `trk run` should reach trk only through their [MCP server](mcp.md). That is
 why the skill is kept out of git with `.git/info/exclude`: the worktrees `trk run` creates do not
 contain it, so those sessions do not see it. `trk install` and `trk run` warn when a repository
 tracks the skill anyway; the omp profile also hides it with a per-session `--config` overlay

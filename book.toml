@@ -1,0 +1,15 @@
+[book]
+title = "trk manual"
+description = "A local issue tracker and coding-agent launcher: installation, workflows, and reference."
+authors = ["Rodrigo Setti"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+site-url = "/trk/"
+git-repository-url = "https://github.com/rodrigosetti/trk"
+edit-url-template = "https://github.com/rodrigosetti/trk/edit/main/{path}"

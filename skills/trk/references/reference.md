@@ -29,7 +29,7 @@ trk list 'text~"feature flag"' --json
 
 Options: `--fields id,state,title` picks the JSON keys, `--sort -updated` sorts (a leading `-` is descending), `--limit N`, and `--format jsonl` prints one object per line. `@name` runs a saved view from `.trk/config.toml` (`@mine`, `@agents`, `@open`, `@waiting`).
 
-Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `closed`, `claimed-by`, `lease`, `next-check`. Without `--sort`, `trk ready` orders by priority then oldest first; `trk list` by most recently updated.
+Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `closed`, `claimed-by`, `lease`, `next-check`. Without `--sort` or a saved view's sort, both `trk list` and `trk ready` order by priority, then creation time, then ID.
 
 ## The issue object
 

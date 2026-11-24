@@ -2,7 +2,7 @@
 
 A local issue tracker and agent launcher in one Rust binary. Each project has its own SQLite
 database in `.trk/`; humans use the CLI, agents work through a per-issue MCP server, and `trk run [ID]` starts
-an agent session on one issue through a named launcher profile (Herdr, `hc`, or tmux). See [SPEC.md](../SPEC.md) for the design.
+an agent session on one issue through a named launcher profile (Herdr, `hc`, or tmux). See [Design and state machine](design.md) for the model.
 
 An issue has a title, a description, notes, a priority, a required type (from `[issues] default_type`, initially `code-change`), and one of four states:
 

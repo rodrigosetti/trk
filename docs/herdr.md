@@ -1,7 +1,7 @@
 ## Herdr panel
 
 In the [Herdr](https://herdr.dev) app, the dashboard is also a native panel: a Herdr mod (from
-[`herdr/mods/trk/`](../herdr/mods/trk/main.js), embedded in the binary). It reads
+[`herdr/mods/trk/`](https://github.com/rodrigosetti/trk/blob/main/herdr/mods/trk/main.js), embedded in the binary). It reads
 `trk dashboard --json`, the snapshot the terminal dashboard draws, and every button runs `trk`
 itself, so both behave the same. Herdr labels the mod and new dashboard tabs `trk dashboard`.
 The panel header shows the project name without a `trk` prefix.
