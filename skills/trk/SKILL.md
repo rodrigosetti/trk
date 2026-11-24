@@ -41,6 +41,14 @@ trk log <ID> --json                       # every change and note, attributed
 
 `not_installed` means trk has not been set up in this project. Ask the user before running `trk install` in the project's root: it creates `.trk/` (the database and config, ignored by git) and installs this skill. Each project has its own database; there is no view across projects.
 
+New built-in configs detect launchers in order (Herdr, `hc`, tmux) and harness commands
+in order (`omp`, `claude`, `codex`, `opencode`, `pi`; `claude` selects `claude-code`).
+Install writes only available profiles into `[launcher] use` and `[harness] prefer`,
+reports detection and warns when either list is empty. Existing configs are kept
+unless `--force` is given; custom sources and `--minimal` shared-config installs are
+not filtered. If no launcher is usable, install one, edit `[launcher] use`, or use
+`trk run --fg` in the current terminal.
+
 ## Create
 
 Only the title is required. Write a description that lets someone start cold: what is needed, why, and how to tell it is done.

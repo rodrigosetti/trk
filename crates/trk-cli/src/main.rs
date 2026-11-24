@@ -1017,6 +1017,49 @@ fn read_install_files(root: &Path, dir: &Path, files: &mut InstallFiles) -> Resu
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct DetectedProfiles {
+    launchers: Vec<String>,
+    harnesses: Vec<String>,
+}
+
+/// Filter the built-in seed without reserializing its comments and templates.
+fn detect_seed_profiles(config: &mut String) -> DetectedProfiles {
+    let source: toml::Table = toml::from_str(config).expect("rendered seed is valid TOML");
+    let mut detected = DetectedProfiles {
+        launchers: Vec::new(),
+        harnesses: Vec::new(),
+    };
+    for (section, key, found) in [
+        ("launcher", "use", &mut detected.launchers),
+        ("harness", "prefer", &mut detected.harnesses),
+    ] {
+        let candidates = &source[section][key];
+        for name in candidates.as_array().expect("seed preference is an array") {
+            let name = name.as_str().expect("seed profile name is a string");
+            let profile = &source[section][name];
+            let available = if section == "launcher" {
+                let profile: launcher::Launcher =
+                    profile.clone().try_into().expect("valid seeded launcher");
+                profile.is_available()
+            } else {
+                trk_agent::harness::installed(
+                    profile["command"].as_str().expect("seed harness command"),
+                )
+            };
+            if available {
+                found.push(name.to_owned());
+            }
+        }
+        let value = toml::Value::Array(found.iter().cloned().map(toml::Value::String).collect());
+        *config = config.replace(
+            &format!("{key} = {candidates}"),
+            &format!("{key} = {value}"),
+        );
+    }
+    detected
+}
+
 /// Install the selected source and database, and refresh the agent skill and
 /// installed Herdr mod. Existing config files are kept unless `force`.
 fn install(
@@ -1074,26 +1117,28 @@ fn install(
         .map(String::from)
         .or_else(|| env::git(&root, &["config", "user.email"]).filter(|e| !e.is_empty()));
     let prefix = prefix.unwrap_or_else(|| default_prefix(&root));
+    let mut detected = None;
     if let Some(content) = files.get_mut(Path::new("config.toml")) {
         let template = std::str::from_utf8(content)
             .map_err(|e| bad_args(format!("install source config.toml is not UTF-8: {e}")))?;
-        *content = Cow::Owned(
-            template
-                .replace(
-                    "{{EMAIL_LINE}}",
-                    &match &email {
-                        Some(e) => format!("email = {}", toml::Value::String(e.clone())),
-                        None => "# email = \"you@example.com\"".to_string(),
-                    },
-                )
-                .replace("{{PREFIX}}", &prefix)
-                .replace("{{DEFAULT_TYPE}}", seed::DEFAULT_TYPE)
-                .replace(
-                    "{{BASE}}",
-                    &toml::Value::String(env::detect_base(&root)).to_string(),
-                )
-                .into_bytes(),
-        );
+        let mut rendered = template
+            .replace(
+                "{{EMAIL_LINE}}",
+                &match &email {
+                    Some(e) => format!("email = {}", toml::Value::String(e.clone())),
+                    None => "# email = \"you@example.com\"".to_string(),
+                },
+            )
+            .replace("{{PREFIX}}", &prefix)
+            .replace("{{DEFAULT_TYPE}}", seed::DEFAULT_TYPE)
+            .replace(
+                "{{BASE}}",
+                &toml::Value::String(env::detect_base(&root)).to_string(),
+            );
+        if !minimal && from.is_none() && (!config_path.exists() || force) {
+            detected = Some(detect_seed_profiles(&mut rendered));
+        }
+        *content = Cow::Owned(rendered.into_bytes());
     }
     let mut written = vec![];
     let mut kept = vec![];
@@ -1113,7 +1158,18 @@ fn install(
                             .and_then(|s| toml::from_str::<toml::Table>(s).ok())
                     };
                     match (parse(&installed), parse(&content)) {
-                        (Some(installed), Some(source)) => {
+                        (Some(mut installed), Some(mut source)) => {
+                            if from.is_none() {
+                                // Install-time preferences are machine-specific, not profile drift.
+                                for config in [&mut installed, &mut source] {
+                                    if let Some(harness) = config
+                                        .get_mut("harness")
+                                        .and_then(toml::Value::as_table_mut)
+                                    {
+                                        harness.remove("prefer");
+                                    }
+                                }
+                            }
                             installed.get("harness") != source.get("harness")
                         }
                         _ => true,
@@ -1156,6 +1212,21 @@ fn install(
     if let Some((line, _)) = &herdr {
         text.push_str(&format!("\nherdr     {line}"));
     }
+    if let Some(detected) = &detected {
+        for (label, names) in [
+            ("launchers", &detected.launchers),
+            ("harnesses", &detected.harnesses),
+        ] {
+            text.push_str(&format!(
+                "\n{label:10}{}",
+                if names.is_empty() {
+                    "none detected".to_owned()
+                } else {
+                    names.join(" > ")
+                }
+            ));
+        }
+    }
     if !differ.is_empty() {
         text.push_str(&format!(
             "\n\nKept files that differ from the selected install source (your edits, or newer defaults):\n  {}",
@@ -1163,6 +1234,18 @@ fn install(
         ));
     }
     let mut warnings = skill.warnings.clone();
+    if let Some(detected) = &detected {
+        if detected.launchers.is_empty() {
+            warnings.push(
+                "no launcher detected: install Herdr, hc, or tmux and edit [launcher] use in config.toml, or run `trk run --fg`".to_owned(),
+            );
+        }
+        if detected.harnesses.is_empty() {
+            warnings.push(
+                "no harness detected: install omp, claude, codex, opencode, or pi and edit [harness] prefer in config.toml".to_owned(),
+            );
+        }
+    }
     if env.actor.is_none() {
         warnings.push(format!(
             "no email found: set [user] email in {}",
@@ -1179,7 +1262,7 @@ fn install(
         text,
         json!({"root": root, "dir": dir, "db": env.db, "db_created": created,
                "prefix": env.user.issues.prefix, "written": written, "kept": kept,
-               "differ": differ, "skill": skill.data,
+               "differ": differ, "detected": detected, "skill": skill.data,
                "herdr": herdr.map(|(_, data)| data), "warnings": warnings}),
     ))
 }

@@ -35,6 +35,8 @@ mod verify;
 #[path = "cli/user_config.rs"]
 mod user_config;
 
+#[path = "cli/install_detection.rs"]
+mod install_detection;
 #[path = "cli/skill.rs"]
 mod skill;
 

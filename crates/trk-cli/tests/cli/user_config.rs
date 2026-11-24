@@ -123,7 +123,6 @@ fn minimal_install_writes_only_project_settings_and_keeps_existing_files() {
     }
     let config: toml::Value =
         toml::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
-    assert_eq!(config["harness"]["prefer"].as_array().unwrap().len(), 2);
     assert!(config["harness"]["omp"].is_table());
 }
 

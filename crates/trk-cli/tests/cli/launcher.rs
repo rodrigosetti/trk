@@ -252,27 +252,44 @@ fn named_selection_skips_unavailable_profiles_and_missing_probe_is_usable() {
 fn named_selection_failure_leaves_issue_open_without_a_session() {
     let tmux = Tmux::new();
     std::fs::write(tmux.e.dir.path().join("unavailable-tmux"), "").unwrap();
-    let id = tmux
-        .e
-        .create(&["No available launcher", "--type", "review"]);
-    let out = tmux
-        .cmd()
-        .args(["--json", "run", &id, "--harness", "omp"])
-        .output()
-        .unwrap();
-    assert!(!out.status.success());
-    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(result["ok"], false);
-    assert!(
-        result["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("launcher")
+    tmux.e.set_config(
+        "[launcher.tmux]",
+        "[launcher.offline]\navailable = [\"sh\", \"-c\", \"exit 7\"]\n\n[launcher.tmux]",
     );
-    let issue = tmux.e.ok(&["show", &id]);
-    assert_eq!(issue["state"], "open");
-    assert!(issue["claim"].is_null());
-    assert_eq!(tmux.text("generated"), "");
+    for (selection, tried) in [
+        ("[\"offline\", \"tmux\"]", "profiles tried: offline, tmux"),
+        ("[]", "profiles tried: (none; [launcher] use is empty)"),
+    ] {
+        tmux.e
+            .set_config("use = [\"tmux\"]", &format!("use = {selection}"));
+        let id = tmux
+            .e
+            .create(&["No available launcher", "--type", "review"]);
+        let out = tmux
+            .cmd()
+            .args(["--json", "run", &id, "--harness", "omp"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(result["error"]["code"], "config_invalid");
+        assert!(
+            result["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no available launcher in use")
+        );
+        let hint = result["error"]["hint"].as_str().unwrap();
+        for remedy in [tried, "install", "[launcher] use", "trk run --fg"] {
+            assert!(hint.contains(remedy), "{hint}");
+        }
+        let issue = tmux.e.ok(&["show", &id]);
+        assert_eq!(issue["state"], "open");
+        assert!(issue["claim"].is_null());
+        assert_eq!(tmux.text("generated"), "");
+        tmux.e
+            .set_config(&format!("use = {selection}"), "use = [\"tmux\"]");
+    }
 }
 
 #[test]

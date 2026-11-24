@@ -88,6 +88,14 @@ detection at runtime; an explicit value wins. New issue branches start at that b
 existing issue branches are reused. Waiting checks receive `TRK_BASE` and prompt
 templates can use `{{ base }}`. Quote `"$TRK_BASE"` in shell checks.
 
+Built-in installs detect available launchers (Herdr UI, `hc ls`, `tmux -V`) in that
+order, and harness commands on PATH (`omp`, `claude`, `codex`, `opencode`, `pi`) in that
+order. They write `[launcher] use` and `[harness] prefer` accordingly (`claude` maps
+to `claude-code`), report detection and warn for empty lists. All profile definitions
+remain. Existing configs are not rewritten unless `--force` is given; `--from` and
+`--minimal` do not filter preferences. A launcher selection error lists profiles
+tried; install a launcher, edit `[launcher] use`, or run `trk run --fg`.
+
 `[check] verify` is an opaque shell string, default `""` even when omitted. Checks receive it as `TRK_VERIFY`; prompt templates receive `{{ verify }}`. The seed implementer instructions name it when nonempty, otherwise require the project's tests. The local recipe merges the base into the issue worktree (aborting conflicts), runs nonempty verification there, then guards the primary checkout's branch and fast-forwards it with `git merge --ff-only "$TRK_BRANCH"`. Verification failures are normalized to exit 1, including exit 75, so they cannot retry or fall through to landing. Empty verification skips only the command. This local gate applies only when the issue type uses an issue worktree and branch; a type opting out has no issue branch to merge or test. PR checks are unchanged.
 
 Include dependency setup in the command when needed, for example `verify = "npm ci && npm test"`. Verification shares the whole check's `[check] timeout` (default 10m) and holds the serialized queue. Use a fast subset or increase the timeout for slow suites.
