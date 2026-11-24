@@ -6,6 +6,9 @@ include!(concat!(env!("OUT_DIR"), "/seed.rs"));
 
 pub const CONFIG_TOML: &str = include_str!("../../../seed/config.toml");
 
+/// Built-in fallback for projects whose config predates `[issues] default_type`.
+pub const DEFAULT_TYPE: &str = include_str!("../../../seed/default_type.txt");
+
 /// Installed ignore rules live outside the seed tree so they do not hide new
 /// seed files from Git.
 pub const GITIGNORE: &[u8] = b"# Written by `trk install`: nothing in .trk/ is tracked.\n*\n";
@@ -19,7 +22,7 @@ pub fn preset(name: &str) -> Option<BTreeMap<&'static str, &'static [u8]>> {
     let mut files: BTreeMap<_, _> = TREE
         .iter()
         .copied()
-        .filter(|(path, _)| !path.starts_with("presets/"))
+        .filter(|(path, _)| !path.starts_with("presets/") && *path != "default_type.txt")
         .collect();
     files.insert(".gitignore", GITIGNORE);
     for &(path, content) in TREE {

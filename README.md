@@ -4,7 +4,7 @@ A local issue tracker and agent launcher in one Rust binary. Each project has it
 database in `.trk/`; humans use the CLI, agents work through a per-issue MCP server, and `trk run [ID]` starts
 an agent session on one issue in a persistent terminal (`hc`). See [SPEC.md](SPEC.md) for the design.
 
-An issue has a title, a description, notes, a priority, a required type (default `code-change`), and one of four states:
+An issue has a title, a description, notes, a priority, a required type (from `[issues] default_type`, initially `code-change`), and one of four states:
 
 ```
 open → claimed → closed
@@ -48,7 +48,8 @@ trk install --from /path/to/team-seed   # use only this directory's files, recur
 The built-in `seed/` directory is embedded recursively at build time, so adding or changing
 a seed file is picked up by the next build without maintaining a file list. Common files
 (`config.toml`, `prompts/_rules.md.j2`, and `prompts/briefing.md.j2`) live at the seed root;
-the installer also supplies the built-in `.gitignore`. `seed/presets/default/` adds the
+`default_type.txt` supplies the built-in fallback but is not installed.
+The installer also supplies the built-in `.gitignore`. `seed/presets/default/` adds the
 implementer, researcher and reviewer agents,
 the code-change, research and review types, and their instruction prompts.
 `seed/presets/minimal/` adds only implementer, code-change and the implementer's instructions.
@@ -64,8 +65,8 @@ its JSON data is `{"presets":["default","minimal"]}`.
 
 Only `config.toml` substitutes install-time markers: `{{EMAIL_LINE}}` becomes the human email
 setting (or a commented example), `{{PREFIX}}` becomes `--prefix` or the detected project
-prefix, and `{{BASE}}` becomes the TOML-quoted detected base branch. Other files are copied
-unchanged, including template markers.
+prefix, `{{DEFAULT_TYPE}}` becomes the built-in default issue type, and `{{BASE}}` becomes
+the TOML-quoted detected base branch. Other files are copied unchanged, including template markers.
 
 To upgrade after changing or pulling this checkout, run `./install.sh` again, then `trk install`
 in each project, passing the same `--preset` or `--from` used for its installation. trk does
@@ -591,10 +592,14 @@ Everything trk keeps for a project is in `.trk/` at its root, written by `trk in
 
 `config.toml` is explicit: `trk install` writes the settings. Missing settings are errors
 except for optional `[launcher] alive`, compatibility defaults such as `[launcher] send_retries`,
-`send_retry_delay`, `[check] max_wakes`, `gc`, `gc_grace`, `[run] landing` (default `"merge"`),
-and the detected `[run] base`.
+`send_retry_delay`, `[issues] default_type`, `[check] max_wakes`, `gc`, `gc_grace`,
+`[run] landing` (default `"merge"`), and the detected `[run] base`.
 `[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory name,
 or `trk install --prefix NAME`. Changing it later only affects new issues.
+`[issues] default_type` selects the type for CLI and editor creation and MCP follow-ups
+when no explicit type is supplied; `trk whoami` reports it. Install writes `code-change`,
+also the fallback for older configs. Set it to your project's type name (for example,
+`default_type = "task"` with `types/task.toml`) before removing or renaming the seed type.
 
 `[run] base` selects the base branch, for example:
 

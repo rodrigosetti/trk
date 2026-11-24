@@ -39,7 +39,7 @@ Issues have routing-only types and share one state machine. An agent work cycle 
 | `description` | markdown: what is needed, why, how to tell it is done |
 | notes | an append-only log, stored as events |
 | `priority` | `P0` urgent, `P1` high, `P2` normal (default), `P3` low; orders `trk list` and `trk ready` by default |
-| `type` | required routing type; defaults to `code-change` |
+| `type` | required routing type; defaults to `[issues] default_type` (`code-change` when omitted) |
 
 Everything else on an issue is state the tool owns: `state`, `close_reason`, the waiting fields, timestamps and `created_by`.
 
@@ -316,6 +316,10 @@ and `--agent` do not override it. The `code-change` seed omits it and keeps the 
 the research and review seeds set `worktree = false`. False launches in the primary
 project root without creating or reusing an issue branch or worktree, and records no
 worktree path in the claim.
+`[issues] default_type` is written by `trk install` and supplies omitted types for CLI
+creation, editor templates and MCP follow-ups; `trk whoami` reports it. Older configs
+fall back to `code-change`. Explicit types override it. Core inserts always supply
+the type, so the legacy SQLite column default is inert.
 `trk agent check` validates agent files, templates and harness profiles.
 
 Types, agents and prompts all come from the project's `.trk/` directory, which `trk install`
