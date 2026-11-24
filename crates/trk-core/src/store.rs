@@ -28,6 +28,8 @@ pub struct StoreOpts {
     pub check_interval: jiff::SignedDuration,
     /// Maximum failed-check wakes per session; zero disables waking.
     pub max_wakes: u32,
+    /// Allow the original no-check waiting session to report a human chat reply.
+    pub chat_resume: bool,
     /// Prefix of new issue ids: `<prefix>-<base32>`.
     pub prefix: String,
     /// Type assigned to issues created without an explicit type.
@@ -44,6 +46,7 @@ impl Default for StoreOpts {
             agent_lease: jiff::SignedDuration::from_mins(30),
             check_interval: jiff::SignedDuration::from_mins(5),
             max_wakes: 5,
+            chat_resume: true,
             prefix: "trk".into(),
             default_type: crate::seed::DEFAULT_TYPE.into(),
             known_types: vec![crate::seed::DEFAULT_TYPE.into()],
@@ -93,9 +96,11 @@ impl Store {
         let mut conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
+        // Table-rebuilding migrations validate foreign keys before committing.
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
         conn.busy_timeout(std::time::Duration::from_millis(5000))?;
         migrate(&mut conn, path, &migrations())?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         Ok(Store { conn, opts })
     }
 
@@ -221,6 +226,7 @@ fn migrations() -> Vec<M<'static>> {
                PRIMARY KEY (issue_id, url)
              )",
         ),
+        M::up(include_str!("resume_chat.sql")).foreign_key_check(),
     ]
 }
 
@@ -396,7 +402,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// The active claim, or the latest claim released to the current waiting issue.
-    /// A waiting session holds no claim and must not authorize lifecycle changes.
+    /// A waiting session must restore its claim before lifecycle changes.
     pub fn session_claim(&self, issue_id: &str) -> Result<Option<Claim>> {
         Ok(self
             .conn
@@ -611,6 +617,73 @@ mod tests {
         assert!(!path.exists());
         Store::install(&path, StoreOpts::default()).unwrap();
         Store::open(&path, StoreOpts::default()).unwrap();
+    }
+
+    #[test]
+    fn chat_event_migration_preserves_history_inbox_search_and_append_only_guards() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let mut conn = Connection::open(&path).unwrap();
+        let old = migrations();
+        Migrations::from_slice(&old[..old.len() - 1])
+            .to_latest(&mut conn)
+            .unwrap();
+        let mut store = Store {
+            conn,
+            opts: StoreOpts::default(),
+        };
+        let human = "human:alice@example.com";
+        let id = store
+            .write(human, false, |c| {
+                let id = c.create(NewIssue {
+                    title: "Existing issue".into(),
+                    ..Default::default()
+                })?;
+                c.note(&id, "preserved searchable reply", None, true)?;
+                Ok(id)
+            })
+            .unwrap();
+        let before = store.read(None, |c| c.events(&id)).unwrap();
+        drop(store);
+        let mut store = Store::open(&path, StoreOpts::default()).unwrap();
+        assert_eq!(store.read(None, |c| c.events(&id)).unwrap(), before);
+        let inbox = store.write(human, false, |c| c.take_inbox(&id)).unwrap();
+        assert_eq!(inbox[0]["body"], "preserved searchable reply");
+        assert_eq!(
+            store.read(None, |c| c.notes(&id)).unwrap()[0]["body"],
+            inbox[0]["body"]
+        );
+        store
+            .write(human, false, |c| {
+                c.note(&id, "new searchable reply", None, false)?;
+                Ok(())
+            })
+            .unwrap();
+        let matches: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM search WHERE search MATCH 'searchable'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(matches, 2);
+        assert!(
+            store
+                .conn
+                .execute("UPDATE event SET op = 'note'", [])
+                .is_err()
+        );
+        assert!(store.conn.execute("DELETE FROM event", []).is_err());
+        assert!(
+            store
+                .conn
+                .execute(
+                    "INSERT INTO inbox(note_seq, issue_id) VALUES (-1, ?1)",
+                    [&id],
+                )
+                .is_err()
+        );
     }
 
     #[test]

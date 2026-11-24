@@ -18,6 +18,7 @@ pub enum Action {
     HandBack,
     Close,
     Wait,
+    Resume,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +62,11 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
              if your session is gone, wake delivery fails, or the cap is reached, the issue reopens for a new session.",
             check.max_wakes
         )
+    };
+    let chat_resume = if config.wait.chat_resume {
+        "After an actual unmarked human chat reply, your own waiting session may call `resume` with that reply to restore its claim and continue."
+    } else {
+        "Chat resume is disabled by [wait] chat_resume = false; a human must close, reopen, or explicitly resume it with `trk resume`."
     };
     vec![
         tool(
@@ -149,7 +155,8 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
                  exit 0 closes the issue as done; exit {CHECK_RETRY_EXIT} means not yet, check again after `interval`; \
                  any other exit or timeout records the output as a note. {failure} \
                  It runs unattended under sh -c and may run more than once: make it non-interactive, non-blocking (no --watch) and safe to repeat. \
-                 Without `check`, the issue waits for a human to close, reopen, or explicitly resume it."
+                 Without `check`, the issue waits for a human. {chat_resume} \
+                 Chat resume never applies to checked waits; those require the check or a human using `trk resume`."
             ),
             object_schema(vec![
                 ("reason", text("What the issue is waiting for, for a human reading the queue"), true),
@@ -167,6 +174,16 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
                     false,
                 ),
             ]),
+        ),
+        tool(
+            "resume",
+            Action::Resume,
+            "Restore your own waiting session's claim after an actual unmarked human reply in this chat. \
+             Only no-check waits with [wait] chat_resume enabled qualify. Pass the human's reply verbatim; \
+             trk-delivered text wrapped in [trk-delivery ...] markers is never an eligible human chat reply. \
+             This reports your observation of a human reply, not human authorization. \
+             For checked waits or disabled chat resume, a human must use `trk resume`.".into(),
+            object_schema(vec![("message", text("The actual unmarked human chat reply, verbatim and nonempty"), true)]),
         ),
     ]
 }
@@ -229,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn seven_tools() {
+    fn eight_tools() {
         let names: Vec<String> = catalogue(&UserConfig::default())
             .into_iter()
             .map(|t| t.name)
@@ -243,7 +260,8 @@ mod tests {
                 "report_followup",
                 "hand_back",
                 "close",
-                "wait"
+                "wait",
+                "resume"
             ]
         );
     }
@@ -287,6 +305,40 @@ mod tests {
                     "{description}"
                 );
             }
+        }
+        let mut config = UserConfig::default();
+        config.wait.chat_resume = false;
+        let wait = catalogue(&config)
+            .into_iter()
+            .find(|t| t.name == "wait")
+            .unwrap();
+        assert!(wait.description.contains("chat_resume = false"));
+        assert!(wait.description.contains("never applies to checked waits"));
+    }
+
+    #[test]
+    fn resume_requires_a_verbatim_human_chat_reply() {
+        let resume = catalogue(&UserConfig::default())
+            .into_iter()
+            .find(|t| t.name == "resume")
+            .unwrap();
+        assert_eq!(resume.action, Action::Resume);
+        assert_eq!(resume.input_schema["required"], json!(["message"]));
+        assert_eq!(
+            resume.input_schema["properties"]["message"]["type"],
+            "string"
+        );
+        assert_eq!(resume.input_schema["additionalProperties"], false);
+        for restriction in [
+            "own waiting session",
+            "no-check waits",
+            "[wait] chat_resume",
+            "verbatim",
+            "[trk-delivery",
+            "not human authorization",
+            "`trk resume`",
+        ] {
+            assert!(resume.description.contains(restriction), "{restriction}");
         }
     }
 }

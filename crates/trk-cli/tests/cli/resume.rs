@@ -118,9 +118,12 @@ fn human_resume_restores_the_original_claim_with_a_fresh_lease() {
         assert_eq!(result["message"], "Continue with option B.");
         assert_eq!(result["delivered"], true);
         let messages = ui.text("messages");
-        assert!(messages.starts_with("exact-origin\n"), "{messages}");
         assert!(
-            messages.ends_with("\n\nContinue with option B.\n"),
+            messages.starts_with("exact-origin\n[trk-delivery source=human-resume actor=\"human:alice@example.com\"]\n"),
+            "{messages}"
+        );
+        assert!(
+            messages.ends_with("\n\nContinue with option B.\n[/trk-delivery]\n"),
             "{messages}"
         );
         let at_send: Value = serde_json::from_str(&ui.text("at-send.json")).unwrap();
@@ -209,7 +212,7 @@ fn human_resume_preserves_a_nonzero_exhausted_automatic_wake_budget() {
         "{messages}"
     );
     assert!(
-        messages.ends_with("\n\nOne more human-authorized attempt\n"),
+        messages.ends_with("\n\nOne more human-authorized attempt\n[/trk-delivery]\n"),
         "{messages}"
     );
 }
@@ -385,7 +388,7 @@ fn resume_serializes_with_live_checks_and_recovers_a_stale_runner() {
     let messages = ui.text("messages");
     assert!(messages.starts_with("exact-origin\n"), "{messages}");
     assert!(
-        messages.ends_with("\n\nThe check is now gone\n"),
+        messages.ends_with("\n\nThe check is now gone\n[/trk-delivery]\n"),
         "{messages}"
     );
 }
@@ -443,7 +446,7 @@ fn plain_send_delivers_without_restoring_waiting_authority() {
     assert_eq!(result["terminal"], "exact-origin");
     assert_eq!(
         ui.text("messages"),
-        "exact-origin\nThis is only a message\n"
+        "exact-origin\n[trk-delivery source=trk-send actor=\"human:alice@example.com\"]\nThis is only a message\n[/trk-delivery]\n"
     );
     assert_eq!(ui.e.ok(&["show", &id, "--with", "all"]), before);
 }

@@ -16,6 +16,11 @@ use crate::render::Out;
 
 use crate::launcher::{self, Launcher, run_template};
 
+/// Terminal deliveries are machine-originated even when a human invokes the CLI.
+fn delivery(source: &str, actor: &str, text: &str) -> String {
+    format!("[trk-delivery source={source} actor={actor:?}]\n{text}\n[/trk-delivery]")
+}
+
 /// A session that is still starting may refuse input.
 fn send_with_retry(
     tmpl: &[String],
@@ -408,7 +413,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         && let Some(send) = &l.send
     {
         std::thread::sleep(std::time::Duration::from_secs(l.send_delay.unwrap_or(5)));
-        vars.insert("text", spec.briefing.clone());
+        vars.insert("text", delivery("briefing", env.actor()?, &spec.briefing));
         let (ok, out) = send_with_retry(send, &vars, l.send_retries, l.send_retry_delay)?;
         if !ok {
             eprintln!("warning: sending the briefing failed: {out}");
@@ -579,7 +584,7 @@ pub fn send(env: &Env, id: &str, text: &str) -> Result<Out> {
     };
     let mut vars = BTreeMap::new();
     vars.insert("name", name.clone());
-    vars.insert("text", text.to_string());
+    vars.insert("text", delivery("trk-send", env.actor()?, text));
     let (ok, out) = send_with_retry(tmpl, &vars, l.send_retries, l.send_retry_delay)?;
     if !ok {
         return Err(
@@ -597,7 +602,7 @@ pub fn resume(env: &Env, id: &str, message: &str) -> Result<Out> {
     if ActorId::parse(&actor)?.is_agent() {
         return Err(Error::new(Code::NotPermitted, "only a human may authorize trk resume")
             .with_issue(id)
-            .with_hint("ask the human to run `trk resume <ID> -m \"continuation instructions\"`; chat or restored access alone does not restore a claim"));
+            .with_hint("ask the human to run `trk resume <ID> -m \"continuation instructions\"`; an eligible direct human chat reply may also resume a no-check wait through MCP"));
     }
     let message = message.trim();
     if message.is_empty() {
@@ -648,7 +653,7 @@ pub fn resume(env: &Env, id: &str, message: &str) -> Result<Out> {
              Continue using the issue's notes and these human instructions. End this new cycle with close, wait, or hand_back as appropriate. \
              This manual resume does not consume or reset the automatic failed-check wake budget.\n\n{message}"
         );
-        if let Err(error) = session.send(&instructions) {
+        if let Err(error) = session.send("human-resume", &actor, &instructions) {
             let reopened = store.write(&actor, false, |c| {
                 c.resume_failed(&id, claim.id, &error.to_string())
             })?;
@@ -681,10 +686,10 @@ pub struct WaitingSession {
 }
 
 impl WaitingSession {
-    pub fn send(&self, text: &str) -> Result<()> {
+    pub fn send(&self, source: &str, actor: &str, text: &str) -> Result<()> {
         let mut vars = BTreeMap::new();
         vars.insert("name", self.terminal.clone());
-        vars.insert("text", text.to_string());
+        vars.insert("text", delivery(source, actor, text));
         let (ok, out) =
             send_with_retry(&self.send, &vars, self.send_retries, self.send_retry_delay)?;
         if !ok {
@@ -761,7 +766,7 @@ pub fn notify_waiting_session(env: &Env, issue: &str, text: &str, closed: bool) 
         let _ = launcher.rename(name, &format!("[closed] {title}"));
     }
     if let Some(session) = live_waiting_session(&claim, launcher) {
-        session.send(text)?;
+        session.send("check-notification", env.actor()?, text)?;
     }
     Ok(())
 }

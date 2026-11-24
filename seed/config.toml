@@ -18,6 +18,11 @@ default_type = "{{DEFAULT_TYPE}}"
 # from terminal liveness and reap. Human claims have no lease.
 agent_lease = "30m"
 
+[wait]
+# Let a no-check waiting session report a human reply from its own chat.
+# This is agent-reported continuation, not human-authorized CLI resume.
+chat_resume = true
+
 [check]
 # How often `trk check` runs a waiting issue's check when the issue does not say.
 interval = "5m"

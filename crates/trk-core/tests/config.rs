@@ -156,6 +156,19 @@ fn user_resources_do_not_install_a_project_implicitly() {
 }
 
 #[test]
+fn chat_resume_can_be_disabled_in_user_config_and_overridden_by_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    let user = dir.path().join("user");
+    config(&user, "[wait]\nchat_resume = false\n");
+    config(&project, "");
+    let cfg = ConfigDir::with_user_dir(&project, Some(user));
+    assert!(!cfg.user_config().unwrap().wait.chat_resume);
+    config(&project, "[wait]\nchat_resume = true\n");
+    assert!(cfg.user_config().unwrap().wait.chat_resume);
+}
+
+#[test]
 fn malformed_user_config_is_not_silently_ignored() {
     let dir = tempfile::tempdir().unwrap();
     let project = dir.path().join("project");

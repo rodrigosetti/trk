@@ -630,7 +630,9 @@ fn pass(
                     &output[start..]
                 },
             );
-            let delivered = session.as_ref().is_some_and(|s| s.send(&message).is_ok());
+            let delivered = session
+                .as_ref()
+                .is_some_and(|s| s.send("check-wake", &actor, &message).is_ok());
             if !delivered {
                 result = if store.write(&actor, false, |c| c.check_wake_failed(&i.id, claim))? {
                     CheckResult::Failed

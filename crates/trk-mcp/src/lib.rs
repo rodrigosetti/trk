@@ -56,6 +56,7 @@ const TASK_URI: &str = "trk://task";
 impl TrkServer {
     /// Load the agent, select its tools, render the instructions.
     pub fn new(mut args: McpArgs) -> anyhow::Result<TrkServer> {
+        args.opts.chat_resume &= args.user.wait.chat_resume;
         args.opts.known_types = args
             .config
             .files_in("types", "toml")
@@ -532,7 +533,7 @@ mod tests {
 
     #[test]
     fn restoration_restores_the_same_mcp_sessions_tools_and_lease_renewal() {
-        for manual in [false, true] {
+        for restoration in ["check", "human", "chat"] {
             for (ending, args, expected_state) in [
                 (
                     "wait",
@@ -593,7 +594,11 @@ mod tests {
                 .unwrap();
                 let (ok, out) = server.call_sync(
                     "wait",
-                    json!({"reason": "waiting for the check", "check": "exit 1"}),
+                    if restoration == "chat" {
+                        json!({"reason": "waiting for a human chat reply"})
+                    } else {
+                        json!({"reason": "waiting for the check", "check": "exit 1"})
+                    },
                 );
                 assert!(ok, "{out}");
                 assert_eq!(out["waiting"], issue);
@@ -607,35 +612,72 @@ mod tests {
                 assert_eq!(historical[0].lease_until, original.lease_until);
 
                 store.opts.now = Some("2026-11-20T10:05:00Z".parse().unwrap());
-                let result = store
-                    .write(HUMAN, false, |c| {
-                        if manual {
-                            let claim = c.resume(
+                let message = "  Please continue.\nKeep the original scope.  \n";
+                let result = if restoration == "chat" {
+                    Arc::get_mut(&mut server.inner).unwrap().opts.now = store.opts.now;
+                    let (ok, out) = server.call_sync("resume", json!({"message": message}));
+                    assert!(ok, "{out}");
+                    assert_eq!(out["ok"], true);
+                    assert_eq!(out["result"]["resumed"], issue);
+                    assert_eq!(out["task"]["state"], "claimed");
+                    assert_eq!(out["task"]["claimed"], true);
+                    assert_eq!(out["result"]["claim"]["actor"], ACTOR);
+                    CheckResult::Woken {
+                        claim: out["result"]["claim"]["id"].as_i64().unwrap(),
+                    }
+                } else {
+                    store
+                        .write(HUMAN, false, |c| {
+                            if restoration == "human" {
+                                let claim = c.resume(
+                                    &issue,
+                                    original.id,
+                                    c.issue_revision(&issue)?,
+                                    "SSH unlocked; continue",
+                                )?;
+                                return Ok(CheckResult::Woken { claim: claim.id });
+                            }
+                            c.check_record(
                                 &issue,
-                                original.id,
+                                "exit 1",
                                 c.issue_revision(&issue)?,
-                                "SSH unlocked; continue",
-                            )?;
-                            return Ok(CheckResult::Woken { claim: claim.id });
-                        }
-                        c.check_record(
-                            &issue,
-                            "exit 1",
-                            c.issue_revision(&issue)?,
-                            &CheckRun {
-                                exit: Some(1),
-                                output: "merge failed".into(),
-                                ..Default::default()
-                            },
-                            Some(original.id),
-                        )
-                    })
-                    .unwrap();
+                                &CheckRun {
+                                    exit: Some(1),
+                                    output: "merge failed".into(),
+                                    ..Default::default()
+                                },
+                                Some(original.id),
+                            )
+                        })
+                        .unwrap()
+                };
                 let restored = active_claim(&store, &issue).unwrap();
                 assert_eq!(result, CheckResult::Woken { claim: restored.id });
                 assert_ne!(restored.id, original.id);
                 assert_eq!(restored.actor, ACTOR);
                 assert!(restored.lease_until.is_some());
+                assert_eq!(restored.terminal, original.terminal);
+                if restoration == "chat" {
+                    assert_eq!(store.read(None, |c| c.issue(&issue)).unwrap().wake_count, 0);
+                    let events = store.read(None, |c| c.events(&issue)).unwrap();
+                    let resumes: Vec<_> = events
+                        .iter()
+                        .filter(|event| event.op == "resume_chat")
+                        .collect();
+                    assert_eq!(resumes.len(), 1);
+                    assert_eq!(resumes[0].actor, ACTOR);
+                    assert_eq!(resumes[0].payload["message"], message);
+                    assert_eq!(resumes[0].payload["resumed_from"], original.id);
+                    assert_eq!(resumes[0].payload["claim"], restored.id);
+                    assert!(!events.iter().any(|event| event.op == "resume"));
+                    let notes = store.read(None, |c| c.notes(&issue)).unwrap();
+                    let note = notes.last().unwrap();
+                    assert_eq!(note["actor"], ACTOR);
+                    assert_eq!(
+                        note["body"],
+                        format!("Session reported a human reply in chat:\n\n{message}")
+                    );
+                }
 
                 // Advance only the existing server's clock: do not recreate its Session.
                 let now = "2026-11-20T10:10:00Z".parse().unwrap();
@@ -661,6 +703,153 @@ mod tests {
                 assert!(active_claim(&store, &issue).is_none());
                 assert_released(&server, expected_state);
             }
+        }
+    }
+
+    fn chat_resume_fixture(user: UserConfig) -> (tempfile::TempDir, Store, String, TrkServer) {
+        let dir = tempfile::tempdir().unwrap();
+        let seed = dir.path().join("seed");
+        write_seed(&seed);
+        let db = dir.path().join("trk.db");
+        let opts = StoreOpts::default();
+        let mut store = Store::install(&db, opts.clone()).unwrap();
+        let issue = store
+            .write(HUMAN, false, |c| {
+                c.create(NewIssue {
+                    title: "Continue on a chat reply".into(),
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+        store
+            .write(ACTOR, false, |c| c.claim(&issue, ClaimOpts::default()))
+            .unwrap();
+        let server = TrkServer::new(McpArgs {
+            db,
+            config: ConfigDir::with_user_dir(&seed, None),
+            project_root: dir.path().to_path_buf(),
+            user,
+            opts,
+            issue: issue.clone(),
+            actor: ACTOR.into(),
+            agent: "implementer".into(),
+            base: "main".into(),
+        })
+        .unwrap();
+        (dir, store, issue, server)
+    }
+
+    #[test]
+    fn chat_resume_refuses_checked_waits_nonwaiting_and_other_sessions() {
+        for scenario in ["checked", "claimed", "open", "closed", "different_session"] {
+            let (_dir, store, issue, mut server) = chat_resume_fixture(UserConfig::default());
+            match scenario {
+                "claimed" => {}
+                "open" => {
+                    let (ok, out) = server.call_sync("hand_back", json!({"note": "released"}));
+                    assert!(ok, "{out}");
+                }
+                "closed" => {
+                    let (ok, out) =
+                        server.call_sync("close", json!({"reason": "done", "note": "finished"}));
+                    assert!(ok, "{out}");
+                }
+                _ => {
+                    let mut args = json!({"reason": "waiting for a reply"});
+                    if scenario == "checked" {
+                        args["check"] = json!("exit 75");
+                    }
+                    let (ok, out) = server.call_sync("wait", args);
+                    assert!(ok, "{out}");
+                    if scenario == "different_session" {
+                        Arc::get_mut(&mut server.inner).unwrap().session.actor =
+                            "agent:omp:different-session".into();
+                    }
+                }
+            }
+            let before = store
+                .read(None, |c| {
+                    c.show(
+                        &issue,
+                        With {
+                            notes: true,
+                            events: true,
+                            claims: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .unwrap();
+            let (ok, out) = server.call_sync("resume", json!({"message": "Please continue"}));
+            assert!(!ok, "{scenario}: {out}");
+            assert_eq!(out["error"]["code"], "not_permitted", "{scenario}: {out}");
+            if scenario == "checked" {
+                assert!(
+                    out["error"]["hint"]
+                        .as_str()
+                        .unwrap()
+                        .contains("trk resume")
+                );
+            }
+            let after = store
+                .read(None, |c| {
+                    c.show(
+                        &issue,
+                        With {
+                            notes: true,
+                            events: true,
+                            claims: true,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .unwrap();
+            assert_eq!(after, before, "{scenario}");
+        }
+    }
+
+    #[test]
+    fn chat_resume_obeys_disabled_user_configuration_even_with_default_store_options() {
+        let mut user = UserConfig::default();
+        user.wait.chat_resume = false;
+        let (_dir, store, issue, server) = chat_resume_fixture(user);
+        assert!(!server.inner.opts.chat_resume);
+        let (ok, out) = server.call_sync("wait", json!({"reason": "a human must resume"}));
+        assert!(ok, "{out}");
+        let before = store.read(None, |c| c.events(&issue)).unwrap();
+        let (ok, out) = server.call_sync("resume", json!({"message": "Please continue"}));
+        assert!(!ok, "{out}");
+        assert_eq!(out["error"]["code"], "not_permitted");
+        assert_eq!(store.read(None, |c| c.events(&issue)).unwrap(), before);
+        assert_eq!(
+            store.read(None, |c| c.issue(&issue)).unwrap().state,
+            State::Waiting
+        );
+        assert!(active_claim(&store, &issue).is_none());
+    }
+
+    #[test]
+    fn chat_resume_requires_a_nonempty_message() {
+        let (_dir, store, issue, server) = chat_resume_fixture(UserConfig::default());
+        let (ok, out) = server.call_sync("wait", json!({"reason": "waiting for a human"}));
+        assert!(ok, "{out}");
+        let before = store.read(None, |c| c.events(&issue)).unwrap();
+        for args in [
+            json!({}),
+            json!({"message": ""}),
+            json!({"message": " \n\t "}),
+            json!({"message": null}),
+            json!({"message": 42}),
+        ] {
+            let (ok, out) = server.call_sync("resume", args.clone());
+            assert!(!ok, "{args}: {out}");
+            assert_eq!(out["error"]["code"], "bad_args", "{out}");
+            assert_eq!(store.read(None, |c| c.events(&issue)).unwrap(), before);
+            assert_eq!(
+                store.read(None, |c| c.issue(&issue)).unwrap().state,
+                State::Waiting
+            );
+            assert!(active_claim(&store, &issue).is_none());
         }
     }
 

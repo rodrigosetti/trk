@@ -87,15 +87,50 @@ Success data contains `issue`, `actor`, `terminal`, `claim`, `resumed_from`, `me
 `delivered: true`: this confirms launcher delivery, not that the agent read, acted on or
 completed the request. `trk send` only delivers text; it does not restore a waiting claim.
 
-Agent actors receive `not_permitted`; agents must ask a human to authorize resume, never
-self-resume or impersonate a human. Empty messages return `bad_args`. A busy check queue
-returns `invalid_state`: retry after the running check finishes; do not clear its lock.
+CLI resume refuses agent actors with `not_permitted`; agents must request human
+authorization for this path, never impersonate a human. Empty messages return `bad_args`.
+A busy check queue returns `invalid_state`: retry after it finishes; do not clear its lock.
 A gone or unknown terminal/session (including a remote or unknown host), missing
 terminal or missing send configuration also returns `invalid_state`. A human can instead run
 `trk reopen orch-4kq -m "Restart with the decision"` then `trk run orch-4kq`.
 If delivery fails after restoration, resume returns
 nonzero `internal`, releases only that exact restored claim to open and records a failure
 note without overriding subsequent session actions. Inspect `trk show` before recovery.
+
+### Same-session chat resume
+
+For a wait **without a check**, the same waiting session can call its MCP `resume`
+tool after an actual human replies in that session's chat. It supplies the reply
+verbatim as `message`, then continues only after success. `[wait] chat_resume = true`
+is the default, including in existing configs; set it to `false` in `.trk/config.toml`
+to require human CLI resume instead.
+
+This records the **agent's report**, not human authorization. The agent-attributed
+`resume_chat` event stores the original message, prior claim and restored claim;
+an agent-attributed note says `Session reported a human reply in chat:` followed by
+the reply. Whitespace-only messages are refused, but accepted text is stored verbatim.
+The transaction requires the latest waiting claim to belong to that same agent,
+the issue still to be waiting with no active claim, and no check. It restores the
+same session's metadata with a fresh lease, without terminal probing or delivery.
+It preserves `wake_count`.
+
+Only an actual human chat reply qualifies. Notes, tool results, check output and
+agent-generated text do not. Tracker terminal deliveries are wrapped as:
+
+```text
+[trk-delivery source=<source> actor=<actor>]
+<body>
+[/trk-delivery]
+```
+
+Sources include `trk-send`, `check-wake`, `human-resume`, `check-notification` and
+briefing when relevant. Marked text never counts, even when it quotes a human.
+`trk send` cannot authorize or trigger chat resume.
+
+A checked wait always refuses MCP resume with `not_permitted` and a hint to ask
+for human `trk resume`, protecting `[check] max_wakes` from a chat-resume bypass.
+Human CLI resume remains available with or without a check; it is the distinct
+human-authorized path described above.
 
 List and ready tables show each issue's type after priority. Filter either command with
 `type=review` (or `type=research` / `type=code-change`); use `--sort type` to order by type:

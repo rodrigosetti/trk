@@ -139,9 +139,21 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
                 "message": if has_check {
                     "The issue is waiting and your claim released. trk runs the check on its schedule; your work in this session is done."
                 } else {
-                    "The issue is waiting for a human and your claim released. Your work in this session is done."
+                    "The issue is waiting for a human and your claim released. This work cycle is done; an eligible unmarked human chat reply may start another through resume when chat resume is enabled."
                 },
             }));
+        }
+        Action::Resume => {
+            let message = a
+                .get("message")
+                .and_then(Value::as_str)
+                .ok_or_else(|| bad_args("missing required argument 'message'"))?;
+            let claim = store.write(&sess.actor, false, |c| c.resume_chat(&id, message))?;
+            json!({
+                "resumed": id,
+                "claim": claim,
+                "message": "Your claim and tools are restored. Continue working on this issue.",
+            })
         }
     };
     let task = store.read(Some(&sess.actor), |c| compact(c, &id))?;

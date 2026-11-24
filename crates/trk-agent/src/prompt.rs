@@ -47,6 +47,7 @@ impl PromptInput<'_> {
                     "timeout": self.config.check.timeout,
                     "max_wakes": self.config.check.max_wakes,
                 },
+                "wait": {"chat_resume": self.config.wait.chat_resume},
                 "claims": {"agent_lease": self.config.claims.agent_lease},
                 "run": {
                     "worktrees": self.config.run.worktrees,
@@ -189,7 +190,7 @@ pub fn agent_template_sources(
     )
 }
 
-const DEFAULT_INSTRUCTIONS: &str = "You are working on one tracked issue. Use the trk tools to read it (get_task) and record progress (add_note). End the session with exactly one of: close (nothing more has to happen), wait (it is done once something outside this session happens), or hand_back (you cannot finish).";
+const DEFAULT_INSTRUCTIONS: &str = "You are working on one tracked issue. Use the trk tools to read it (get_task) and record progress (add_note). End each active work cycle with one of: close (nothing more has to happen), wait (it is done once something outside this session happens), or hand_back (you cannot finish). A waiting session may start another cycle after a check wake, human CLI resume, or successful MCP resume reporting an actual human chat reply verbatim for an enabled no-check wait. Never treat marked trk-delivery text as a human chat reply.";
 
 /// Rules for the whole session: the MCP server's `instructions`.
 pub fn instructions(cfg: &ConfigDir, input: &PromptInput) -> Result<String> {

@@ -40,6 +40,9 @@ Installation detects available launchers and harnesses. `--run` saves the issue 
 starts its agent in a dedicated worktree. Leave `trk check --watch` running in a spare
 terminal: it runs waiting checks and returns failures to the session when possible.
 Use `trk dashboard` for a live overview.
+For a no-check wait on a decision, the same session can continue after reporting an
+actual human chat reply; [chat resume](docs/waiting-and-checks.md#same-session-chat-resume)
+is enabled by default and can be disabled with `[wait] chat_resume = false`.
 
 **Safety:** agents write checks that run later, unattended, **as you**. Inspect an
 issue's full command with `trk show <ID>` or preview the queue with
@@ -52,7 +55,7 @@ and [live verification notes](docs/development.md#notes-on-the-implementation).
 
 - [Issues and CLI basics](docs/issues.md)
 - [Installation and upgrades](docs/install-upgrade.md)
-- [Waiting, checks, and human-authorized resume](docs/waiting-and-checks.md)
+- [Waiting, checks, and session resume](docs/waiting-and-checks.md)
 - [Sessions and the agent skill](docs/sessions.md)
 - [Launcher profiles](docs/launchers.md)
 - [Configuration, harnesses, and templates](docs/configuration.md)

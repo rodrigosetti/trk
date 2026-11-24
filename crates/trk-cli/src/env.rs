@@ -263,6 +263,7 @@ impl Env {
             agent_lease: self.agent_lease()?,
             check_interval: parse_duration(&self.user.check.interval)?,
             max_wakes: self.user.check.max_wakes,
+            chat_resume: self.user.wait.chat_resume,
             prefix: self.user.issues.prefix.clone(),
             default_type: self.user.issues.default_type.clone(),
             known_types: self

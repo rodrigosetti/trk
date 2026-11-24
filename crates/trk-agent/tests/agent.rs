@@ -49,7 +49,7 @@ fn names(tools: &[trk_agent::ToolDef]) -> Vec<&str> {
 }
 
 #[test]
-fn every_agent_gets_the_seven_tools_unless_it_narrows_them() {
+fn every_agent_gets_the_eight_tools_unless_it_narrows_them() {
     let (_dir, seed) = seed();
     let a = load_agent(&seed, "implementer").unwrap();
     let tools = agent_tools(&a, &user_config());
@@ -62,12 +62,23 @@ fn every_agent_gets_the_seven_tools_unless_it_narrows_them() {
             "report_followup",
             "hand_back",
             "close",
-            "wait"
+            "wait",
+            "resume"
         ]
     );
     let wait = tools.iter().find(|t| t.name == "wait").unwrap();
     assert_eq!(wait.input_schema["required"], serde_json::json!(["reason"]));
     assert!(wait.description.contains("exit 75"), "{}", wait.description);
+    assert!(wait.description.contains("may call `resume`"));
+    let resume = tools.iter().find(|t| t.name == "resume").unwrap();
+    assert_eq!(
+        resume.input_schema["required"],
+        serde_json::json!(["message"])
+    );
+    assert_eq!(
+        resume.input_schema["properties"]["message"]["type"],
+        "string"
+    );
     let close = tools.iter().find(|t| t.name == "close").unwrap();
     assert_eq!(
         close.input_schema["properties"]["reason"]["enum"],
@@ -281,11 +292,12 @@ fn seed_waiting_rules_reflect_effective_check_settings() {
     let (_dir, seed) = seed();
     let agent = load_agent(&seed, "implementer").unwrap();
     let issue = trk_agent::check::sample_issue(&user_config());
-    for max_wakes in [0, 3] {
+    for (max_wakes, chat_resume) in [(0, false), (3, true)] {
         let mut config = user_config();
         config.check.interval = "1h".into();
         config.check.timeout = "20m".into();
         config.check.max_wakes = max_wakes;
+        config.wait.chat_resume = chat_resume;
         let tools = agent_tools(&agent, &config);
         let input = trk_agent::prompt::PromptInput {
             issue: &issue,
@@ -302,6 +314,17 @@ fn seed_waiting_rules_reflect_effective_check_settings() {
             harness: Some("omp"),
         };
         let rules = trk_agent::prompt::instructions(&seed, &input).unwrap();
+        if chat_resume {
+            assert!(
+                rules.contains("call `resume` with that human reply verbatim as `message`"),
+                "{rules}"
+            );
+        } else {
+            assert!(
+                rules.contains("Chat resume is disabled by `[wait] chat_resume = false`"),
+                "{rules}"
+            );
+        }
         assert!(rules.contains("`interval` (default `1h`)"), "{rules}");
         assert!(
             rules.contains("`[check] timeout` (configured `20m`)"),

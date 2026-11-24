@@ -149,8 +149,20 @@ fn named_tmux_run_binds_only_first_stdout_line_and_pins_send_and_attach() {
     assert_eq!(tmux.text("attachments"), "switch-client\n$41\n");
     assert_eq!(
         tmux.text("messages"),
-        "$41\nspaces and 'quotes' stay one argument\n"
+        "$41\n[trk-delivery source=trk-send actor=\"human:alice@example.com\"]\nspaces and 'quotes' stay one argument\n[/trk-delivery]\n"
     );
+    let mut command = tmux.cmd();
+    command.env("TRK_ACTOR", "agent:omp:sender");
+    resume::success(command, &["send", &id, "agent instructions"]);
+    assert!(tmux.text("messages").ends_with(
+        "$41\n[trk-delivery source=trk-send actor=\"agent:omp:sender\"]\nagent instructions\n[/trk-delivery]\n"
+    ));
+    let mut command = tmux.cmd();
+    command.env("TRK_ACTOR", "agent:omp:sender\nspoof");
+    resume::success(command, &["send", &id, "still agent text"]);
+    assert!(tmux.text("messages").ends_with(
+        "$41\n[trk-delivery source=trk-send actor=\"agent:omp:sender\\nspoof\"]\nstill agent text\n[/trk-delivery]\n"
+    ));
 }
 
 #[test]
@@ -164,7 +176,10 @@ fn named_start_empty_stdout_keeps_generated_name_and_ignores_stderr() {
     assert_eq!(issue["claim"]["terminal"], tmux.text("generated"));
     assert_ne!(issue["claim"]["terminal"], "diagnostic-not-an-address");
     tmux.ok(&["send", &id, "still addressable"]);
-    assert!(tmux.text("messages").ends_with("still addressable\n"));
+    assert!(
+        tmux.text("messages")
+            .ends_with("still addressable\n[/trk-delivery]\n")
+    );
 }
 
 #[test]
@@ -190,7 +205,9 @@ fn named_custom_template_uses_project_and_resolved_routing_and_keeps_claim_addre
     tmux.ok(&["send", &id, "recorded address"]);
     assert_eq!(
         tmux.text("messages"),
-        format!("{expected}\nrecorded address\n")
+        format!(
+            "{expected}\n[trk-delivery source=trk-send actor=\"human:alice@example.com\"]\nrecorded address\n[/trk-delivery]\n"
+        )
     );
 }
 
@@ -213,6 +230,10 @@ fn named_tmux_resume_wake_notify_rename_and_gc_keep_the_pinned_profile() {
     tmux.e.ok(&["wait", &id, "--force", "-r", "human decision"]);
     let resumed = tmux.ok(&["resume", &id, "-m", "continue with tmux"]);
     assert_eq!(resumed["delivered"], true);
+    assert!(
+        tmux.text("messages")
+            .contains("[trk-delivery source=human-resume actor=\"human:alice@example.com\"]\n")
+    );
     assert_eq!(tmux.e.ok(&["show", &id])["claim"]["launcher"], "tmux");
 
     tmux.e.ok(&[
@@ -226,10 +247,19 @@ fn named_tmux_resume_wake_notify_rename_and_gc_keep_the_pinned_profile() {
     assert_eq!(checked["results"][0]["result"], "woken");
     assert_eq!(tmux.e.ok(&["show", &id])["claim"]["launcher"], "tmux");
     assert!(tmux.text("messages").contains("named wake evidence"));
+    assert!(
+        tmux.text("messages")
+            .contains("[trk-delivery source=check-wake actor=\"human:alice@example.com\"]\n")
+    );
 
     tmux.e.ok(&["wait", &id, "--force", "-c", "exit 0"]);
     assert_eq!(tmux.ok(&["check", &id])["results"][0]["result"], "passed");
     assert!(tmux.text("messages").contains("waiting check passed"));
+    assert!(
+        tmux.text("messages").contains(
+            "[trk-delivery source=check-notification actor=\"human:alice@example.com\"]\n"
+        )
+    );
     assert_eq!(tmux.text("renames"), "$41\n[closed] Named launcher issue\n");
     tmux.ok(&["gc", &id]);
     assert_eq!(tmux.text("closes"), "$41\n");

@@ -1,4 +1,4 @@
-//! Human authorization and lifecycle ownership races, isolated from live sessions.
+//! Manual continuation and lifecycle ownership races, isolated from live sessions.
 
 use trk_core::ops::{CheckResult, CheckRun, ClaimOpts, NewIssue, WaitOpts};
 use trk_core::{Code, State, Store, StoreOpts};
@@ -8,6 +8,10 @@ const AGENT: &str = "agent:omp:original";
 const OTHER: &str = "agent:omp:replacement";
 
 fn waiting() -> (tempfile::TempDir, Store, String, i64, i64) {
+    waiting_on(Some("exit 0"))
+}
+
+fn waiting_on(check: Option<&str>) -> (tempfile::TempDir, Store, String, i64, i64) {
     let dir = tempfile::tempdir().unwrap();
     let mut store = Store::install(
         &dir.path().join("trk.db"),
@@ -42,7 +46,8 @@ fn waiting() -> (tempfile::TempDir, Store, String, i64, i64) {
             c.wait(
                 &id,
                 WaitOpts {
-                    check: Some("exit 0".into()),
+                    check: check.map(str::to_owned),
+                    reason: Some("Choose a continuation".into()),
                     ..Default::default()
                 },
             )
@@ -205,4 +210,151 @@ fn stale_authorization_and_failed_delivery_never_release_replacement_work() {
     assert!(events.iter().any(|event| event.op == "note"
         && event.payload["resume"]["result"] == "delivery_failed"
         && event.payload["resume"]["reopened"] == false));
+}
+
+#[test]
+fn chat_reply_restores_original_claim_and_records_agent_report_verbatim() {
+    let (_dir, mut store, id, original, revision) = waiting();
+    // A prior automatic wake must survive a subsequent no-check chat resume.
+    store
+        .write(HUMAN, false, |c| {
+            c.check_record(
+                &id,
+                "exit 0",
+                revision,
+                &CheckRun {
+                    exit: Some(1),
+                    ..Default::default()
+                },
+                Some(original),
+            )
+        })
+        .unwrap();
+    let previous = store.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    store
+        .write(AGENT, false, |c| {
+            c.wait(
+                &id,
+                WaitOpts {
+                    reason: Some("Choose a continuation".into()),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    store.opts.now = Some("2026-11-20T10:05:00Z".parse().unwrap());
+    let message = "  Approved, use option B.\nKeep the audit trail.  ";
+    let restored = store
+        .write(AGENT, false, |c| c.resume_chat(&id, message))
+        .unwrap();
+    assert_ne!(restored.id, previous.id);
+    assert_eq!(restored.actor, previous.actor);
+    assert_eq!(restored.worktree, previous.worktree);
+    assert_eq!(restored.host, previous.host);
+    assert_eq!(restored.agent, previous.agent);
+    assert_eq!(restored.terminal, previous.terminal);
+    assert_eq!(restored.launcher, previous.launcher);
+    assert!(restored.lease_until > previous.lease_until);
+    let shown = store
+        .read(None, |c| c.show(&id, trk_core::view::With::parse("all")))
+        .unwrap();
+    assert_eq!(shown["state"], "claimed");
+    assert_eq!(shown["wake_count"], 1);
+    assert!(shown["waiting"].is_null());
+    let notes = shown["notes"].as_array().unwrap();
+    let report = notes.last().unwrap();
+    assert_eq!(report["actor"], AGENT);
+    assert_eq!(
+        report["body"],
+        format!("Session reported a human reply in chat:\n\n{message}")
+    );
+    let events = store.read(None, |c| c.events(&id)).unwrap();
+    let event = events.iter().find(|e| e.op == "resume_chat").unwrap();
+    assert_eq!(event.actor, AGENT);
+    assert_eq!(event.payload["message"], message);
+    assert_eq!(event.payload["claim"], restored.id);
+    assert_eq!(event.payload["resumed_from"], previous.id);
+    // Ownership is restored, not merely a successful response.
+    store
+        .write(AGENT, false, |c| c.close(&id, "done", None, false))
+        .unwrap();
+}
+
+#[test]
+fn chat_resume_refuses_checked_disabled_foreign_and_empty_replies_without_mutation() {
+    for scenario in ["check", "disabled", "foreign", "human", "empty"] {
+        let (_dir, mut store, id, _, _) = waiting_on((scenario == "check").then_some("exit 0"));
+        if scenario == "disabled" {
+            store.opts.chat_resume = false;
+        }
+        let actor = match scenario {
+            "foreign" => OTHER,
+            "human" => HUMAN,
+            _ => AGENT,
+        };
+        let message = if scenario == "empty" {
+            " \n\t "
+        } else {
+            "approved"
+        };
+        let before = store.read(None, |c| c.issue(&id)).unwrap();
+        let events = store.read(None, |c| c.events(&id)).unwrap();
+        let error = store
+            .write(actor, false, |c| c.resume_chat(&id, message))
+            .unwrap_err();
+        assert_eq!(
+            error.code(),
+            if scenario == "empty" {
+                Code::BadArgs
+            } else {
+                Code::NotPermitted
+            },
+            "{scenario}: {error}"
+        );
+        assert_eq!(store.read(None, |c| c.issue(&id)).unwrap(), before);
+        assert_eq!(store.read(None, |c| c.events(&id)).unwrap(), events);
+        assert!(store.read(None, |c| c.active_claim(&id)).unwrap().is_none());
+    }
+}
+
+#[test]
+fn chat_resume_never_resurrects_nonwaiting_or_replaced_sessions() {
+    for state in ["claimed", "open", "closed", "replacement_waiting"] {
+        let (_dir, mut store, id, _, _) = waiting_on(None);
+        store.write(HUMAN, false, |c| c.reopen(&id, None)).unwrap();
+        if state != "open" {
+            store
+                .write(OTHER, false, |c| c.claim(&id, ClaimOpts::default()))
+                .unwrap();
+            match state {
+                "closed" => store
+                    .write(OTHER, false, |c| c.close(&id, "done", None, false))
+                    .unwrap(),
+                "replacement_waiting" => store
+                    .write(OTHER, false, |c| {
+                        c.wait(
+                            &id,
+                            WaitOpts {
+                                reason: Some("Replacement decision".into()),
+                                ..Default::default()
+                            },
+                        )
+                    })
+                    .unwrap(),
+                _ => (),
+            }
+        }
+        let before = store.read(None, |c| c.issue(&id)).unwrap();
+        let active = store.read(None, |c| c.active_claim(&id)).unwrap();
+        assert_eq!(
+            store
+                .write(AGENT, false, |c| c.resume_chat(&id, "approved"))
+                .unwrap_err()
+                .code(),
+            Code::NotPermitted,
+            "{state}"
+        );
+        assert_eq!(store.read(None, |c| c.issue(&id)).unwrap(), before);
+        assert_eq!(store.read(None, |c| c.active_claim(&id)).unwrap(), active);
+    }
 }

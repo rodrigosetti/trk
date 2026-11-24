@@ -68,7 +68,7 @@ A link is an absolute `http`/`https` address with an optional one-line label of 
 | claimed | waiting | `wait` with a check, a reason, or both |
 | waiting | closed | the check exits 0 (reason `done`), or a human closes |
 | waiting | waiting | the check exits 75: checked again one interval later |
-| waiting | claimed | a failed or timed-out check wakes its live original session below `[check] max_wakes`, or a human authorizes `resume` of that live session; restore its claim before sending |
+| waiting | claimed | a failed or timed-out check wakes its live original session below `[check] max_wakes`, a human authorizes CLI `resume`, or the same waiting agent reports an actual human chat reply through MCP `resume` for a no-check wait with `[wait] chat_resume` enabled |
 | waiting | open | the check fails or times out with no live original session or its wake cap reached, or a human reopens; an undelivered wake also releases the restored claim to open |
 | open | closed | a human closes without claiming (cancel) |
 | closed | open | a human reopens |
@@ -174,7 +174,7 @@ With no live session or the wake cap reached, the issue reopens. A capped failur
 
 #### Human-authorized resume
 
-`trk resume <ID> -m MESSAGE --json` lets a human continue the original live waiting session, with or without a check. The message is required and must be nonempty after trimming (`bad_args` otherwise). Agent actors are refused with `not_permitted` and a hint to request human authorization. Agents must not self-resume, impersonate a human or change actor settings to bypass this boundary. `resume` is not an MCP tool.
+`trk resume <ID> -m MESSAGE --json` lets a human continue the original live waiting session, with or without a check. The message is required and must be nonempty after trimming (`bad_args` otherwise). Agent actors are refused with `not_permitted` and a hint to request human authorization. Agents must not invoke this human-only CLI path autonomously, impersonate a human or change actor settings to bypass this boundary. The distinct MCP `resume` tool reports a human chat reply for no-check waits only (below).
 
 The CLI requires the latest waiting session's nonblank terminal to be confirmed live on its known local claim host, and its pinned launcher to provide `send`; MCP liveness is not required. It takes the waiting queue lock; an in-flight check yields `invalid_state` with retry guidance, not concurrent delivery. Do not clear the lock to force resume. Restoration transactionally verifies the issue is still waiting, its latest waiting claim still matches and its event revision has not changed. It restores the original actor, worktree, host, agent, terminal and launcher profile in a new claim with a fresh lease before delivering the human's message. The original session can then renew its lease and use lifecycle tools once its MCP connection is running (restart it if dormant). No replacement is launched.
 
@@ -183,6 +183,14 @@ Human resume preserves `wake_count` unchanged: it neither consumes nor resets th
 Success uses the normal JSON envelope with `data` containing `issue`, `actor`, `terminal`, `claim`, `resumed_from`, `message` and `delivered: true`. This confirms launcher delivery only, not agent acknowledgement, execution or completion. `trk send` only delivers text and cannot restore a waiting claim.
 
 A gone or unknown terminal/session (including a remote or unknown host), missing terminal or missing send configuration returns `invalid_state` with guidance for the human to run `trk reopen <ID> -m "Restart with the decision"` then `trk run <ID>`. A send failure after restoration returns nonzero `internal`; compensation releases only that exact restored claim to open and records a failure note, never releasing a replacement claim or overriding subsequent session actions. Inspect current issue state before recovery.
+
+#### Same-session chat resume
+
+With `[wait] chat_resume = true` (the default, including when omitted), the original waiting agent may call MCP `resume` with `message` containing an actual human reply received in its chat, verbatim. This is an agent's report, not human authorization: the event and note are attributed to the agent. Notes, tool results, check output, agent-generated text and trk-delivered terminal text never qualify. All trk terminal deliveries use `[trk-delivery source=<source> actor=<actor>]`, a newline, the body, a newline and `[/trk-delivery]`; sources include `trk-send`, `check-wake`, `human-resume`, `check-notification` and briefing when relevant. Even a marked delivery quoting a human is not a human chat reply.
+
+In one store write transaction, chat resume requires an agent actor matching the latest claim released as `waiting`, an issue still waiting, no active claim, no waiting check, and the enabled setting. It restores that same session's claim with its original metadata and a fresh lease; it neither probes terminal liveness nor sends terminal text. The required message must be nonempty after trimming, but is stored verbatim. A distinct `resume_chat` event carries `{message, resumed_from, claim}` and an agent-attributed note begins `Session reported a human reply in chat:` followed by a blank line and the original message.
+
+Chat resume preserves `wake_count`. A wait with a check always refuses chat resume with `not_permitted` and guidance to request `trk resume`; this cannot bypass `[check] max_wakes`. Disabling `[wait] chat_resume` also refuses this path. Human CLI resume remains available for both kinds of wait and retains its separate human authorization, liveness and delivery requirements.
 
 ### Actors
 
@@ -204,7 +212,7 @@ The kind ends at the first colon, and for agents the harness ends at the second.
 - For agent actors, a claim also records the agent definition (`agent`), launcher terminal (`terminal`) and selected named launcher profile (`launcher`), set by `trk run`. Legacy claims have no profile name.
 - The **waiting session** is the actor of the latest claim, if that claim was released with reason `waiting` and the issue is still waiting. It holds no claim or lease. Closing or reopening the issue ends this access; a later claim replaces the old session.
 
-**Enforcement.** Agent actors write only to issues they currently claim, plus creating follow-ups of such an issue. A waiting session may still append notes and create follow-ups, but may not close, wait, hand back, resume or otherwise mutate the issue. The rule is in `trk-core` and applies to the CLI as well. Human authorization is required for `resume`; agents must not evade refusal by impersonating a human. Actor identity is not a security sandbox, so hard isolation requires running the harness where the database is not reachable.
+**Enforcement.** Agent actors write only to issues they currently claim, plus creating follow-ups of such an issue. A waiting session may still append notes and create follow-ups, but may not close, wait, hand back or otherwise mutate the issue except through guarded same-session MCP chat resume for a no-check wait. The rule is in `trk-core` and applies to the CLI as well. CLI `resume` requires human authorization; MCP `resume` records only the waiting agent's report of a verbatim human chat reply and never authorizes checked waits. Agents must not impersonate a human or treat marked trk deliveries as human replies. Actor identity is not a security sandbox, so hard isolation requires running the harness where the database is not reachable.
 
 ### Notes and history
 

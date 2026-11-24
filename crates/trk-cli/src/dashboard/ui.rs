@@ -208,6 +208,7 @@ pub fn describe(e: &Event) -> String {
     let reason = p["reason"].as_str();
     match e.op.as_str() {
         "create" => "created".into(),
+        "resume_chat" => "session reported a human chat reply; resumed".into(),
         "claim" if p["by_check"] == true => "resumed after a failed check".into(),
         "claim" => match p["agent"].as_str() {
             Some(a) => format!("claimed ({a})"),

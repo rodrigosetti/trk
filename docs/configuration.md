@@ -187,6 +187,7 @@ the MCP server and `trk agent preview`:
 | `project.name`, `project.root`, `project.prefix` | Project root directory name, root path (not the session worktree), and configured issue ID prefix |
 | `type.name`, `type.description` | Resolved `types/<type>.toml` metadata, even with an agent override |
 | `config.check.interval`, `config.check.timeout`, `config.check.max_wakes` | Configured check durations and numeric wake cap |
+| `config.wait.chat_resume` | Boolean enabling same-session chat resume for waits without a check (default `true`) |
 | `config.claims.agent_lease`, `config.run.worktrees` | Configured lease duration and worktree directory |
 | `config.run.landing` | Landing recipe name, used by the implementer's dynamic template include |
 | `agent.name`, `agent.description` | Selected agent metadata |
@@ -206,6 +207,13 @@ The `wait` tool advertises the configured check interval and wake cap; with
 Seed waiting rules render these settings from the template context. Tool descriptions
 cover the check mechanism only; branch landing and pull-request policy live in the
 instruction templates, where projects can change them.
+
+`[wait] chat_resume = true` is the default, including when `[wait]` is omitted.
+Set `chat_resume = false` under `[wait]` in `.trk/config.toml` to require human
+CLI resume instead of allowing the waiting agent to report an actual human chat
+reply. This applies only to no-check waits; checked waits always refuse MCP chat
+resume, preserving the automatic `[check] max_wakes` defense. Both chat and human
+CLI resume preserve `wake_count`. See [waiting and checks](waiting-and-checks.md#same-session-chat-resume).
 
 Harness profiles in `config.toml` use a separate MiniJinja context. Every command,
 argument, environment value, file path/content and optional argument is

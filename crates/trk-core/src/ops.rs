@@ -241,7 +241,7 @@ impl Ctx<'_> {
                 c.actor == self.actor_str() && c.release_reason.as_deref() == Some("waiting")
             }) {
                 error = error.with_hint(format!(
-                    "waiting released your claim; ask a human to run `trk resume {issue_id} -m \"continuation instructions\"`; chat, restored access, and `trk send` do not restore ownership"
+                    "waiting released your claim; for a no-check wait with [wait] chat_resume enabled, report an actual unmarked human chat reply through the MCP resume tool; otherwise ask a human to run `trk resume {issue_id} -m \"continuation instructions\"`; restored access and marked trk deliveries never restore ownership"
                 ));
             }
             return Err(error);
@@ -820,11 +820,74 @@ impl Ctx<'_> {
             .ok_or_else(|| Error::new(Code::Internal, "restored claim vanished"))
     }
 
+    /// Restore this agent's no-check waiting session after it reports a human
+    /// reply in chat. All guards and restoration run in the write transaction;
+    /// the call itself proves liveness, so no terminal probe or delivery occurs.
+    pub fn resume_chat(&self, id: &str, message: &str) -> Result<Claim> {
+        let id = self.resolve_id(id)?;
+        let mut issue = self.issue(&id)?;
+        let refused = |message: &str| {
+            Error::new(Code::NotPermitted, message)
+                .with_issue(&id)
+                .with_hint(format!(
+                    "ask the human to run `trk resume {id} -m \"continuation instructions\"`"
+                ))
+        };
+        if !self.opts.chat_resume {
+            return Err(refused(
+                "session chat resume is disabled by [wait] chat_resume",
+            ));
+        }
+        if !self.actor().is_agent() {
+            return Err(refused(
+                "only the waiting agent session may report a human chat reply",
+            ));
+        }
+        if issue.state != State::Waiting || self.active_claim(&id)?.is_some() {
+            return Err(refused(
+                "only an unclaimed waiting issue can resume from chat",
+            ));
+        }
+        if issue.waiting_check.is_some() {
+            return Err(refused(
+                "waiting checks require human-authorized CLI resume",
+            ));
+        }
+        let previous = self
+            .latest_claim(&id)?
+            .filter(|c| {
+                c.actor == self.actor_str()
+                    && c.release_reason.as_deref() == Some("waiting")
+                    && c.released_at.is_some()
+            })
+            .ok_or_else(|| refused("only the original waiting session may resume from chat"))?;
+        if message.trim().is_empty() {
+            return Err(bad_args("resume needs a nonempty human chat message"));
+        }
+        self.note(
+            &id,
+            &format!("Session reported a human reply in chat:\n\n{message}"),
+            None,
+            false,
+        )?;
+        issue.state = State::Claimed;
+        Self::clear_waiting(&mut issue);
+        self.save_issue(&issue)?;
+        let claim = self.restore_waiting_claim(&id, &previous, false)?;
+        self.event(
+            Some(&id),
+            "resume_chat",
+            json!({"message": message, "resumed_from": previous.id, "claim": claim}),
+        )?;
+        self.active_claim(&id)?
+            .ok_or_else(|| Error::new(Code::Internal, "restored claim vanished"))
+    }
+
     fn resume_human_gate(&self, id: &str) -> Result<()> {
         if self.actor().is_agent() {
             return Err(Error::new(Code::NotPermitted, "only a human may authorize trk resume")
                 .with_issue(id)
-                .with_hint("ask the human to run `trk resume <ID> -m \"continuation instructions\"`; chat or restored access alone does not restore a claim"));
+                .with_hint("ask the human to run `trk resume <ID> -m \"continuation instructions\"`; only an eligible no-check waiting session may instead report a human chat reply through the MCP resume tool"));
         }
         Ok(())
     }
@@ -870,7 +933,7 @@ impl Ctx<'_> {
         )?)
     }
 
-    /// Shared restoration for automatic check wakes and human continuation.
+    /// Shared restoration for automatic check wakes and manual continuation.
     fn restore_waiting_claim(&self, id: &str, previous: &Claim, by_check: bool) -> Result<i64> {
         let lease_until = fmt_ts(self.now + self.opts.agent_lease);
         self.conn.execute(

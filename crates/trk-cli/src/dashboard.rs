@@ -752,6 +752,52 @@ mod tests {
     }
 
     #[test]
+    fn chat_resume_is_distinct_from_human_authorization_on_issue_and_dashboard() {
+        let (_dir, mut store) = sample();
+        let id = store
+            .write(HUMAN, false, |c| {
+                c.create(NewIssue {
+                    title: "Choose a continuation".into(),
+                    ..Default::default()
+                })
+            })
+            .unwrap();
+        store
+            .write(AGENT, false, |c| {
+                c.claim(&id, ClaimOpts::default())?;
+                c.wait(
+                    &id,
+                    WaitOpts {
+                        reason: Some("Choose option A or B".into()),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+        store
+            .write(AGENT, false, |c| c.resume_chat(&id, "Use option B."))
+            .unwrap();
+        let shown = store
+            .read(None, |c| c.show(&id, trk_core::view::With::parse("notes")))
+            .unwrap();
+        let pretty = crate::render::Renderer {
+            format: crate::render::Format::Pretty,
+            color: false,
+        }
+        .issue(&shown);
+        assert!(pretty.contains("Session reported a human reply in chat:"));
+        assert!(pretty.contains("Use option B."));
+        assert!(!pretty.contains("Human authorized"));
+        let mut ui = ui_of(&store);
+        let text = screen(&mut ui, 180, 50);
+        assert!(
+            text.contains("session reported a human chat reply; resumed"),
+            "{text}"
+        );
+        assert!(!text.contains("Human authorized"));
+    }
+
+    #[test]
     fn draws_groups_with_their_details_in_the_list_and_activity() {
         let (_d, s) = sample();
         let mut ui = ui_of(&s);

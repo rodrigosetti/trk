@@ -61,6 +61,7 @@ pub struct UserConfig {
     pub user: UserSection,
     pub issues: IssuesSection,
     pub claims: ClaimsSection,
+    pub wait: WaitSection,
     pub check: CheckSection,
     pub run: RunSection,
     /// CLI skill locations; absent settings use the standard path without links.
@@ -137,6 +138,20 @@ impl Default for ClaimsSection {
 
 fn default_lease() -> String {
     "30m".into()
+}
+
+/// Settings for session continuation after a no-check wait.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WaitSection {
+    /// Let the waiting session report a human reply received in its own chat.
+    pub chat_resume: bool,
+}
+
+impl Default for WaitSection {
+    fn default() -> Self {
+        Self { chat_resume: true }
+    }
 }
 
 /// Settings for waiting checks and `trk check`.
