@@ -49,6 +49,16 @@ unless `--force` is given; custom sources and `--minimal` shared-config installs
 not filtered. If no launcher is usable, install one, edit `[launcher] use`, or use
 `trk run --fg` in the current terminal.
 
+## Configuration
+
+Project settings live in `.trk/config.toml`. User settings live in `config.toml`
+under `$TRK_USER_DIR`, otherwise `$XDG_CONFIG_HOME/trk`, otherwise `~/.config/trk`.
+Settings resolve per key: **built-in defaults < user < project**.
+`trk whoami --json` shows the resolved user directory. Normal installs write full
+project settings; remove project keys to inherit their user-level values.
+See the [configuration reference](https://rodrigosetti.github.io/trk/configuration.html)
+for all settings and agent, type, and prompt lookup rules.
+
 ## Create
 
 Only the title is required. Write a description that lets someone start cold: what is needed, why, and how to tell it is done.

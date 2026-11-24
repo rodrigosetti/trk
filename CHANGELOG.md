@@ -10,6 +10,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Agent launching in dedicated Git worktrees, with claims, leases, and session tracking.
 - Serialized waiting checks for verification and landing, plus a live dashboard and Herdr integration.
 - Embedded installation seeds, configurable agents, harnesses, launchers, and prompts.
+- Configuration reference links and user-layer guidance in installed config and skill files, plus a manual link in CLI help.
 
 ### Beta compatibility and upgrades
 

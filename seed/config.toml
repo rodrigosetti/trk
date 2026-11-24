@@ -1,5 +1,9 @@
 # trk settings for this project: launcher templates, harness profiles and
 # named views. `trk install` writes every setting here; nothing is implied.
+# Configuration reference: https://rodrigosetti.github.io/trk/configuration.html
+# Layers: built-in defaults < user config.toml < this project config.toml.
+# User directory: $TRK_USER_DIR, else $XDG_CONFIG_HOME/trk, else ~/.config/trk.
+# `trk whoami` shows the resolved user directory.
 
 [user]
 # Your human actor is human:<email>. Without it, pass --as or set TRK_ACTOR.

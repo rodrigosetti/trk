@@ -1,5 +1,16 @@
 # trk reference
 
+## Configuration
+
+Project settings are in `.trk/config.toml`. The optional user `config.toml` lives
+in `$TRK_USER_DIR`, otherwise `$XDG_CONFIG_HOME/trk`, otherwise `~/.config/trk`.
+Settings merge per key in order: **built-in defaults < user < project**; tables
+merge recursively, while arrays and scalars replace lower-layer values.
+`trk whoami --json` shows the resolved user directory. Normal installs write full
+project settings; remove project keys to inherit their user-level values.
+Agents, types, and prompts resolve by whole filename, project first, then user.
+See the [configuration reference](https://rodrigosetti.github.io/trk/configuration.html).
+
 ## Query language
 
 `trk list QUERY` and `trk ready QUERY` take one string of terms joined by AND.
