@@ -11,9 +11,10 @@ mod render;
 mod run;
 mod skill;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use serde_json::{Value, json};
@@ -71,12 +72,21 @@ enum Cmd {
         It also refreshes the Herdr mod when that is installed (see `trk herdr`)."
     )]
     Install {
-        /// Overwrite existing config files with the defaults
+        /// Overwrite existing config files with the selected source
         #[arg(long)]
         force: bool,
         /// Prefix of new issue ids (default: from the directory name)
         #[arg(long)]
         prefix: Option<String>,
+        /// Install common files plus a built-in preset (default: default)
+        #[arg(long, value_name = "NAME", conflicts_with = "from")]
+        preset: Option<String>,
+        /// Install files from this directory instead of the built-in seed
+        #[arg(long, value_name = "DIR")]
+        from: Option<PathBuf>,
+        /// List built-in presets without installing anything
+        #[arg(long, conflicts_with_all = ["force", "prefix", "preset", "from"])]
+        list_presets: bool,
     },
     /// Query issues; `@view` runs a saved view
     List {
@@ -524,8 +534,27 @@ fn show_one(env: &Env, store: &trk_core::Store, id: &str) -> Result<Out> {
 }
 
 fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
-    if let Cmd::Install { force, prefix } = cmd {
-        return install(g, force, prefix);
+    if let Cmd::Install {
+        force,
+        prefix,
+        preset,
+        from,
+        list_presets,
+    } = cmd
+    {
+        if list_presets {
+            return Ok(Out::Text(
+                seed::PRESETS.join("\n"),
+                json!({"presets": seed::PRESETS}),
+            ));
+        }
+        return install(
+            g,
+            force,
+            prefix,
+            preset.as_deref().unwrap_or("default"),
+            from.as_deref(),
+        );
     }
     // The mod is machine-wide: installing and removing it need no project.
     let cmd = match cmd {
@@ -907,10 +936,55 @@ fn default_prefix(root: &std::path::Path) -> String {
     }
 }
 
-/// `trk install`: `.trk/` with the default config and the database, plus the
-/// agent skill. An installed Herdr mod is refreshed. Existing config files
-/// are kept unless `force`.
-fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
+type InstallFiles = BTreeMap<PathBuf, Cow<'static, [u8]>>;
+
+fn read_install_files(root: &Path, dir: &Path, files: &mut InstallFiles) -> Result<()> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| bad_args(format!("cannot read install source {}: {e}", dir.display())))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            read_install_files(root, &path, files)?;
+        } else if kind.is_file() {
+            files.insert(
+                path.strip_prefix(root).unwrap().to_path_buf(),
+                Cow::Owned(std::fs::read(&path)?),
+            );
+        } else {
+            return Err(bad_args(format!(
+                "install source entries must be regular files or directories: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Install the selected source and database, and refresh the agent skill and
+/// installed Herdr mod. Existing config files are kept unless `force`.
+fn install(
+    g: &Global,
+    force: bool,
+    prefix: Option<String>,
+    preset: &str,
+    from: Option<&Path>,
+) -> Result<Out> {
+    let mut files: InstallFiles = if let Some(root) = from {
+        let mut files = BTreeMap::new();
+        read_install_files(root, root, &mut files)?;
+        files
+    } else {
+        seed::preset(preset)
+            .ok_or_else(|| {
+                bad_args(format!("unknown install preset {preset:?}"))
+                    .with_hint("run `trk install --list-presets` to see available presets")
+            })?
+            .into_iter()
+            .map(|(path, content)| (PathBuf::from(path), Cow::Borrowed(content)))
+            .collect()
+    };
     let loc = env::Location::find(g);
     let dir = loc.dir.clone();
     let root = loc.root.clone();
@@ -933,49 +1007,54 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
         .map(String::from)
         .or_else(|| env::git(&root, &["config", "user.email"]).filter(|e| !e.is_empty()));
     let prefix = prefix.unwrap_or_else(|| default_prefix(&root));
-    let config_toml = seed::CONFIG_TOML
-        .replace(
-            "{{EMAIL_LINE}}",
-            &match &email {
-                Some(e) => format!("email = \"{e}\""),
-                None => "# email = \"you@example.com\"".to_string(),
-            },
-        )
-        .replace("{{PREFIX}}", &prefix)
-        .replace(
-            "{{BASE}}",
-            &toml::Value::String(env::detect_base(&root)).to_string(),
+    if let Some(content) = files.get_mut(Path::new("config.toml")) {
+        let template = std::str::from_utf8(content)
+            .map_err(|e| bad_args(format!("install source config.toml is not UTF-8: {e}")))?;
+        *content = Cow::Owned(
+            template
+                .replace(
+                    "{{EMAIL_LINE}}",
+                    &match &email {
+                        Some(e) => format!("email = {}", toml::Value::String(e.clone())),
+                        None => "# email = \"you@example.com\"".to_string(),
+                    },
+                )
+                .replace("{{PREFIX}}", &prefix)
+                .replace(
+                    "{{BASE}}",
+                    &toml::Value::String(env::detect_base(&root)).to_string(),
+                )
+                .into_bytes(),
         );
-    let mut files: Vec<(&str, String)> = vec![
-        (".gitignore", seed::GITIGNORE.to_string()),
-        ("config.toml", config_toml),
-    ];
-    files.extend(seed::FILES.iter().map(|(p, c)| (*p, c.to_string())));
+    }
     let mut written = vec![];
     let mut kept = vec![];
-    // Kept files whose content is not the default: the user's edits, or
-    // defaults that changed since they were written.
+    // Compare kept files with the selected source, not another preset.
     let mut differ = vec![];
     for (rel, content) in files {
-        let p = dir.join(rel);
+        let p = dir.join(&rel);
+        let name = rel.to_string_lossy().into_owned();
         if p.exists() && !force {
-            kept.push(rel.to_string());
-            if std::fs::read_to_string(&p).is_ok_and(|s| {
-                if rel == "config.toml" {
+            kept.push(name.clone());
+            if std::fs::read(&p).is_ok_and(|installed| {
+                if rel == Path::new("config.toml") {
                     // Compare profiles, not project identity or formatting.
-                    let installed = toml::from_str::<toml::Table>(&s);
-                    let seed = toml::from_str::<toml::Table>(&content);
-                    match (installed, seed) {
-                        (Ok(installed), Ok(seed)) => {
-                            installed.get("harness") != seed.get("harness")
+                    let parse = |bytes: &[u8]| {
+                        std::str::from_utf8(bytes)
+                            .ok()
+                            .and_then(|s| toml::from_str::<toml::Table>(s).ok())
+                    };
+                    match (parse(&installed), parse(&content)) {
+                        (Some(installed), Some(source)) => {
+                            installed.get("harness") != source.get("harness")
                         }
                         _ => true,
                     }
                 } else {
-                    s != content
+                    installed != content.as_ref()
                 }
             }) {
-                differ.push(rel.to_string());
+                differ.push(name);
             }
             continue;
         }
@@ -983,7 +1062,7 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&p, content)?;
-        written.push(rel.to_string());
+        written.push(name);
     }
     let env = Env::at(loc, g)?;
     let created = !env.db.is_file();
@@ -1011,7 +1090,7 @@ fn install(g: &Global, force: bool, prefix: Option<String>) -> Result<Out> {
     }
     if !differ.is_empty() {
         text.push_str(&format!(
-            "\n\nKept files that differ from this trk's defaults (your edits, or newer defaults):\n  {}",
+            "\n\nKept files that differ from the selected install source (your edits, or newer defaults):\n  {}",
             differ.join("\n  ")
         ));
     }
