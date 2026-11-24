@@ -612,9 +612,16 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>) -> Result<Out> {
             let mut items = vec![];
             for id in &ids {
                 let mut issue = store.read(env.actor.as_deref(), |c| c.show(id, w))?;
-                let cfg = trk_agent::routing::RoutingConfig::new(&env.config);
-                issue["routing"] =
-                    json!(cfg.resolve(issue["type"].as_str().unwrap_or_default(), None)?);
+                if store
+                    .opts
+                    .known_types
+                    .iter()
+                    .any(|name| Some(name.as_str()) == issue["type"].as_str())
+                {
+                    let cfg = trk_agent::routing::RoutingConfig::new(&env.config);
+                    issue["routing"] =
+                        json!(cfg.resolve(issue["type"].as_str().unwrap_or_default(), None)?);
+                }
                 items.push(issue);
             }
             if items.len() == 1 {
@@ -1264,7 +1271,7 @@ fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
                     title: Some(d.title),
                     description: Some(d.description),
                     priority: Some(d.priority),
-                    issue_type: Some(d.issue_type),
+                    issue_type: (d.issue_type.trim() != cur.issue_type).then_some(d.issue_type),
                 },
             )?;
             c.show(&cur.id, SHOWN)

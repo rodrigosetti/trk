@@ -117,12 +117,16 @@ fn check_priority(p: &str) -> Result<String> {
     }
 }
 
-fn check_type(issue_type: &str) -> Result<&str> {
+fn check_type<'a>(issue_type: &'a str, allowed: &[String]) -> Result<&'a str> {
     let issue_type = issue_type.trim();
-    if issue_type.is_empty() {
-        Err(Error::new(Code::InvalidField, "the type cannot be empty"))
-    } else {
+    if !issue_type.is_empty() && allowed.iter().any(|name| name == issue_type) {
         Ok(issue_type)
+    } else {
+        Err(
+            Error::new(Code::InvalidField, format!("unknown type '{issue_type}'"))
+                .with_detail("allowed", json!(allowed))
+                .with_hint("choose a type from .trk/types/ or add a types/<name>.toml definition"),
+        )
     }
 }
 
@@ -301,7 +305,10 @@ impl Ctx<'_> {
                 .with_hint("trk create -t TITLE [-d DESCRIPTION]"));
         }
         let priority = check_priority(new.priority.as_deref().unwrap_or(DEFAULT_PRIORITY))?;
-        let issue_type = check_type(new.issue_type.as_deref().unwrap_or(&self.opts.default_type))?;
+        let issue_type = check_type(
+            new.issue_type.as_deref().unwrap_or(&self.opts.default_type),
+            &self.opts.known_types,
+        )?;
         let followup_of = new
             .followup_of
             .as_deref()
@@ -422,7 +429,7 @@ impl Ctx<'_> {
             }
         }
         if let Some(t) = e.issue_type {
-            let t = check_type(&t)?;
+            let t = check_type(&t, &self.opts.known_types)?;
             if t != issue.issue_type {
                 changes.insert("type".into(), json!({"from": issue.issue_type, "to": t}));
                 issue.issue_type = t.to_owned();

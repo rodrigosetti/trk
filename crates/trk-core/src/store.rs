@@ -32,6 +32,9 @@ pub struct StoreOpts {
     pub prefix: String,
     /// Type assigned to issues created without an explicit type.
     pub default_type: String,
+    /// Project type names accepted when creating an issue or setting its type.
+    /// Callers supply names from `.trk/types/*.toml`; reads do not validate them.
+    pub known_types: Vec<String>,
 }
 
 impl Default for StoreOpts {
@@ -43,6 +46,7 @@ impl Default for StoreOpts {
             max_wakes: 5,
             prefix: "trk".into(),
             default_type: crate::seed::DEFAULT_TYPE.into(),
+            known_types: vec![crate::seed::DEFAULT_TYPE.into()],
         }
     }
 }

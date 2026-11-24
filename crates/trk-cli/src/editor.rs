@@ -70,8 +70,7 @@ pub fn parse(doc: &str) -> Result<Doc> {
         match k.as_str() {
             "title" => d.title = v,
             "priority" => d.priority = v,
-            "type" if !v.trim().is_empty() => d.issue_type = v,
-            "type" => return Err(bad("type must not be empty".into())),
+            "type" => d.issue_type = v,
             other => return Err(bad(format!("unknown key '{other}' in the front matter"))),
         }
     }
@@ -149,6 +148,5 @@ mod tests {
         assert!(parse("no front matter").is_err());
         assert!(parse("+++\nowner = \"x\"\n+++\n").is_err());
         assert!(parse("+++\ntitle = \"Missing type\"\n+++\n").is_err());
-        assert!(parse("+++\ntype = \"\"\n+++\n").is_err());
     }
 }

@@ -265,6 +265,13 @@ impl Env {
             max_wakes: self.user.check.max_wakes,
             prefix: self.user.issues.prefix.clone(),
             default_type: self.user.issues.default_type.clone(),
+            known_types: self
+                .config
+                .files_in("types", "toml")
+                .iter()
+                .filter(|path| path.is_file())
+                .map(|path| path.file_stem().unwrap().to_string_lossy().into_owned())
+                .collect(),
         })
     }
 
