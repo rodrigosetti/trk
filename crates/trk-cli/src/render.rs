@@ -239,11 +239,11 @@ impl Renderer {
         }
     }
 
-    fn issue_id(&self, s: &str) -> String {
+    pub(crate) fn issue_id(&self, s: &str) -> String {
         self.heading(s)
     }
 
-    fn ready(&self, s: &str) -> String {
+    pub(crate) fn ready(&self, s: &str) -> String {
         if self.color {
             s.green().to_string()
         } else {
@@ -251,9 +251,25 @@ impl Renderer {
         }
     }
 
-    fn warning(&self, s: &str) -> String {
+    pub(crate) fn warning(&self, s: &str) -> String {
         if self.color {
             s.yellow().to_string()
+        } else {
+            s.to_string()
+        }
+    }
+
+    pub(crate) fn activity(&self, s: &str) -> String {
+        if self.color {
+            s.cyan().to_string()
+        } else {
+            s.to_string()
+        }
+    }
+
+    pub(crate) fn failure(&self, s: &str) -> String {
+        if self.color {
+            s.red().bold().to_string()
         } else {
             s.to_string()
         }

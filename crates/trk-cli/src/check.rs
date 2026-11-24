@@ -26,7 +26,7 @@ use trk_core::model::{CHECK_RETRY_EXIT, Issue, State};
 use trk_core::ops::{CHECK_OUTPUT_TAIL, CheckResult, CheckRun};
 
 use crate::env::{Env, git, hostname};
-use crate::render::{Out, until};
+use crate::render::{Out, Renderer, until};
 
 pub struct CheckArgs {
     pub id: Option<String>,
@@ -422,7 +422,7 @@ fn sweep(env: &Env, a: &CheckArgs) -> Option<Value> {
     }
 }
 
-fn gc_lines(gc: Option<&Value>, seen_skips: &mut HashSet<String>) -> Vec<String> {
+fn gc_lines(gc: Option<&Value>, seen_skips: &mut HashSet<String>, r: &Renderer) -> Vec<String> {
     let mut lines = Vec::new();
     let Some(gc) = gc else { return lines };
     if let Some(issues) = gc["issues"].as_array() {
@@ -434,12 +434,12 @@ fn gc_lines(gc: Option<&Value>, seen_skips: &mut HashSet<String>) -> Vec<String>
                 .collect();
             if !removed.is_empty() {
                 lines.push(format!(
-                    "{}  gc: {} {}",
-                    id,
+                    "{}  {} {}",
+                    r.issue_id(id),
                     if gc["dry_run"] == true {
-                        "would remove"
+                        r.activity("gc: would remove")
                     } else {
-                        "removed"
+                        r.ready("gc: removed")
                     },
                     removed.join(", "),
                 ));
@@ -459,12 +459,16 @@ fn gc_lines(gc: Option<&Value>, seen_skips: &mut HashSet<String>) -> Vec<String>
                 if !reasons.is_empty() {
                     seen_skips.insert(id.to_owned());
                     if removed.is_empty() {
-                        lines.push(format!("{id}  gc: skipped {reasons}"));
+                        lines.push(format!(
+                            "{}  {} {reasons}",
+                            r.issue_id(id),
+                            r.warning("gc: skipped")
+                        ));
                     } else {
                         lines
                             .last_mut()
                             .unwrap()
-                            .push_str(&format!("; skipped {reasons}"));
+                            .push_str(&format!("; {} {reasons}", r.warning("skipped")));
                     }
                 }
             }
@@ -472,7 +476,7 @@ fn gc_lines(gc: Option<&Value>, seen_skips: &mut HashSet<String>) -> Vec<String>
     }
     if let Some(errors) = gc["errors"].as_array() {
         for error in errors.iter().filter_map(Value::as_str) {
-            lines.push(format!("gc: {error} (will retry on the next pass)"));
+            lines.push(r.warning(&format!("gc: {error} (will retry on the next pass)")));
         }
     }
     lines
@@ -665,42 +669,56 @@ fn pass(
     Ok(Ok(Pass { results: out, gc }))
 }
 
-fn line(r: &Value) -> String {
-    let id = r["issue"].as_str().unwrap_or("");
-    let title = r["title"].as_str().unwrap_or("");
-    match r["result"].as_str().unwrap_or("") {
-        "passed" => format!("✓ {id}  passed → closed  {title}"),
+fn line(v: &Value, r: &Renderer) -> String {
+    let id = r.issue_id(v["issue"].as_str().unwrap_or(""));
+    let title = v["title"].as_str().unwrap_or("");
+    match v["result"].as_str().unwrap_or("") {
+        "passed" => format!(
+            "{} {id}  {}  {title}",
+            r.ready("✓"),
+            r.ready("passed → closed")
+        ),
         "retry" => format!(
-            "◷ {id}  not yet (exit {CHECK_RETRY_EXIT}), next {}  {title}",
-            r["next_check_at"].as_str().map(until).unwrap_or_default()
+            "{} {id}  {}  {title}",
+            r.activity("◷"),
+            r.activity(&format!(
+                "not yet (exit {CHECK_RETRY_EXIT}), next {}",
+                v["next_check_at"].as_str().map(until).unwrap_or_default()
+            ))
         ),
         "failed" | "woken" => format!(
-            "✗ {id}  {} → {}, output in a note  {title}",
-            if r["timed_out"].as_bool() == Some(true) {
+            "{} {id}  {} → {}, output in a note  {title}",
+            r.failure("✗"),
+            r.failure(&if v["timed_out"].as_bool() == Some(true) {
                 "timed out".to_string()
             } else {
-                match r["exit"].as_i64() {
+                match v["exit"].as_i64() {
                     Some(c) => format!("failed (exit {c})"),
                     None => "could not run".to_string(),
                 }
-            },
-            if r["result"] == "woken" {
+            }),
+            if v["result"] == "woken" {
                 "claimed, session woken"
             } else {
                 "open"
             }
         ),
-        "skipped" => format!("- {id}  changed while checking or delivering its wake  {title}"),
+        "skipped" => format!(
+            "{} {id}  {}  {title}",
+            r.warning("-"),
+            r.warning("changed while checking or delivering its wake")
+        ),
         "would_run" => {
             let mut s = format!(
-                "{id}  {title}\n    check  {}",
-                r["check"].as_str().unwrap_or("")
+                "{id}  {title}\n    {}  {}",
+                r.activity("check"),
+                v["check"].as_str().unwrap_or("")
             );
-            if let Some(c) = r["cwd"].as_str() {
-                s.push_str(&format!("\n    in     {c}"));
+            if let Some(c) = v["cwd"].as_str() {
+                s.push_str(&format!("\n    {}     {c}", r.activity("in")));
             }
-            if let Some(p) = r["problem"].as_str() {
-                s.push_str(&format!("\n    ✗ {p}"));
+            if let Some(p) = v["problem"].as_str() {
+                s.push_str(&format!("\n    {} {p}", r.failure("✗")));
             }
             s
         }
@@ -720,7 +738,12 @@ fn busy_text(h: &Value) -> String {
     )
 }
 
-pub fn check(env: &Env, a: CheckArgs, mut completed: Vec<Value>) -> Result<Out> {
+pub fn check(
+    env: &Env,
+    a: CheckArgs,
+    mut completed: Vec<Value>,
+    renderer: &Renderer,
+) -> Result<Out> {
     let executable = Executable::new()?;
     let interrupt = Interrupt::new()?;
     let mut seen_skips = HashSet::new();
@@ -736,15 +759,15 @@ pub fn check(env: &Env, a: CheckArgs, mut completed: Vec<Value>) -> Result<Out> 
             match pass(env, &a, &interrupt, &executable, &completed) {
                 Ok(Ok(pass)) => {
                     for r in &pass.results {
-                        println!("{}", line(r));
+                        println!("{}", line(r, renderer));
                     }
-                    for line in gc_lines(pass.gc.as_ref(), &mut seen_skips) {
+                    for line in gc_lines(pass.gc.as_ref(), &mut seen_skips, renderer) {
                         println!("{line}");
                     }
                     completed.extend(pass.results);
                 }
-                Ok(Err(holder)) => eprintln!("{}", busy_text(&holder)),
-                Err(e) => eprintln!("error: {}", e.message()),
+                Ok(Err(holder)) => eprintln!("{}", renderer.warning(&busy_text(&holder))),
+                Err(e) => eprintln!("{} {}", renderer.failure("error:"), e.message()),
             }
             let until = Instant::now() + pause;
             while Instant::now() < until {
@@ -762,8 +785,11 @@ pub fn check(env: &Env, a: CheckArgs, mut completed: Vec<Value>) -> Result<Out> 
     }
     match pass(env, &a, &interrupt, &executable, &completed)? {
         Err(holder) => {
-            let mut text = completed.iter().map(line).collect::<Vec<_>>();
-            text.push(busy_text(&holder));
+            let mut text = completed
+                .iter()
+                .map(|v| line(v, renderer))
+                .collect::<Vec<_>>();
+            text.push(renderer.warning(&busy_text(&holder)));
             Ok(Out::Text(
                 text.join("\n"),
                 json!({"busy": true, "holder": holder, "results": completed}),
@@ -777,14 +803,18 @@ pub fn check(env: &Env, a: CheckArgs, mut completed: Vec<Value>) -> Result<Out> 
             let results = completed;
             let mut text = if results.is_empty() {
                 if a.all || a.id.is_some() {
-                    "no waiting issue has a check".to_string()
+                    renderer.activity("no waiting issue has a check")
                 } else {
-                    "no check is due".to_string()
+                    renderer.activity("no check is due")
                 }
             } else {
-                results.iter().map(line).collect::<Vec<_>>().join("\n")
+                results
+                    .iter()
+                    .map(|v| line(v, renderer))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             };
-            let gc_text = gc_lines(pass.gc.as_ref(), &mut seen_skips);
+            let gc_text = gc_lines(pass.gc.as_ref(), &mut seen_skips, renderer);
             if !gc_text.is_empty() {
                 text.push('\n');
                 text.push_str(&gc_text.join("\n"));

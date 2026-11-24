@@ -15,8 +15,9 @@ Each issue row and detail header shows a colored type badge, including `code-cha
 Built-in types use consistent theme colors; custom types get a stable color from their name.
 The type text stays readable in the theme's foreground color, with a full-name tooltip.
 Issue IDs and type labels use shared, left-aligned columns across all dashboard sections.
-Titles wrap in the remaining width, with status and links below them. Column widths adapt
-to the list pane when resized; long IDs and custom type names wrap instead of being clipped.
+Titles wrap in the remaining width. Working-session spinners prefix the title, aligned with
+its first line; links and other statuses stay below, with no empty row for spinner-only issues.
+Column widths adapt to the list pane when resized; long IDs and custom type names wrap instead of being clipped.
 
 That is the whole setup. Herdr mods are machine-wide and a space shows one once a pane or tab
 there holds it, so `open` does both steps: it installs or refreshes the mod when needed, then
