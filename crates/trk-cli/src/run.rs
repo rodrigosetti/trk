@@ -178,10 +178,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let actor = format!("agent:{hname}:{uuid}");
     let project = env.root.file_name().unwrap_or_default().to_string_lossy();
     let default_naming = Launcher::default();
-    let naming = selected
-        .as_ref()
-        .map(|(launcher, _)| launcher)
-        .unwrap_or(&default_naming);
+    let naming = selected.as_ref().unwrap_or(&default_naming);
     let mut terminal = naming.terminal_name(&[
         ("id", &id),
         ("prefix", &env.user.issues.prefix),
@@ -216,8 +213,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             ensure_worktree(co, wt, &id, &base)?;
             std::fs::create_dir_all(&cwd)?;
             // Agents reach trk through MCP only; a committed skill would reach them anyway.
-            let settings = crate::skill::settings(&env.root, env.user.skill.as_ref());
-            for rel in crate::skill::paths(&settings) {
+            for rel in crate::skill::paths(&env.user.skill) {
                 let full = env.root.join(rel);
                 if let Ok(relative) = full.strip_prefix(&env.root)
                     && git(&cwd, &["ls-files", "--", &relative.to_string_lossy()])
@@ -241,8 +237,8 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         worktree: wt_str.clone(),
         host: hostname(),
         agent: Some(agent_name.clone()),
-        terminal: if a.fg { None } else { Some(terminal.clone()) },
-        launcher: selected.as_ref().and_then(|(l, _)| l.name.clone()),
+        terminal: selected.as_ref().map(|_| terminal.clone()),
+        launcher: selected.as_ref().and_then(|launcher| launcher.name.clone()),
         steal: false,
         on_behalf_of: Some(human.clone()),
     };
@@ -356,7 +352,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             json!({"issue": id, "actor": actor, "exit_code": st.code()}),
         ));
     }
-    let (l, fallback_placement) = selected.expect("background launch selects a profile");
+    let l = selected.expect("background launch selects a profile");
     let mut vars = BTreeMap::new();
     vars.insert("name", terminal.clone());
     vars.insert("cwd", cwd_s.clone());
@@ -375,14 +371,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         vars.insert("name", terminal.clone());
         (String::new(), Some(placement))
     } else {
-        let Some(start) = l.start.as_deref().filter(|start| !start.is_empty()) else {
-            undo(&mut store, "launch failed: no launcher start template");
-            return Err(Error::new(
-                Code::ConfigInvalid,
-                "no launcher start template in config.toml",
-            )
-            .with_hint("use --fg to run in this terminal, or configure [launcher]"));
-        };
+        let start = l.start.as_deref().expect("validated launcher start");
         let out = match launcher::capture(start, &vars) {
             Ok(out) if out.success => out,
             result => {
@@ -408,7 +397,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             terminal = address.to_owned();
             vars.insert("name", terminal.clone());
         }
-        (out.text, fallback_placement)
+        (out.text, None)
     };
     if let Some(warning) = placement.as_ref().and_then(|p| p.warning()) {
         eprintln!("warning: {warning}");
@@ -480,16 +469,29 @@ pub fn session_alive(
     launcher.exists(terminal)
 }
 
+fn claim_session_alive(env: &Env, claim: &Value) -> Result<Option<bool>> {
+    let Some(terminal) = claim["terminal"]
+        .as_str()
+        .filter(|name| !name.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let Some(launcher) = launcher::for_claim(env, claim["launcher"].as_str())? else {
+        return Ok(None);
+    };
+    Ok(session_alive(
+        &launcher,
+        claim["host"].as_str(),
+        Some(terminal),
+    ))
+}
+
 pub fn runs(env: &Env) -> Result<Out> {
     let store = env.store()?;
     let mut runs = store.read(None, |c| c.runs())?;
     for r in &mut runs {
         r["mcp_alive"] = json!(mcp_alive(&r["meta"]));
-        r["session_alive"] = json!(session_alive(
-            &launcher::for_claim(env, r["launcher"].as_str())?,
-            r["host"].as_str(),
-            r["terminal"].as_str(),
-        ));
+        r["session_alive"] = json!(claim_session_alive(env, r)?);
     }
     let mut t = comfy_table::Table::new();
     t.load_style(comfy_table::presets::NOTHING);
@@ -526,12 +528,17 @@ pub fn runs(env: &Env) -> Result<Out> {
     Ok(Out::Text(text, Value::Array(runs)))
 }
 
-fn terminal_of(env: &Env, id: &str) -> Result<(String, Claim)> {
-    env.store()?.read(None, |c| {
+fn terminal_of(env: &Env, id: &str) -> Result<(String, Claim, Launcher)> {
+    let (id, claim) = env.store()?.read(None, |c| {
         let id = c.resolve_id(id)?;
         let claim = c
             .session_claim(&id)?
-            .filter(|claim| claim.terminal.is_some())
+            .filter(|claim| {
+                claim
+                    .terminal
+                    .as_deref()
+                    .is_some_and(|name| !name.trim().is_empty())
+            })
             .ok_or_else(|| {
                 Error::new(
                     Code::NotFound,
@@ -539,26 +546,31 @@ fn terminal_of(env: &Env, id: &str) -> Result<(String, Claim)> {
                 )
             })?;
         Ok((id, claim))
-    })
+    })?;
+    let launcher = launcher::for_claim(env, claim.launcher.as_deref())?.ok_or_else(|| {
+        Error::new(
+            Code::InvalidState,
+            format!("{id}: session has no named launcher profile"),
+        )
+        .with_issue(&id)
+        .with_hint("this terminal cannot be controlled by trk; open it directly, or start a replacement session with `trk run` once the issue is open")
+    })?;
+    Ok((id, claim, launcher))
 }
 
 pub fn attach(env: &Env, id: &str) -> Result<Out> {
-    let (id, claim) = terminal_of(env, id)?;
+    let (id, claim, l) = terminal_of(env, id)?;
     let name = claim.terminal.as_deref().expect("filtered terminal");
-    let l = launcher::for_claim(env, claim.launcher.as_deref())?;
     if !l.focus(name)?
         && let Some((false, _)) = l.operation(l.attach.as_deref(), name, None, true)?
     {
-        return Err(
-            Error::new(Code::Internal, format!("attach to {name} failed")).with_issue(&id),
-        );
+        return Err(Error::new(Code::Internal, format!("attach to {name} failed")).with_issue(&id));
     }
     Ok(Out::Silent(json!({"issue": id, "terminal": name})))
 }
 
 pub fn send(env: &Env, id: &str, text: &str) -> Result<Out> {
-    let (id, claim) = terminal_of(env, id)?;
-    let l = launcher::for_claim(env, claim.launcher.as_deref())?;
+    let (id, claim, l) = terminal_of(env, id)?;
     let name = claim.terminal.expect("filtered terminal");
     let Some(tmpl) = l.send.as_deref().filter(|tmpl| !tmpl.is_empty()) else {
         return Ok(Out::Silent(
@@ -617,14 +629,17 @@ pub fn resume(env: &Env, id: &str, message: &str) -> Result<Out> {
                 .with_hint(format!("if the original session is gone, a human must run `trk reopen {id} -m \"start a replacement\"` then `trk run {id}`; otherwise restore local session/terminal/send access and retry resume"))
         };
         let previous = previous.ok_or_else(unavailable)?;
-        if !ActorId::parse(&previous.actor)?.is_agent() {
+        if !ActorId::parse(&previous.actor)?.is_agent()
+            || previous
+                .terminal
+                .as_deref()
+                .is_none_or(|name| name.trim().is_empty())
+        {
             return Err(unavailable());
         }
-        let session = live_waiting_session(
-            &previous,
-            launcher::for_claim(env, previous.launcher.as_deref())?,
-        )
-        .ok_or_else(unavailable)?;
+        let launcher =
+            launcher::for_claim(env, previous.launcher.as_deref())?.ok_or_else(unavailable)?;
+        let session = live_waiting_session(&previous, launcher).ok_or_else(unavailable)?;
         let claim = store.write(&actor, false, |c| {
             c.resume(&id, previous.id, revision, message)
         })?;
@@ -709,10 +724,17 @@ pub fn waiting_session(env: &Env, issue: &str) -> Result<Option<WaitingSession>>
     let Some(claim) = waiting_claim(env, issue)? else {
         return Ok(None);
     };
-    Ok(live_waiting_session(
-        &claim,
-        launcher::for_claim(env, claim.launcher.as_deref())?,
-    ))
+    if claim
+        .terminal
+        .as_deref()
+        .is_none_or(|name| name.trim().is_empty())
+    {
+        return Ok(None);
+    }
+    let Some(launcher) = launcher::for_claim(env, claim.launcher.as_deref())? else {
+        return Ok(None);
+    };
+    Ok(live_waiting_session(&claim, launcher))
 }
 
 /// Best-effort UI update and notification to the session that left an issue waiting.
@@ -723,10 +745,16 @@ pub fn notify_waiting_session(env: &Env, issue: &str, text: &str, closed: bool) 
     let Some(claim) = waiting_claim(env, issue)? else {
         return Ok(());
     };
-    let Some(name) = &claim.terminal else {
+    let Some(name) = claim
+        .terminal
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+    else {
         return Ok(());
     };
-    let launcher = launcher::for_claim(env, claim.launcher.as_deref())?;
+    let Some(launcher) = launcher::for_claim(env, claim.launcher.as_deref())? else {
+        return Ok(());
+    };
     // Renaming is independent of agent liveness and message delivery.
     if closed {
         let title = env.store()?.read(None, |c| Ok(c.issue(issue)?.title))?;
@@ -745,13 +773,7 @@ pub fn reap(env: &Env) -> Result<Out> {
     let runs = store.read(None, |c| c.runs())?;
     let mut reaped = vec![];
     for r in runs {
-        if r["state"] != "claimed"
-            || session_alive(
-                &launcher::for_claim(env, r["launcher"].as_str())?,
-                r["host"].as_str(),
-                r["terminal"].as_str(),
-            ) != Some(false)
-        {
+        if r["state"] != "claimed" || claim_session_alive(env, &r)? != Some(false) {
             continue;
         }
         let id = r["issue"].as_str().unwrap_or_default().to_string();

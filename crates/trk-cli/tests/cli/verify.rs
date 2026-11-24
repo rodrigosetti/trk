@@ -176,6 +176,7 @@ fn verify_failure_wakes_a_live_waiting_session_even_for_exit_75() {
                     host: Some(local_host()),
                     worktree: Some(worktree.to_string_lossy().into_owned()),
                     terminal: Some("exact-origin".into()),
+                    launcher: Some("herdr".into()),
                     ..Default::default()
                 },
             )?;

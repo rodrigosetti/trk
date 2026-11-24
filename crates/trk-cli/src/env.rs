@@ -285,7 +285,7 @@ impl Env {
         self.project_git.as_ref().map(|g| g.primary.clone())
     }
 
-    /// `[run] base`, with repository detection for older configs.
+    /// `[run] base`, with repository default-branch detection when omitted.
     pub fn base(&self) -> String {
         self.user
             .run

@@ -82,7 +82,7 @@ fn sorted_paths(value: &Value) -> Vec<&str> {
 
 #[test]
 fn install_explicit_default_preset_preserves_the_original_seed_set() {
-    let e = Env::named();
+    let e = Env::with_install(false);
     let original: Vec<_> = DEFAULT_FILES
         .iter()
         .map(|path| std::fs::read(e.trk_dir().join(path)).unwrap())

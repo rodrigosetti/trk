@@ -155,16 +155,9 @@ fn landing_selection_only_changes_implementer_instructions() {
         )
         .unwrap();
         let issue = trk_agent::check::sample_issue(&user_config());
-        for landing in ["merge", "pr", "gitlab", "legacy"] {
+        for landing in ["merge", "pr", "gitlab"] {
             let mut config = user_config();
-            if landing == "legacy" {
-                let old = toml::to_string(&config)
-                    .unwrap()
-                    .replace("landing = \"merge\"\n", "");
-                config = toml::from_str(&old).unwrap();
-            } else {
-                config.run.landing = landing.into();
-            }
+            config.run.landing = landing.into();
             let diagnostics = trk_agent::check::check_agents(&seed, &config);
             assert!(
                 diagnostics.iter().all(|d| d.level != Level::Error),
@@ -196,7 +189,7 @@ fn landing_selection_only_changes_implementer_instructions() {
                 let implementer = name == "implementer";
                 assert_eq!(
                     rules.matches("git merge --ff-only").count(),
-                    usize::from(implementer && matches!(landing, "merge" | "legacy")),
+                    usize::from(implementer && landing == "merge"),
                     "{name}/{landing}: {rules}"
                 );
                 assert_eq!(
@@ -432,15 +425,15 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
     let mut agent = load_agent(&seed, "implementer").unwrap();
     agent.harness.args.insert(
         "claude-code".into(),
-        vec!["--label".into(), "issue {issue}: {model}".into()],
+        vec!["--label".into(), "issue {{ issue }}: {{ model }}".into()],
     );
     let model = "provider/model with 'quotes' $(echo nope)";
     profile
         .env
-        .insert("SELECTED_MODEL".into(), "{model}".into());
+        .insert("SELECTED_MODEL".into(), "{{ model }}".into());
     profile
         .files
-        .insert("{session_dir}/model.txt".into(), "{model}".into());
+        .insert("{{ session_dir }}/model.txt".into(), "{{ model }}".into());
     let briefing = "# issue: test\n\nQuotes: ' \" ` $HOME $(echo nope) ; & | < >\n\
                     Long detail: one two three four five six seven eight nine ten.\n";
     let spec = harness::build(LaunchInput {

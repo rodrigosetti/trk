@@ -35,6 +35,8 @@ mod verify;
 #[path = "cli/user_config.rs"]
 mod user_config;
 
+#[path = "cli/install_detection.rs"]
+mod install_detection;
 #[path = "cli/skill.rs"]
 mod skill;
 
@@ -58,29 +60,44 @@ impl Env {
         let config = std::fs::read_to_string(&path).unwrap();
         let start = config.find("[launcher]").unwrap();
         let end = config[start..].find("[harness]").unwrap() + start;
-        // Existing Herdr tests intentionally exercise the legacy flat format.
-        // Keep their string replacements independent of the install seed.
-        let legacy = r#"[launcher]
-start      = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
-herdr      = true
-attach     = ["hc", "attach", "{name}"]
-send       = ["hc", "send", "{name}", "{text}"]
+        // Keep terminal-boundary fixtures independent of the install seed.
+        let profiles = r#"[launcher]
+use = ["herdr"]
 send_delay = 5
 send_retries = 10
 send_retry_delay = 3
 
+[launcher.herdr]
+driver = "herdr"
+start      = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
+attach     = ["hc", "attach", "{name}"]
+send       = ["hc", "send", "{name}", "{text}"]
+
 "#;
         std::fs::write(
             path,
-            format!("{}{legacy}{}", &config[..start], &config[end..]),
+            format!("{}{profiles}{}", &config[..start], &config[end..]),
         )
         .unwrap();
         e
     }
 
-    /// Install the actual named-profile seed, without the legacy test fixture.
+    /// Seed profiles with deterministic preferences, independent of host tools.
     fn named() -> Env {
-        Self::with_install(false)
+        let e = Self::with_install(false);
+        let config: toml::Value =
+            toml::from_str(&std::fs::read_to_string(e.trk_dir().join("config.toml")).unwrap())
+                .unwrap();
+        for (section, key, value) in [
+            ("launcher", "use", "[\"herdr\", \"hc\"]"),
+            ("harness", "prefer", "[\"omp\", \"claude-code\"]"),
+        ] {
+            e.set_config(
+                &format!("{key} = {}", config[section][key]),
+                &format!("{key} = {value}"),
+            );
+        }
+        e
     }
 
     fn with_install(minimal: bool) -> Env {
@@ -1148,7 +1165,7 @@ fn install_writes_the_project_directory_and_the_skill() {
     assert!(e.create(&["New prefix"]).starts_with("other-"));
     assert_eq!(e.ok(&["show", &id])["id"], json!(id), "old ids remain");
 
-    // Detection is seeded only once; a newly installed harness does not change it.
+    // Harness installation does not change explicitly configured skill links.
     std::fs::create_dir_all(e.dir.path().join("home/.claude")).unwrap();
     let v = e.ok(&["install"]);
     assert_eq!(v["skill"]["links"], json!([]));
@@ -1168,11 +1185,7 @@ fn install_reports_outdated_codex_profile_without_overwriting_config() {
     std::fs::write(&path, &customized).unwrap();
     assert_eq!(e.ok(&["install"])["differ"], json!([]));
     let mut config: toml::Table = toml::from_str(&customized).unwrap();
-    let legacy: toml::Table = toml::from_str(include_str!(
-        "../../trk-agent/tests/fixtures/harness-legacy.toml"
-    ))
-    .unwrap();
-    config["harness"]["codex"] = legacy["harness"]["codex"].clone();
+    config["harness"]["codex"]["command"] = toml::Value::String("custom-codex".into());
     let outdated = toml::to_string(&config).unwrap();
     std::fs::write(&path, &outdated).unwrap();
     let result = e.ok(&["install"]);
@@ -1342,10 +1355,12 @@ timeout = "10m"
 [run]
 worktrees = ".trk/worktrees"
 [launcher]
+use = ["shell"]
+[launcher.shell]
 start = ["sh", "-c", "exec sh -c \"$1\"", "trk-launch", "{shell_command}"]
 [harness.omp]
 command = "sh"
-args = ["-c", "printf '%s\\n' \"$1\"", "trk-harness", "{briefing}"]
+args = ["-c", "printf '%s\\n' \"$1\"", "trk-harness", "{{ briefing }}"]
 builtin_tools = { read-only = [] }
 "#,
     )
@@ -1775,7 +1790,7 @@ fn run_resolves_profile_agent_per_harness_and_cli_models_and_args() {
         check(harness, Some("one-run"), &[], Some("one-run"));
     }
     let extra = r#"
-args = { omp = ["--label", "review {issue}: {model}"], opencode = ["--label", "{model}"] }
+args = { omp = ["--label", "review {{ issue }}: {{ model }}"], opencode = ["--label", "{{ model }}"] }
 "#;
     std::fs::write(
         &agent_path,
@@ -1826,7 +1841,7 @@ args = { omp = ["--label", "review {issue}: {model}"], opencode = ["--label", "{
     assert_eq!(reviewer["models"]["codex"], Value::Null);
     assert_eq!(
         reviewer["args"]["omp"],
-        json!(["--label", "review {issue}: {model}"])
+        json!(["--label", "review {{ issue }}: {{ model }}"])
     );
     let pretty = e
         .cmd()
@@ -2313,6 +2328,7 @@ esac
                     trk_core::ops::ClaimOpts {
                         host: Some(local_host()),
                         terminal: Some(terminal.into()),
+                        launcher: Some("herdr".into()),
                         ..Default::default()
                     },
                 )?;
@@ -2368,7 +2384,7 @@ esac
 }
 
 #[test]
-fn send_uses_configured_attempts_with_zero_and_legacy_defaults() {
+fn send_uses_configured_attempts_with_zero_and_normal_defaults() {
     for (retries, expected) in [(Some(0), 1), (Some(3), 3), (None, 10)] {
         let ui = WaitingUi::new();
         ui.e.set_config(
@@ -2419,7 +2435,7 @@ fn briefing_resume_and_check_delivery_use_configured_attempts() {
         ui.e.set_config("send_retries = 10", "send_retries = 2");
         ui.e.set_config("send_retry_delay = 3", "send_retry_delay = 0");
         if delivery == "briefing" {
-            ui.e.set_config("herdr      = true", "herdr = false");
+            ui.e.set_config("driver = \"herdr\"", "");
             ui.e.set_config(
                 r#"start      = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]"#,
                 r#"start = ["sh", "-c", "exit 0"]"#,
@@ -2599,7 +2615,7 @@ fn terminal_liveness_controls_dormant_mcp_wakes_and_reap() {
         ("herdr-unavailable", None),
         ("template-live", Some(true)),
         ("template-gone", Some(false)),
-        ("template-error", None),
+        ("template-error", Some(false)),
         ("template-missing", None),
         ("template-empty", None),
         ("template-unavailable", None),
@@ -2609,7 +2625,7 @@ fn terminal_liveness_controls_dormant_mcp_wakes_and_reap() {
     ] {
         let ui = WaitingUi::new();
         if mode.starts_with("template-") {
-            ui.e.set_config("herdr      = true", "herdr = false");
+            ui.e.set_config("driver = \"herdr\"", "");
             let template = match mode {
                 "template-live" => {
                     r#"["sh", "-c", "case \"$1\" in exact-origin|new-session) exit 0;; *) exit 1;; esac", "probe", "{name}"]"#
@@ -2621,7 +2637,10 @@ fn terminal_liveness_controls_dormant_mcp_wakes_and_reap() {
                 _ => "",
             };
             if !template.is_empty() {
-                ui.e.set_config("[launcher]", &format!("[launcher]\nalive = {template}"));
+                ui.e.set_config(
+                    "[launcher.herdr]",
+                    &format!("[launcher.herdr]\nexists = {template}"),
+                );
             }
         }
         let waiting = ui.waiting("echo dormant failure evidence; exit 1", false);
@@ -3001,7 +3020,7 @@ fn waiting_check_ui_and_message_failures_are_independent_and_nonfatal() {
                 "send       = [\"hc\",",
                 "send       = [\"missing-send-program\",",
             ),
-            "headless" => ui.e.set_config("herdr      = true", "herdr      = false"),
+            "headless" => ui.e.set_config("driver = \"herdr\"", ""),
             _ => {}
         }
         let id = ui.waiting("exit 0", mode != "dormant");
@@ -3047,7 +3066,7 @@ fn types_without_worktrees_run_and_check_in_the_project_root() {
              command = 'sh'\n\
              args = ['-c', 'pwd > observed-cwd']\n\
              builtin_tools = {{ read-only = [] }}\n\
-             files = {{ '.omp/mcp.json' = '{{mcp_json}}' }}\n"
+             files = {{ '.omp/mcp.json' = '{{{{ mcp_servers | tojson }}}}' }}\n"
         ),
     )
     .unwrap();
@@ -3105,4 +3124,55 @@ fn types_without_worktrees_run_and_check_in_the_project_root() {
         assert_eq!(check["results"][0]["result"], "passed", "{check:#}");
         assert_eq!(e.ok(&["show", &id])["state"], "closed");
     }
+}
+
+#[test]
+fn launcher_configuration_errors_name_the_invalid_setting() {
+    for (from, to, key) in [
+        ("use = [\"herdr\"]", "", "launcher.use"),
+        ("use = [\"herdr\"]", "use = \"herdr\"", "launcher.use"),
+        ("use = [\"herdr\"]", "use = [\"\"]", "launcher profile name"),
+        (
+            "use = [\"herdr\"]",
+            "use = [\"missing\"]",
+            "launcher.missing",
+        ),
+        (
+            "use = [\"herdr\"]",
+            "use = [\"empty\"]\n[launcher.empty]",
+            "launcher.empty.start",
+        ),
+        (
+            "driver = \"herdr\"",
+            "driver = \"unknown\"",
+            "launcher.herdr.driver",
+        ),
+        ("send_delay = 5", "send_delay = -1", "launcher.send_delay"),
+    ] {
+        let e = Env::new();
+        e.set_config(from, to);
+        let id = e.create(&["Invalid launcher"]);
+        let (_, response) = e.run(&["run", &id, "--harness", "omp"]);
+        assert_eq!(response["error"]["code"], "config_invalid", "{response}");
+        assert!(
+            response["error"]["message"].as_str().unwrap().contains(key),
+            "{key}: {response}"
+        );
+        assert_eq!(e.ok(&["show", &id])["state"], "open");
+    }
+}
+
+#[test]
+fn printed_launches_do_not_record_an_owned_terminal_or_require_a_launcher() {
+    let e = Env::new();
+    e.set_config("use = [\"herdr\"]", "");
+    let id = e.create(&["Print without a terminal"]);
+    e.ok(&["run", &id, "--harness", "omp", "--print"]);
+    let issue = e.ok(&["show", &id]);
+    assert!(issue["claim"]["terminal"].is_null(), "{issue}");
+    assert!(issue["claim"]["launcher"].is_null(), "{issue}");
+    let runs = e.ok(&["runs"]);
+    assert_eq!(runs[0]["issue"], id);
+    assert!(runs[0]["session_alive"].is_null(), "{runs}");
+    assert!(e.ok(&["reap"]).as_array().unwrap().is_empty());
 }

@@ -247,9 +247,6 @@ fn group_alive(pgid: i64) -> bool {
     let Ok(pgid) = i32::try_from(pgid) else {
         return true;
     };
-    if pgid <= 0 {
-        return true;
-    }
     if !process_exists(-pgid) {
         return false;
     }

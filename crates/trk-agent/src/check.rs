@@ -81,19 +81,11 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
         }
     };
     for (name, profile) in &profs {
-        match profile.legacy_placeholders() {
-            Ok(legacy) if !legacy.is_empty() => d.push(Diagnostic::warning(
-                Some("config.toml"),
-                format!(
-                    "[harness.{name}] uses deprecated single-brace placeholders: {}; use MiniJinja templates",
-                    legacy.iter().map(|name| format!("{{{name}}}")).collect::<Vec<_>>().join(", ")
-                ),
-            )),
-            Err(error) => d.push(Diagnostic::error(
+        if let Err(error) = profile.validate_templates() {
+            d.push(Diagnostic::error(
                 Some("config.toml"),
                 format!("[harness.{name}]: {error}"),
-            )),
-            _ => {}
+            ));
         }
     }
     let levels: BTreeSet<&str> = std::iter::once("default")

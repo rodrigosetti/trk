@@ -1,4 +1,4 @@
-//! Named terminal launchers and the legacy unnamed profile.
+//! Named terminal launcher profiles.
 
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
@@ -10,6 +10,7 @@ use trk_core::error::{Code, Error, Result};
 use crate::env::Env;
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Launcher {
     #[serde(skip)]
     pub name: Option<String>,
@@ -26,10 +27,6 @@ pub struct Launcher {
     pub focus: Option<Vec<String>>,
     pub close: Option<Vec<String>>,
     pub rename: Option<Vec<String>>,
-    // Compatibility with flat launcher configurations.
-    pub alive: Option<Vec<String>>,
-    #[serde(default)]
-    pub herdr: bool,
     pub send_delay: Option<u64>,
     pub send_retries: Option<u64>,
     pub send_retry_delay: Option<u64>,
@@ -42,82 +39,111 @@ fn invalid(reason: impl std::fmt::Display) -> Error {
     )
 }
 
-pub fn for_claim(env: &Env, name: Option<&str>) -> Result<Launcher> {
-    let Some(value) = &env.user.launcher else {
-        return if name.is_none() {
-            Ok(Launcher::default())
-        } else {
-            Err(invalid("recorded launcher profile is missing"))
-        };
-    };
-    // Named profiles share the root table with legacy scalar/argv settings.
-    let mut root = value
-        .as_table()
-        .ok_or_else(|| invalid("expected a table"))?
-        .clone();
-    root.retain(|_, value| !value.is_table());
-    let defaults: Launcher = toml::Value::Table(root).try_into().map_err(invalid)?;
-    let mut profile = match name {
-        None => defaults,
-        Some(name) => {
-            let value = value
-                .get(name)
-                .ok_or_else(|| invalid(format!("missing profile {name:?}")))?;
-            let mut profile: Launcher = value.clone().try_into().map_err(invalid)?;
-            profile.name = Some(name.to_owned());
-            profile.send_delay = profile.send_delay.or(defaults.send_delay);
-            profile.send_retries = profile.send_retries.or(defaults.send_retries);
-            profile.send_retry_delay = profile.send_retry_delay.or(defaults.send_retry_delay);
-            profile
+/// An unnamed claim has no known launcher ownership, not a default profile.
+pub fn for_claim(env: &Env, name: Option<&str>) -> Result<Option<Launcher>> {
+    name.filter(|name| !name.is_empty())
+        .map(|name| profile(env, name))
+        .transpose()
+}
+
+fn profile(env: &Env, name: &str) -> Result<Launcher> {
+    if name.is_empty() {
+        return Err(invalid("launcher profile name must not be empty"));
+    }
+    let root = env
+        .user
+        .launcher
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| invalid("launcher must be a table of named profiles"))?;
+    for (key, value) in root {
+        if !matches!(
+            key.as_str(),
+            "use" | "send_delay" | "send_retries" | "send_retry_delay"
+        ) && !value.is_table()
+        {
+            return Err(invalid(format!(
+                "launcher.{key} must be a named profile table"
+            )));
         }
-    };
-    if profile.herdr && profile.driver.is_none() {
-        profile.driver = Some("herdr".into());
+    }
+    let key = format!("launcher.{name}");
+    let value = root
+        .get(name)
+        .ok_or_else(|| invalid(format!("missing {key}")))?;
+    let mut profile: Launcher = value
+        .clone()
+        .try_into()
+        .map_err(|error| invalid(format!("{key}: {error}")))?;
+    profile.name = Some(name.to_owned());
+    for (setting, target) in [
+        ("send_delay", &mut profile.send_delay),
+        ("send_retries", &mut profile.send_retries),
+        ("send_retry_delay", &mut profile.send_retry_delay),
+    ] {
+        if let Some(value) = root.get(setting) {
+            let default = value
+                .clone()
+                .try_into()
+                .map_err(|error| invalid(format!("launcher.{setting}: {error}")))?;
+            target.get_or_insert(default);
+        }
     }
     if profile
         .driver
         .as_deref()
         .is_some_and(|driver| driver != "herdr")
     {
-        return Err(invalid("unknown launcher driver"));
+        return Err(invalid(format!("{key}.driver: unknown launcher driver")));
     }
     Ok(profile)
 }
 
 /// Select only at launch. Later operations never re-run availability selection.
-pub fn choose(env: &Env) -> Result<(Launcher, Option<crate::herdr::Placement>)> {
-    let names = env.user.launcher.as_ref().and_then(|v| v.get("use"));
-    if let Some(names) = names {
-        let names: Vec<String> = names.clone().try_into().map_err(invalid)?;
-        for name in names {
-            let profile = for_claim(env, Some(&name))?;
-            let usable = if let Some(probe) = &profile.available {
-                profile
-                    .operation(Some(probe), "", None, false)
-                    .is_ok_and(|out| out.is_some_and(|out| out.0))
-            } else if profile.is_herdr() {
-                crate::herdr::available().is_ok()
-            } else {
-                true
-            };
-            if usable {
-                return Ok((profile, None));
+pub fn choose(env: &Env) -> Result<Launcher> {
+    let names = env
+        .user
+        .launcher
+        .as_ref()
+        .and_then(|value| value.get("use"))
+        .ok_or_else(|| invalid("missing launcher.use"))?;
+    let names: Vec<String> = names
+        .clone()
+        .try_into()
+        .map_err(|error| invalid(format!("launcher.use: {error}")))?;
+    for name in &names {
+        let profile = profile(env, name)?;
+        if profile.is_available() {
+            if !profile.is_herdr() && profile.start.as_ref().is_none_or(|start| start.is_empty()) {
+                return Err(invalid(format!(
+                    "launcher.{name}.start: missing nonempty start template"
+                )));
             }
+            return Ok(profile);
         }
-        return Err(invalid("no available launcher in use"));
     }
-    let mut profile = for_claim(env, None)?;
-    if profile.is_herdr()
-        && let Err(reason) = crate::herdr::available()
-    {
-        profile.driver = None;
-        profile.herdr = false;
-        return Ok((profile, Some(crate::herdr::Placement::Failed { reason })));
-    }
-    Ok((profile, None))
+    Err(invalid("launcher.use: no available launcher").with_hint(format!(
+        "profiles tried: {}; install one of these launchers (Herdr, hc, or tmux), edit [launcher] use in config.toml, or run `trk run --fg`",
+        if names.is_empty() {
+            "(none; [launcher] use is empty)".to_owned()
+        } else {
+            names.join(", ")
+        }
+    )))
 }
 
 impl Launcher {
+    pub fn is_available(&self) -> bool {
+        if let Some(probe) = &self.available {
+            self.operation(Some(probe), "", None, false)
+                .is_ok_and(|out| out.is_some_and(|out| out.0))
+        } else if self.is_herdr() {
+            crate::herdr::available().is_ok()
+        } else {
+            true
+        }
+    }
+
     pub fn terminal_name(&self, vars: &[(&str, &str)]) -> String {
         let template = self.name_template.as_deref().unwrap_or("trk-{id}");
         let allowed = self.name_chars.as_deref().unwrap_or("a-z0-9_-");
@@ -174,7 +200,7 @@ impl Launcher {
     }
 
     pub fn exists(&self, name: &str) -> Option<bool> {
-        if let Some(template) = self.exists.as_ref().or(self.alive.as_ref()) {
+        if let Some(template) = &self.exists {
             let (program, args) = template.split_first()?;
             let vars = BTreeMap::from([("name", name.to_owned())]);
             let status = Command::new(subst(program, &vars))
@@ -183,15 +209,7 @@ impl Launcher {
                 .stderr(Stdio::null())
                 .status()
                 .ok()?;
-            return if self.exists.is_some() {
-                Some(status.success())
-            } else {
-                match status.code() {
-                    Some(0) => Some(true),
-                    Some(1) => Some(false),
-                    _ => None,
-                }
-            };
+            return Some(status.success());
         }
         self.is_herdr()
             .then(|| crate::herdr::has_terminal(name).ok())
@@ -301,7 +319,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_terminal_names_preserve_legacy_bytes() {
+    fn default_terminal_names_are_sanitized_and_bounded() {
         let launcher = Launcher::default();
         for (id, expected) in [
             ("orch-4kq", "trk-orch-4kq"),

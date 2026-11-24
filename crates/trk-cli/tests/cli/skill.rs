@@ -169,44 +169,6 @@ fn skill_warnings_follow_configured_paths_in_install_and_run() {
 }
 
 #[test]
-fn missing_skill_section_seeds_detection_once_for_old_and_new_configs() {
-    for home in [false, true] {
-        for existing_config in [false, true] {
-            let e = Env::new();
-            let file = e.trk_dir().join("config.toml");
-            let mut config: toml::Table =
-                toml::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-            config.remove("skill");
-            if existing_config {
-                std::fs::write(&file, toml::to_string(&config).unwrap()).unwrap();
-                assert_eq!(e.ok(&["whoami"])["skill"], "current");
-            } else {
-                std::fs::remove_file(&file).unwrap();
-            }
-            let claude = if home {
-                e.dir.path().join("home/.claude")
-            } else {
-                e.repo().join(".claude")
-            };
-            std::fs::create_dir_all(&claude).unwrap();
-            let installed = e.ok(&["install"]);
-            assert_eq!(installed["skill"]["links"][0]["linked"], true);
-            let config: toml::Table =
-                toml::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-            assert_eq!(config["skill"]["path"].as_str(), Some(".agents/skills/trk"));
-            assert_eq!(
-                config["skill"]["links"][0].as_str(),
-                Some(".claude/skills/trk")
-            );
-            assert!(e.repo().join(".claude/skills/trk/SKILL.md").is_file());
-            // Saved links survive the disappearance of the detection directory.
-            std::fs::remove_dir_all(&claude).unwrap();
-            assert_eq!(e.ok(&["install"])["skill"]["links"][0]["linked"], true);
-        }
-    }
-}
-
-#[test]
 fn configured_skill_warnings_are_relative_to_the_nested_project() {
     let e = Env::new();
     let repo = e.repo();

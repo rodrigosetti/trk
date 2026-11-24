@@ -137,6 +137,7 @@ esac
                         worktree: path.map(|path| path.to_string_lossy().into_owned()),
                         terminal: Some(terminal.into()),
                         host: Some(host.into()),
+                        launcher: Some("herdr".into()),
                         ..Default::default()
                     },
                 )?;
@@ -566,13 +567,6 @@ fn gc_dry_run_reports_removals_without_changing_resources_or_notes() {
 fn gc_collects_every_historical_local_claim_not_only_the_latest() {
     let fixture = GcEnv::new();
     let id = fixture.e.create(&["Closed issue"]);
-    fixture.claim(
-        &id,
-        Some(&fixture.e.repo()),
-        "term-history",
-        &fixture.host,
-    );
-    fixture.e.ok(&["unclaim", &id]);
     let first = fixture.worktree(&id);
     fixture.claim(&id, Some(&first), "term-history", &fixture.host);
     fixture.e.ok(&["unclaim", &id]);
@@ -700,111 +694,6 @@ fn gc_without_recorded_worktrees_keeps_an_unrelated_issue_named_branch() {
         gc_status(issue, "branch", "absent");
         assert!(fixture.branch_exists(&id));
         assert_eq!(fixture.notes(&id), notes);
-    }
-}
-
-#[test]
-fn gc_primary_checkout_claims_do_not_own_git_resources() {
-    let fixture = GcEnv::new();
-    let id = fixture.e.create(&["Legacy run in the primary checkout"]);
-    let alias = fixture.e.dir.path().join("primary-alias");
-    std::os::unix::fs::symlink(fixture.e.repo(), &alias).unwrap();
-    fixture.claim(&id, Some(&alias), "missing-terminal", &fixture.host);
-    fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
-    fixture.git_at(&fixture.e.repo(), &["branch", &id]);
-    let notes = fixture.notes(&id);
-
-    for args in [&["gc", &id, "--dry-run"][..], &["gc", &id][..]] {
-        let data = fixture.run(args);
-        let issue = gc_issue(&data, &id);
-        assert_eq!(issue["worktree"]["status"], "absent", "{issue:#}");
-        gc_status(issue, "branch", "absent");
-        assert!(fixture.e.repo().is_dir());
-        assert!(fixture.branch_exists(&id));
-        assert_eq!(fixture.notes(&id), notes);
-    }
-
-    // Classification survives executable restarts; no in-process skip cache needed.
-    for _ in 0..2 {
-        let output = fixture
-            .cmd()
-            .env("TRK_NOW", "2026-11-20T12:00:00Z")
-            .arg("check")
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        assert!(!stdout.contains("gc:"), "{stdout}");
-        assert!(fixture.e.repo().is_dir());
-        assert!(fixture.branch_exists(&id));
-        assert_eq!(fixture.notes(&id), notes);
-    }
-}
-
-#[test]
-fn gc_absent_legacy_worktrees_are_not_outside_directory_skips() {
-    for registered in [false, true] {
-        let fixture = GcEnv::new();
-        let id = fixture.e.create(&["Legacy worktree already removed"]);
-        fixture.claim(
-            &id,
-            Some(&fixture.e.repo()),
-            "missing-terminal",
-            &fixture.host,
-        );
-        fixture.e.ok(&["unclaim", &id]);
-        let path = fixture.worktree_at(
-            &id,
-            &fixture
-                .e
-                .dir
-                .path()
-                .join("Library/Application Support/trk/worktrees")
-                .join(&id),
-        );
-        fixture.claim(&id, Some(&path), "missing-terminal", &fixture.host);
-        fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
-        if registered {
-            std::fs::remove_dir_all(&path).unwrap();
-        } else {
-            fixture.git_at(
-                &fixture.e.repo(),
-                &["worktree", "remove", path.to_str().unwrap()],
-            );
-        }
-
-        let preview = fixture.run(&["gc", &id, "--dry-run"]);
-        let issue = gc_issue(&preview, &id);
-        gc_status(issue, "worktree", "absent");
-        gc_status(
-            issue,
-            "branch",
-            if registered { "skipped" } else { "removed" },
-        );
-        assert!(fixture.branch_exists(&id));
-
-        let data = fixture.run(&["gc", &id]);
-        let issue = gc_issue(&data, &id);
-        gc_status(issue, "worktree", "absent");
-        gc_status(
-            issue,
-            "branch",
-            if registered { "skipped" } else { "removed" },
-        );
-        assert_eq!(fixture.branch_exists(&id), registered);
-        assert!(fixture.e.repo().is_dir());
-
-        for _ in 0..2 {
-            let data = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
-            let issue = gc_issue(&data["gc"], &id);
-            gc_status(issue, "worktree", "absent");
-            gc_status(
-                issue,
-                "branch",
-                if registered { "skipped" } else { "absent" },
-            );
-            assert_eq!(fixture.branch_exists(&id), registered);
-        }
     }
 }
 
@@ -1099,6 +988,21 @@ fn check_gc_watch_sweeps_each_pass_and_keeps_skipped_resources_quiet() {
     let (skipped, skipped_path) = fixture.closed("done", "missing-terminal");
     std::fs::write(skipped_path.join("dirty"), "keep this work").unwrap();
     let skipped_notes = fixture.notes(&skipped);
+    let mut unnamed = Vec::new();
+    for (terminal, launcher) in [("term-active", None), ("term-decoy", Some(""))] {
+        let id = fixture.e.create(&["Historical terminal without a profile"]);
+        fixture.claim(&id, None, terminal, &fixture.host);
+        fixture
+            .store_at("2026-11-20T10:00:00Z")
+            .conn()
+            .execute(
+                "UPDATE claim SET launcher = ?1 WHERE issue_id = ?2",
+                (launcher, id.as_str()),
+            )
+            .unwrap();
+        fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
+        unnamed.push(id);
+    }
     fixture.e.waiting(
         "Watch heartbeat",
         "echo pass >> \"$TRK_REPO/watch-passes\"; exit 75",
@@ -1148,6 +1052,15 @@ fn check_gc_watch_sweeps_each_pass_and_keeps_skipped_resources_quiet() {
     assert_eq!(output.matches(&first).count(), 1, "{output}");
     assert_eq!(output.matches(&second).count(), 1, "{output}");
     assert_eq!(output.matches(&skipped).count(), 1, "{output}");
+    for id in unnamed {
+        assert_eq!(output.matches(&id).count(), 1, "{output}");
+    }
+    assert!(!output.contains("will retry"), "{output}");
+    let stderr = std::fs::read_to_string(stderr_path).unwrap();
+    assert!(!stderr.contains("claim.launcher"), "{stderr}");
+    let mut closed = fixture.closed_spaces();
+    closed.sort();
+    assert_eq!(closed, ["history", "target"]);
     assert!(skipped_path.exists());
     assert!(fixture.branch_exists(&skipped));
     assert_eq!(fixture.notes(&skipped), skipped_notes);

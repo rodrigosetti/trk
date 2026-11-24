@@ -109,8 +109,15 @@ pub fn load_agent_file(path: &Path) -> Result<AgentDef> {
             format!("cannot read {}: {e}", path.display()),
         )
     })?;
-    toml::from_str(&text)
-        .map_err(|e| Error::new(Code::ConfigInvalid, format!("{}: {e}", path.display())))
+    let agent: AgentDef = toml::from_str(&text)
+        .map_err(|e| Error::new(Code::ConfigInvalid, format!("{}: {e}", path.display())))?;
+    if path.file_stem().and_then(|stem| stem.to_str()) != Some(agent.name.as_str()) {
+        return Err(Error::new(
+            Code::ConfigInvalid,
+            format!("{}: name must match the agent filename", path.display()),
+        ));
+    }
+    Ok(agent)
 }
 
 pub(crate) fn agent_config(cfg: &ConfigDir) -> Result<UserConfig> {
@@ -141,20 +148,8 @@ pub fn load_agents(cfg: &ConfigDir) -> Result<BTreeMap<String, AgentDef>> {
 }
 
 pub fn load_agent(cfg: &ConfigDir, name: &str) -> Result<AgentDef> {
-    // The agent's own file first, so a broken neighbour cannot stop a run.
-    let own = cfg.resolve(Path::new("agents").join(format!("{name}.toml")));
-    if own.is_file() {
-        let mut a = load_agent_file(&own)?;
-        if a.name == name {
-            apply_preferences(&mut a, &agent_config(cfg)?)?;
-            return Ok(a);
-        }
-    }
-    let agents = load_agents(cfg)?;
-    agents.get(name).cloned().ok_or_else(|| {
-        Error::new(Code::NotFound, format!("unknown agent '{name}'")).with_hint(format!(
-            "agents: {}",
-            agents.keys().cloned().collect::<Vec<_>>().join(", ")
-        ))
-    })
+    let path = cfg.resolve(Path::new("agents").join(format!("{name}.toml")));
+    let mut agent = load_agent_file(&path)?;
+    apply_preferences(&mut agent, &agent_config(cfg)?)?;
+    Ok(agent)
 }

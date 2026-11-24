@@ -88,13 +88,21 @@ detection at runtime; an explicit value wins. New issue branches start at that b
 existing issue branches are reused. Waiting checks receive `TRK_BASE` and prompt
 templates can use `{{ base }}`. Quote `"$TRK_BASE"` in shell checks.
 
+Built-in installs detect available launchers (Herdr UI, `hc ls`, `tmux -V`) in that
+order, and harness commands on PATH (`omp`, `claude`, `codex`, `opencode`, `pi`) in that
+order. They write `[launcher] use` and `[harness] prefer` accordingly (`claude` maps
+to `claude-code`), report detection and warn for empty lists. All profile definitions
+remain. Existing configs are not rewritten unless `--force` is given; `--from` and
+`--minimal` do not filter preferences. A launcher selection error lists profiles
+tried; install a launcher, edit `[launcher] use`, or run `trk run --fg`.
+
 `[check] verify` is an opaque shell string, default `""` even when omitted. Checks receive it as `TRK_VERIFY`; prompt templates receive `{{ verify }}`. The seed implementer instructions name it when nonempty, otherwise require the project's tests. The local recipe merges the base into the issue worktree (aborting conflicts), runs nonempty verification there, then guards the primary checkout's branch and fast-forwards it with `git merge --ff-only "$TRK_BRANCH"`. Verification failures are normalized to exit 1, including exit 75, so they cannot retry or fall through to landing. Empty verification skips only the command. This local gate applies only when the issue type uses an issue worktree and branch; a type opting out has no issue branch to merge or test. PR checks are unchanged.
 
 Include dependency setup in the command when needed, for example `verify = "npm ci && npm test"`. Verification shares the whole check's `[check] timeout` (default 10m) and holds the serialized queue. Use a fast subset or increase the timeout for slow suites.
 
 `trk check --json` results: `passed` closes, `retry` keeps waiting, `woken` restores the live waiting session's claim and sends a repair prompt, `failed` reopens (no live session, wake cap reached or failed delivery), and `skipped` means the issue changed during the check or wake delivery. `woken` and `failed` include output, also saved in a note. Liveness requires the original MCP server on this host, a terminal (present in Herdr when enabled), and `[launcher] send`. trk only interprets exit codes; timeout is failure, exit 75 is retry.
 
-`[check] max_wakes` caps automatic failed-check claim restorations per session: default `5`, including when omitted from older configs; `0` disables automatic waking. The cap check and persistent `wake_count` increment happen transactionally with automatic claim restoration, before delivery, so a failed send still consumes a wake. Passes, retries and failures without restoration do not increment it. Entering or updating waiting and human resume preserve it. A fresh explicit claim, including `--steal`, resets it to zero; an idempotent claim by the current owner does not. Wake prompts include `wake N of M`. At the cap, a failed check reopens the issue with `wake cap of M reached` and the command's output in its note.
+`[check] max_wakes` caps automatic failed-check claim restorations per session: default `5`; `0` disables automatic waking. The cap check and persistent `wake_count` increment happen transactionally with automatic claim restoration, before delivery, so a failed send still consumes a wake. Passes, retries and failures without restoration do not increment it. Entering or updating waiting and human resume preserve it. A fresh explicit claim, including `--steal`, resets it to zero; an idempotent claim by the current owner does not. Wake prompts include `wake N of M`. At the cap, a failed check reopens the issue with `wake cap of M reached` and the command's output in its note.
 
 After each non-ID pass, including a pass with no due checks, `trk check` sweeps all eligible
 closed-as-done issues, including manual closes; abandoned issues are excluded. `[check] gc`

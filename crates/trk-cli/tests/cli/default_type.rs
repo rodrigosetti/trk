@@ -80,15 +80,6 @@ fn configured_default_type_drives_create_editor_and_whoami() {
     assert_eq!(edited[0]["type"], "task");
 }
 
-#[test]
-fn older_config_keeps_the_builtin_default_type() {
-    let e = Env::new();
-    e.set_config("default_type = \"code-change\"\n", "");
-    let id = e.create(&["Created with an older config"]);
-    assert_eq!(e.ok(&["show", &id])["type"], "code-change");
-    assert_eq!(e.ok(&["whoami"])["default_type"], "code-change");
-}
-
 fn run_editor(e: &Env, args: &[&str], script: &str) -> std::process::Output {
     let mut master = -1;
     let mut slave = -1;

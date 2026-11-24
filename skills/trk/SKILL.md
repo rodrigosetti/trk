@@ -41,6 +41,14 @@ trk log <ID> --json                       # every change and note, attributed
 
 `not_installed` means trk has not been set up in this project. Ask the user before running `trk install` in the project's root: it creates `.trk/` (the database and config, ignored by git) and installs this skill. Each project has its own database; there is no view across projects.
 
+New built-in configs detect launchers in order (Herdr, `hc`, tmux) and harness commands
+in order (`omp`, `claude`, `codex`, `opencode`, `pi`; `claude` selects `claude-code`).
+Install writes only available profiles into `[launcher] use` and `[harness] prefer`,
+reports detection and warns when either list is empty. Existing configs are kept
+unless `--force` is given; custom sources and `--minimal` shared-config installs are
+not filtered. If no launcher is usable, install one, edit `[launcher] use`, or use
+`trk run --fg` in the current terminal.
+
 ## Create
 
 Only the title is required. Write a description that lets someone start cold: what is needed, why, and how to tell it is done.
@@ -212,7 +220,7 @@ Only ready issues can be run. A session releases its claim by closing, waiting o
 
 The waiting session is the actor of the latest claim released with reason `waiting`, only while the issue is still waiting. It can keep notes, file follow-ups and receive `--to-agent` messages, but cannot `wait`, `close` or `hand_back` again. `send` and `attach` use its terminal when no active claim exists; an active claim always wins, even without a terminal. `runs` marks it with `state: "waiting"`; its lease is historical and `reap` skips it. Closing, reopening or a replacement claim ends the old session's access.
 
-Session liveness requires a known claim host matching this machine and a nonblank terminal. Herdr uses its existing `has_terminal` discovery. Non-Herdr launchers can configure optional `[launcher] alive` argv using `{name}`, for example `alive = ["tmux", "has-session", "-t", "{name}"]`: exit 0 means live, 1 means gone, and any other exit, command error, or missing/empty template means unknown. Unknown sessions are not woken/resumed or reaped; failed checks reopen instead. Wakes and resume still require `send`.
+Session liveness requires a known claim host matching this machine and a nonblank terminal. Herdr discovers exact terminals. Other named profiles can configure optional `exists` argv using `{name}`, for example `exists = ["tmux", "has-session", "-t", "{name}"]`: exit 0 means live, nonzero means gone, and command errors or a missing/empty operation mean unknown. Unknown sessions are not woken/resumed or reaped; failed checks reopen instead. Wakes and resume require the claim's named profile and its `send`.
 
 `runs` and the dashboard distinguish terminal/session liveness from MCP liveness. A stopped MCP server with a live terminal is **dormant**, not dead, and remains eligible for wakes or human-authorized resume. Restart its MCP connection with the same identity to use tools again. `reap` leaves dormant and unknown sessions alone. MCP lease renewal stops until restart, however; an active claim can still expire through the normal lease sweep independently of terminal liveness.
 

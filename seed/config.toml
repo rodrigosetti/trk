@@ -45,14 +45,18 @@ base = {{BASE}}
 # Built-ins: "merge" (local checkout), "pr" (GitHub pull request).
 landing = "merge"
 
-# Launchers are tried in order; tmux is opt-in with use = ["tmux"].
+[skill]
+path = ".agents/skills/trk"
+links = []
+
+# Install keeps available launchers in this order: Herdr, hc, tmux.
 # Commands are argv arrays, not shell strings. Placeholders: {name}, {cwd},
 # {shell_command} (cd + env + harness argv), {text}, {title}.
 # Every operation is optional; missing operations are skipped. A missing
 # available probe means usable. Start's first stdout line is the session address;
 # empty stdout keeps the generated name. Stderr is diagnostics, never an address.
 [launcher]
-use = ["herdr", "hc"]
+use = ["herdr", "hc", "tmux"]
 # Seconds to wait before sending the briefing to harnesses that take it by `send`.
 send_delay = 5
 # Total attempts for all sends (briefing, trk send, resume, check wakes/notifications).
@@ -62,7 +66,7 @@ send_retries = 10
 send_retry_delay = 3
 
 # Herdr supplies start, exists, focus, close and rename through its UI driver.
-# A failed availability probe selects hc before attempting a launch.
+# A failed availability probe tries the next configured launcher.
 [launcher.herdr]
 driver = "herdr"
 attach = ["hc", "attach", "{name}"]
@@ -99,11 +103,9 @@ rename = ["tmux", "rename-session", "-t", "{name}", "{title}"]
 # instructions_file mcp_json_file trk_command. Lists/maps: trk_args trk_env
 # trk_tools mcp_servers (name/command/args/env, trk first).
 # Filters: tojson (compact JSON), toml (inline TOML); map/join are available.
-# Values are rendered once, never recursively. Legacy single-brace placeholders
-# remain supported but deprecated, including {mcp_json}, {opencode_json},
-# {trk_args_toml}, {trk_env_toml} and {trk_tools:PREFIX}.
+# Values are rendered once, never recursively.
 # Standalone args elements {builtin_tools_args}, {model_args}, {agent_args}
-# expand in place to zero or more argv entries (not deprecated placeholders).
+# expand in place to zero or more argv entries.
 # A group without a marker goes before the first briefing argument, or at the
 # end if none; unmarked groups keep builtin/model/agent order. No shell splitting.
 #   files                = files written before launch (relative to the worktree)
@@ -120,7 +122,8 @@ rename = ["tmux", "rename-session", "-t", "{name}", "{title}"]
 # selected profile, including explicit --harness selections.
 
 [harness]
-prefer = ["omp", "claude-code"]
+# Install keeps only harnesses whose commands are on PATH, in this order.
+prefer = ["omp", "claude-code", "codex", "opencode", "pi"]
 
 [harness.omp]
 command = "omp"
