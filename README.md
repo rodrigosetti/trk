@@ -201,7 +201,8 @@ trk resume orch-4kq -m "Use SQLite; continue the implementation" --json
 
 `-m` is required and must contain non-whitespace text. Resume restores the latest waiting
 session's actor, worktree, host, agent and terminal in a fresh claim with a new lease **before**
-sending the message, so its MCP lifecycle tools work again. It never launches a replacement.
+sending the message, so its MCP lifecycle tools work again once its MCP connection is
+running (restart it if dormant). It never launches a replacement.
 Human resume neither consumes nor resets the automatic `wake_count` or `[check] max_wakes`
 budget. The timeline records the human's authorization, message and delivery outcome.
 
@@ -212,8 +213,8 @@ completed the request. `trk send` only delivers text; it does not restore a wait
 Agent actors receive `not_permitted`; agents must ask a human to authorize resume, never
 self-resume or impersonate a human. Empty messages return `bad_args`. A busy check queue
 returns `invalid_state`: retry after the running check finishes; do not clear its lock.
-A dead, remote or unavailable original session, missing terminal or missing send configuration
-also returns `invalid_state`. A human can instead run
+A gone or unknown terminal/session (including a remote or unknown host), missing
+terminal or missing send configuration also returns `invalid_state`. A human can instead run
 `trk reopen orch-4kq -m "Restart with the decision"` then `trk run orch-4kq`.
 If delivery fails after restoration, resume returns
 nonzero `internal`, releases only that exact restored claim to open and records a failure
@@ -258,18 +259,19 @@ Include dependency setup in the command if the worktree needs it. Verification u
 whole check's `[check] timeout` (default 10m) and holds the serialized queue; choose a fast
 subset or increase the timeout for slow suites.
 
-A failed check restores the original session's claim with a fresh lease when its MCP
-server is alive on this host, its terminal is recorded (and present when using Herdr),
-`[launcher] send` is configured, and its wake count is below `[check] max_wakes`.
+A failed check restores the original session's claim with a fresh lease when its terminal
+is confirmed live on the claim's known local host, `[launcher] send` is configured,
+and its wake count is below `[check] max_wakes`. MCP liveness is not a prerequisite.
 The cap defaults to `5`, including in existing configs that omit it; `0` disables waking.
 Each restored claim increments the session's persistent count, even if sending fails.
 Entering or updating `wait` preserves it. A fresh explicit claim (including `--steal`)
 resets it to zero; repeating a claim as its current owner does not.
 The session receives `wake N of M`, the output and a prompt to fix only what the
 check reported, then end the new work cycle, normally with the same `wait`. Its
-MCP tools work again. If the same failure keeps returning, it should `hand_back`
-with the evidence instead of repeating indefinitely. While waiting, it can still
-add notes and receive requests from the human.
+MCP tools work again once its MCP connection is running; restart a dormant connection
+first. If the same failure keeps returning, it should `hand_back` with the evidence
+instead of repeating indefinitely. While waiting, it can still add notes and
+receive requests from the human.
 If the cap is reached, the issue reopens with a note saying `wake cap of M reached`
 and retaining the check output. A gone session or failed send also reopens the issue.
 `trk show` displays a `wakes` line for a nonzero count while claimed or waiting;
@@ -371,12 +373,12 @@ are already absent adds no cleanup notes.
 ```sh
 trk run                          # start the highest-priority ready issue
 trk run orch-4kq                 # claim as agent:<harness>:<uuid>, create the worktree, start in hc
-trk runs                         # active and waiting sessions: state, terminal, claim metadata, MCP liveness
+trk runs                         # active and waiting sessions: terminal/session and separate MCP liveness
 trk dashboard                    # live full-screen overview of all of this; ? lists the keys
 trk attach orch-4kq              # take over the terminal
 trk note orch-4kq --to-agent "Also update the docs"   # delivered with the agent's next tool result
 trk send orch-4kq "Wrap up and finish"                # typed into the session
-trk reap                         # release claims whose MCP server has gone, with a note
+trk reap                         # release active claims whose local terminal is confirmed gone, with a note
 trk run orch-4kq --dry-run       # print the launch spec; claims nothing
 trk run orch-4kq --model provider/model --dry-run      # one-run model override and resolved argv
 trk agent preview implementer --issue orch-4kq        # instructions, briefing, tool schemas
@@ -427,6 +429,21 @@ active claim always takes precedence, even if it has no terminal. `trk runs` mar
 waiting sessions with `state: "waiting"` (their displayed lease is historical), and
 `trk reap` skips them. Closing, reopening or claiming the issue for a replacement ends
 the old session's access.
+
+Session liveness comes from the recorded terminal, not the MCP process. A known claim
+host matching this machine and a nonblank terminal are required; otherwise liveness is
+unknown. Herdr uses its existing `has_terminal` discovery. Non-Herdr launchers use the
+optional `[launcher] alive` argv template, substituting `{name}`: exit 0 means live,
+1 means gone, and any other exit, command error, or missing/empty template means unknown.
+Unknown sessions are neither woken/resumed nor reaped; a failed check instead reopens.
+Wakes and manual resume still require `[launcher] send`.
+
+`trk runs` and the dashboard distinguish terminal/session liveness from MCP liveness.
+A live terminal with a stopped MCP server is **dormant**, not a dead session; it can
+receive a wake or human-authorized resume. Restart its MCP connection with the same
+identity to use tools again. `trk reap` leaves dormant and unknown sessions alone.
+Lease renewal stops while MCP is stopped, however: active claims can still expire
+through the normal lease sweep. Terminal liveness does not prevent expiry.
 
 With `[launcher] herdr = true`, each run opens a **new Herdr space**, named with the issue's title
 and rooted in its launch directory (the worktree or primary project root). Its first terminal
@@ -531,9 +548,9 @@ Everything trk keeps for a project is in `.trk/` at its root, written by `trk in
   checks/                 logs of running checks
 ```
 
-`config.toml` is explicit: `trk install` writes every setting. Missing settings are errors
-except for compatibility defaults such as `[check] max_wakes`, `gc`, `gc_grace`, and
-the detected `[run] base`.
+`config.toml` is explicit: `trk install` writes the settings. Missing settings are errors
+except for optional `[launcher] alive`, compatibility defaults such as `[check] max_wakes`,
+`gc`, `gc_grace`, and the detected `[run] base`.
 `[issues] prefix` names new issues (`<prefix>-<base32>`); it defaults to the directory name,
 or `trk install --prefix NAME`. Changing it later only affects new issues.
 
@@ -646,8 +663,8 @@ There is no global configuration and no cross-project view: `trk list`, `trk run
   It keeps `write` available even with a restricted `--tools` list, so `builtin_tools = "read-only"`
   is not fully enforced there.
 - **Unverified harness profiles**: the Claude Code, Codex, OpenCode and pi profiles were not run live.
-- **`trk reap`** decides liveness from the MCP server's pid, host and exit time, which the server
-  records in `actor.meta` (with the client's name and version).
+- **Session liveness** comes from the local claim's terminal via Herdr or `[launcher] alive`.
+  MCP pid, host and exit metadata in `actor.meta` report MCP status separately, not session death.
 - **`trk check` lock**: a row holding the pid and host of the running pass. A holder whose process
   is gone on this machine is replaced; a holder on another host is never replaced automatically.
 - **`TRK_NOW`** fixes the clock, for tests.

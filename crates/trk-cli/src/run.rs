@@ -20,6 +20,8 @@ pub struct Launcher {
     pub start: Option<Vec<String>>,
     pub attach: Option<Vec<String>>,
     pub send: Option<Vec<String>>,
+    /// Non-Herdr terminal probe: exit 0 live, 1 gone, otherwise unknown.
+    pub alive: Option<Vec<String>>,
     #[serde(default)]
     pub send_delay: Option<u64>,
     /// Launch directly in a new Herdr space when its UI is available.
@@ -462,16 +464,51 @@ pub fn mcp_alive(meta: &Value) -> Option<bool> {
     Some(pid_alive(pid))
 }
 
+/// Session liveness comes only from a known local terminal, never its MCP server.
+pub fn session_alive(
+    launcher: &Launcher,
+    host: Option<&str>,
+    terminal: Option<&str>,
+) -> Option<bool> {
+    let host = host.filter(|host| !host.trim().is_empty())?;
+    if hostname().as_deref() != Some(host) {
+        return None;
+    }
+    let terminal = terminal.filter(|name| !name.trim().is_empty())?;
+    if launcher.herdr {
+        return crate::herdr::has_terminal(terminal).ok();
+    }
+    let (program, args) = launcher.alive.as_ref()?.split_first()?;
+    let vars = BTreeMap::from([("name", terminal.to_owned())]);
+    let status = Command::new(subst(program, &vars))
+        .args(args.iter().map(|arg| subst(arg, &vars)))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    match status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
 pub fn runs(env: &Env) -> Result<Out> {
     let store = env.store()?;
     let mut runs = store.read(None, |c| c.runs())?;
+    let launcher = launcher(env)?;
     for r in &mut runs {
         r["mcp_alive"] = json!(mcp_alive(&r["meta"]));
+        r["session_alive"] = json!(session_alive(
+            &launcher,
+            r["host"].as_str(),
+            r["terminal"].as_str(),
+        ));
     }
     let mut t = comfy_table::Table::new();
     t.load_style(comfy_table::presets::NOTHING);
     t.set_header([
-        "ISSUE", "STATE", "AGENT", "HARNESS", "TERMINAL", "LEASE", "MCP", "TITLE",
+        "ISSUE", "STATE", "AGENT", "HARNESS", "TERMINAL", "LEASE", "SESSION", "MCP", "TITLE",
     ]);
     for r in &runs {
         t.add_row([
@@ -481,9 +518,15 @@ pub fn runs(env: &Env) -> Result<Out> {
             r["harness"].as_str().unwrap_or("").to_string(),
             r["terminal"].as_str().unwrap_or("").to_string(),
             r["lease_until"].as_str().unwrap_or("").to_string(),
+            match r["session_alive"].as_bool() {
+                Some(true) => "live".into(),
+                Some(false) => "ended".into(),
+                None => "?".into(),
+            },
             match r["mcp_alive"].as_bool() {
                 Some(true) => "up".into(),
-                Some(false) => "gone".into(),
+                Some(false) if r["session_alive"] == true => "dormant".into(),
+                Some(false) => "stopped".into(),
                 None => "?".into(),
             },
             r["title"].as_str().unwrap_or("").to_string(),
@@ -588,8 +631,7 @@ pub fn resume(env: &Env, id: &str, message: &str) -> Result<Out> {
         if !ActorId::parse(&previous.actor)?.is_agent() {
             return Err(unavailable());
         }
-        let session =
-            live_waiting_session(env, &previous, launcher(env)?)?.ok_or_else(unavailable)?;
+        let session = live_waiting_session(&previous, launcher(env)?).ok_or_else(unavailable)?;
         let claim = store.write(&actor, false, |c| {
             c.resume(&id, previous.id, revision, message)
         })?;
@@ -651,41 +693,25 @@ fn waiting_claim(env: &Env, issue: &str) -> Result<Option<Claim>> {
     })
 }
 
-fn live_waiting_session(
-    env: &Env,
-    claim: &Claim,
-    launcher: Launcher,
-) -> Result<Option<WaitingSession>> {
-    let Some(name) = &claim.terminal else {
-        return Ok(None);
-    };
-    if name.trim().is_empty() || (claim.host.is_some() && claim.host != hostname()) {
-        return Ok(None);
+fn live_waiting_session(claim: &Claim, launcher: Launcher) -> Option<WaitingSession> {
+    let name = claim.terminal.as_ref()?;
+    let send = launcher.send.as_ref()?;
+    if send.is_empty() || session_alive(&launcher, claim.host.as_deref(), Some(name)) != Some(true)
+    {
+        return None;
     }
-    if mcp_alive(&env.store()?.read(None, |c| c.actor_meta(&claim.actor))?) != Some(true) {
-        return Ok(None);
-    }
-    let Some(send) = launcher.send else {
-        return Ok(None);
-    };
-    if send.is_empty() {
-        return Ok(None);
-    }
-    if launcher.herdr && !crate::herdr::has_terminal(name).unwrap_or(false) {
-        return Ok(None);
-    }
-    Ok(Some(WaitingSession {
+    Some(WaitingSession {
         claim: claim.id,
         terminal: name.clone(),
-        send,
-    }))
+        send: launcher.send?,
+    })
 }
 
 pub fn waiting_session(env: &Env, issue: &str) -> Result<Option<WaitingSession>> {
     let Some(claim) = waiting_claim(env, issue)? else {
         return Ok(None);
     };
-    live_waiting_session(env, &claim, launcher(env)?)
+    Ok(live_waiting_session(&claim, launcher(env)?))
 }
 
 /// Best-effort UI update and notification to the session that left an issue waiting.
@@ -704,34 +730,31 @@ pub fn notify_waiting_session(env: &Env, issue: &str, text: &str, closed: bool) 
     if closed && launcher.herdr {
         let _ = crate::herdr::mark_closed(name);
     }
-    if let Some(session) = live_waiting_session(env, &claim, launcher)? {
+    if let Some(session) = live_waiting_session(&claim, launcher) {
         session.send(text)?;
     }
     Ok(())
 }
 
-/// Release claims whose MCP server has gone, recording the exit as a note.
+/// Release claims whose terminal is known to be gone, recording it as a note.
 pub fn reap(env: &Env) -> Result<Out> {
     let actor = env.actor()?.to_string();
     let mut store = env.store()?;
     let runs = store.read(None, |c| c.runs())?;
+    let launcher = launcher(env)?;
     let mut reaped = vec![];
     for r in runs {
-        if r["state"] != "claimed" || mcp_alive(&r["meta"]) != Some(false) {
+        if r["state"] != "claimed"
+            || session_alive(&launcher, r["host"].as_str(), r["terminal"].as_str()) != Some(false)
+        {
             continue;
         }
         let id = r["issue"].as_str().unwrap_or_default().to_string();
-        let why = match r["meta"]["mcp_exited_at"].as_str() {
-            Some(t) => format!(
-                "Session of {} ended: its MCP server exited at {t}. Claim released by trk reap.",
-                r["actor"].as_str().unwrap_or("")
-            ),
-            None => format!(
-                "Session of {} ended: its MCP server (pid {}) is gone. Claim released by trk reap.",
-                r["actor"].as_str().unwrap_or(""),
-                r["meta"]["mcp_pid"]
-            ),
-        };
+        let why = format!(
+            "Session of {} ended: its terminal {} is gone. Claim released by trk reap.",
+            r["actor"].as_str().unwrap_or(""),
+            r["terminal"].as_str().unwrap_or(""),
+        );
         store.write(&actor, false, |c| c.reap(&id, &why))?;
         reaped.push(json!({"issue": id, "actor": r["actor"], "note": why}));
     }

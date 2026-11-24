@@ -46,24 +46,13 @@ fn pid_exists(pid: i64) -> bool {
         || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-/// Liveness of a session's MCP server from its actor metadata, as
-/// `run::mcp_alive` tells it, without a process per session.
-fn session_alive(host: Option<&str>, meta: &Value) -> Option<bool> {
-    if meta["mcp_exited_at"].is_string() {
-        return Some(false);
-    }
-    let pid = meta["mcp_pid"].as_i64()?;
-    if let Some(h) = meta["mcp_host"].as_str()
-        && Some(h) != host
-    {
-        return None;
-    }
-    Some(pid_exists(pid))
-}
-
-pub fn snapshot(store: &Store, host: Option<&str>) -> Result<Dashboard> {
+pub fn snapshot(store: &Store, launcher: &run::Launcher) -> Result<Dashboard> {
     store.read(None, |c| {
-        c.dashboard(ACTIVITY, &|meta| session_alive(host, meta))
+        c.dashboard(
+            ACTIVITY,
+            &|host, terminal| run::session_alive(launcher, host, terminal),
+            &run::mcp_alive,
+        )
     })
 }
 
@@ -75,6 +64,7 @@ struct Job {
 struct App<'a> {
     env: &'a Env,
     store: Store,
+    launcher: run::Launcher,
     host: Option<String>,
     ui: Ui,
     data_version: i64,
@@ -90,7 +80,8 @@ struct App<'a> {
 pub fn dashboard(env: &Env, json: bool) -> Result<Out> {
     let store = env.store()?;
     let host = hostname();
-    let snap = snapshot(&store, host.as_deref())?;
+    let launcher = run::launcher(env)?;
+    let snap = snapshot(&store, &launcher)?;
     if json || !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
         return Ok(Out::Data(serde_json::to_value(&snap)?));
     }
@@ -104,6 +95,7 @@ pub fn dashboard(env: &Env, json: bool) -> Result<Out> {
         ui: Ui::new(project, snap, store.now()),
         env,
         store,
+        launcher,
         host,
         data_version: 0,
         refreshed: Instant::now(),
@@ -165,7 +157,7 @@ impl App<'_> {
 
     fn refresh(&mut self) {
         self.refreshed = Instant::now();
-        match snapshot(&self.store, self.host.as_deref()) {
+        match snapshot(&self.store, &self.launcher) {
             Ok(snap) => {
                 let keep = self.ui.issue().map(|i| i.id.clone());
                 self.ui.snap = snap;
@@ -732,7 +724,7 @@ mod tests {
     }
 
     fn ui_of(s: &Store) -> Ui {
-        let snap = super::snapshot(s, None).unwrap();
+        let snap = super::snapshot(s, &crate::run::Launcher::default()).unwrap();
         let mut ui = Ui::new("house".into(), snap, s.now());
         let id = ui.issue().unwrap().id.clone();
         let detail = s.read(None, |c| c.dashboard_detail(&id)).unwrap();
@@ -761,7 +753,7 @@ mod tests {
             "⊘ BLOCKED 1",
             "Paint the walls",
             "implementer · lease 30m",
-            "implementer (omp) in t7 · server unknown · since 0s ago",
+            "implementer (omp) in t7",
             "check due",
             "for the merge into main · check `git merge --ff-only windows`",
             "unblocks 1",
@@ -804,6 +796,23 @@ mod tests {
         );
         // The list has the whole width: the issue's text is behind Enter.
         assert!(!text.contains("Description"));
+    }
+
+    #[test]
+    fn stopped_mcp_with_a_live_terminal_renders_as_dormant() {
+        let (_d, s) = sample();
+        let snap = s
+            .read(None, |c| {
+                c.dashboard(0, &|_, _| Some(true), &|_| Some(false))
+            })
+            .unwrap();
+        let mut ui = Ui::new("house".into(), snap, s.now());
+        let text = screen(&mut ui, 140, 40);
+        assert!(text.contains("IN FLIGHT 1"), "{text}");
+        assert!(text.contains("WAITING 1"), "{text}");
+        assert_eq!(text.matches("dormant").count(), 2, "{text}");
+        assert!(!text.contains("session ended"), "{text}");
+        assert!(!text.contains("reap to release"), "{text}");
     }
 
     #[test]

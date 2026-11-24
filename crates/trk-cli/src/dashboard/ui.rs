@@ -454,10 +454,14 @@ fn row_more(i: &DashIssue, ui: &Ui) -> String {
             }
             parts.push(who);
             parts.push(
-                match s.alive {
-                    Some(true) => "server up",
-                    Some(false) => "server gone",
-                    None => "server unknown",
+                match (s.alive, s.mcp_alive) {
+                    (Some(true), Some(false)) => "dormant (MCP stopped)",
+                    (Some(true), Some(true)) => "session alive · MCP running",
+                    (Some(true), None) => "session alive · MCP unknown",
+                    (Some(false), _) => "session ended",
+                    (None, Some(true)) => "session unknown · MCP running",
+                    (None, Some(false)) => "session unknown · MCP stopped",
+                    (None, None) => "session unknown · MCP unknown",
                 }
                 .into(),
             );

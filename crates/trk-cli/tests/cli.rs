@@ -26,6 +26,12 @@ mod base;
 #[path = "cli/verify.rs"]
 mod verify;
 
+fn local_host() -> String {
+    let output = StdCommand::new("hostname").output().unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
 struct Env {
     dir: tempfile::TempDir,
 }
@@ -1992,6 +1998,7 @@ esac
                 c.claim(
                     id,
                     trk_core::ops::ClaimOpts {
+                        host: Some(local_host()),
                         terminal: Some(terminal.into()),
                         ..Default::default()
                     },
@@ -2052,7 +2059,7 @@ fn waiting_sessions_accept_send_and_attach_and_runs_labels_both_states() {
     let ui = WaitingUi::new();
     let waiting = ui.waiting("exit 75", false);
     let active = ui.e.create(&["Still working"]);
-    ui.claim(&active, "new-session", true);
+    ui.claim(&active, "new-session", false);
 
     for args in [
         vec!["send", waiting.as_str(), "keep going"],
@@ -2066,24 +2073,27 @@ fn waiting_sessions_accept_send_and_attach_and_runs_labels_both_states() {
     assert_eq!(ui.text("messages"), "exact-origin\nkeep going\n");
     assert_eq!(ui.text("attachments"), "exact-origin\n");
 
-    let runs = ui.e.ok(&["runs"]);
+    let runs = resume::success(ui.cmd(), &["runs"]);
     let rows = runs.as_array().unwrap();
     assert_eq!(rows.len(), 2);
     for (id, state) in [(&waiting, "waiting"), (&active, "claimed")] {
         let row = rows.iter().find(|r| r["issue"] == *id).unwrap();
         assert_eq!(row["state"], state);
+        assert_eq!(row["session_alive"], true);
+        assert_eq!(row["mcp_alive"], false);
     }
-    let out =
-        ui.e.cmd()
-            .args(["--format", "pretty", "runs"])
-            .output()
-            .unwrap();
+    let out = ui
+        .cmd()
+        .args(["--format", "pretty", "runs"])
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let table = String::from_utf8(out.stdout).unwrap();
     assert!(table.lines().next().unwrap().contains("STATE"), "{table}");
     for (id, state) in [(&waiting, "waiting"), (&active, "claimed")] {
         let row = table.lines().find(|line| line.contains(id)).unwrap();
         assert!(row.contains(state), "{table}");
+        assert!(row.contains("live") && row.contains("dormant"), "{table}");
     }
 }
 
@@ -2152,16 +2162,21 @@ fn reap_skips_waiting_sessions_even_when_their_mcp_server_has_exited() {
     let dead = ui.e.create(&["Ended active session"]);
     ui.claim(&dead, "dead-session", false);
     let alive = ui.e.create(&["Live active session"]);
-    ui.claim(&alive, "new-session", true);
+    ui.claim(&alive, "new-session", false);
     let before = ui.e.ok(&["show", &waiting, "--with", "all"]);
 
-    let reaped = ui.e.ok(&["reap"]);
+    let reaped = resume::success(ui.cmd(), &["reap"]);
     assert_eq!(reaped.as_array().unwrap().len(), 1);
     assert_eq!(reaped[0]["issue"], dead);
     assert_eq!(ui.e.ok(&["show", &dead])["state"], "open");
     assert_eq!(ui.e.ok(&["show", &alive])["state"], "claimed");
     assert_eq!(ui.e.ok(&["show", &waiting, "--with", "all"]), before);
-    assert!(ui.e.ok(&["reap"]).as_array().unwrap().is_empty());
+    assert!(
+        resume::success(ui.cmd(), &["reap"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let runs = ui.e.ok(&["runs"]);
     assert_eq!(runs.as_array().unwrap().len(), 2);
     assert!(
@@ -2170,6 +2185,160 @@ fn reap_skips_waiting_sessions_even_when_their_mcp_server_has_exited() {
             .iter()
             .any(|row| row["issue"] == waiting && row["state"] == "waiting")
     );
+}
+
+#[test]
+fn terminal_liveness_controls_dormant_mcp_wakes_and_reap() {
+    for (mode, live) in [
+        ("herdr-live", Some(true)),
+        ("herdr-gone", Some(false)),
+        ("herdr-pid-gone", Some(true)),
+        ("herdr-unavailable", None),
+        ("template-live", Some(true)),
+        ("template-gone", Some(false)),
+        ("template-error", None),
+        ("template-missing", None),
+        ("template-empty", None),
+        ("template-unavailable", None),
+        ("unknown-host", None),
+        ("remote-host", None),
+        ("blank-terminal", None),
+    ] {
+        let ui = WaitingUi::new();
+        if mode.starts_with("template-") {
+            ui.e.set_config("herdr      = true", "herdr = false");
+            let template = match mode {
+                "template-live" => {
+                    r#"["sh", "-c", "case \"$1\" in exact-origin|new-session) exit 0;; *) exit 1;; esac", "probe", "{name}"]"#
+                }
+                "template-gone" => r#"["sh", "-c", "exit 1"]"#,
+                "template-error" => r#"["sh", "-c", "exit 2"]"#,
+                "template-empty" => "[]",
+                "template-unavailable" => r#"["missing-terminal-probe"]"#,
+                _ => "",
+            };
+            if !template.is_empty() {
+                ui.e.set_config("[launcher]", &format!("[launcher]\nalive = {template}"));
+            }
+        }
+        let waiting = ui.waiting("echo dormant failure evidence; exit 1", false);
+        let active = ui.e.create(&["Dormant working session"]);
+        ui.claim(&active, "new-session", false);
+        if mode == "herdr-pid-gone" {
+            let store = trk_core::Store::open(
+                &ui.e.trk_dir().join("trk.db"),
+                trk_core::StoreOpts::default(),
+            )
+            .unwrap();
+            store
+                .conn()
+                .execute(
+                    "UPDATE actor SET meta = ?1 WHERE id LIKE 'agent:%'",
+                    [json!({"mcp_pid": i64::MAX, "mcp_host": local_host()}).to_string()],
+                )
+                .unwrap();
+        }
+        let mut dashboard = ui.cmd();
+        dashboard.env(
+            "TRK_TEST_UI_FAILURE",
+            match mode {
+                "herdr-gone" => "missing",
+                "herdr-unavailable" => "unavailable",
+                _ => "",
+            },
+        );
+        if matches!(mode, "unknown-host" | "remote-host" | "blank-terminal") {
+            let store = trk_core::Store::open(
+                &ui.e.trk_dir().join("trk.db"),
+                trk_core::StoreOpts::default(),
+            )
+            .unwrap();
+            if mode == "blank-terminal" {
+                store
+                    .conn()
+                    .execute("UPDATE claim SET terminal = ' '", [])
+                    .unwrap();
+            } else {
+                store
+                    .conn()
+                    .execute(
+                        "UPDATE claim SET host = ?1",
+                        [(mode == "remote-host").then_some("remote.invalid")],
+                    )
+                    .unwrap();
+            }
+        }
+        let snapshot = resume::success(dashboard, &["dashboard"]);
+        let session = snapshot["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|issue| issue["id"] == active)
+            .unwrap();
+        assert_eq!(
+            session["session"]["alive"],
+            json!(live),
+            "{mode}: {session}"
+        );
+        assert_eq!(session["session"]["mcp_alive"], false, "{mode}: {session}");
+        assert_eq!(
+            session["group"],
+            if live == Some(false) {
+                "attention"
+            } else {
+                "running"
+            },
+            "{mode}: {session}"
+        );
+        let failure = match mode {
+            "herdr-gone" => "missing",
+            "herdr-unavailable" => "unavailable",
+            _ => "",
+        };
+        let result = ui.check(&waiting, failure);
+        assert_eq!(
+            result["result"],
+            if live == Some(true) {
+                "woken"
+            } else {
+                "failed"
+            },
+            "{mode}: {result}"
+        );
+        let issue = ui.e.ok(&["show", &waiting, "--with", "notes,claims"]);
+        if live == Some(true) {
+            assert_eq!(issue["state"], "claimed", "{mode}: {issue}");
+            let claims = issue["claims"].as_array().unwrap();
+            assert_eq!(claims[0]["actor"], claims[1]["actor"]);
+            assert!(
+                ui.text("messages").contains("dormant failure evidence"),
+                "{mode}"
+            );
+        } else {
+            assert_eq!(issue["state"], "open", "{mode}: {issue}");
+            assert_eq!(issue["claim"], Value::Null);
+            assert!(
+                issue["notes"].as_array().unwrap().iter().any(|note| {
+                    note["body"]
+                        .as_str()
+                        .unwrap()
+                        .contains("dormant failure evidence")
+                }),
+                "{mode}: {issue}"
+            );
+            assert_eq!(ui.text("messages"), "", "{mode}");
+        }
+        let mut reap = ui.cmd();
+        reap.env("TRK_TEST_UI_FAILURE", failure);
+        let reaped = resume::success(reap, &["reap"]);
+        if live == Some(false) {
+            assert_eq!(reaped[0]["issue"], active, "{mode}: {reaped}");
+            assert_eq!(ui.e.ok(&["show", &active])["state"], "open");
+        } else {
+            assert_eq!(reaped, json!([]), "{mode}: {reaped}");
+            assert_eq!(ui.e.ok(&["show", &active])["state"], "claimed");
+        }
+    }
 }
 
 #[test]
@@ -2335,7 +2504,6 @@ fn zero_wake_budget_never_delivers_to_a_live_waiting_session() {
 #[test]
 fn failed_waiting_checks_reopen_when_session_is_gone_or_wake_cannot_be_sent() {
     for mode in [
-        "dead",
         "no-send",
         "missing",
         "unavailable",
@@ -2358,7 +2526,7 @@ fn failed_waiting_checks_reopen_when_session_is_gone_or_wake_cannot_be_sent() {
             ),
             _ => {}
         }
-        let id = ui.waiting("echo failure evidence; exit 2", mode != "dead");
+        let id = ui.waiting("echo failure evidence; exit 2", false);
         let result = ui.check(&id, mode);
         assert_eq!(result["result"], "failed", "{mode}: {result}");
         assert_eq!(result["state"], "open", "{mode}: {result}");
@@ -2407,7 +2575,7 @@ fn timed_out_waiting_check_wakes_its_live_session() {
 #[test]
 fn waiting_check_ui_and_message_failures_are_independent_and_nonfatal() {
     for mode in [
-        "dead",
+        "dormant",
         "no-send",
         "send",
         "rename",
@@ -2428,10 +2596,10 @@ fn waiting_check_ui_and_message_failures_are_independent_and_nonfatal() {
             "headless" => ui.e.set_config("herdr      = true", "herdr      = false"),
             _ => {}
         }
-        let id = ui.waiting("exit 0", mode != "dead");
+        let id = ui.waiting("exit 0", mode != "dormant");
         assert_eq!(ui.check(&id, mode)["state"], "closed", "{mode}");
         assert_eq!(ui.e.ok(&["show", &id])["state"], "closed", "{mode}");
-        let renamed = matches!(mode, "dead" | "no-send" | "send");
+        let renamed = matches!(mode, "dormant" | "no-send" | "send");
         assert_eq!(
             ui.text("space-name"),
             if renamed {
@@ -2441,7 +2609,7 @@ fn waiting_check_ui_and_message_failures_are_independent_and_nonfatal() {
             },
             "{mode}"
         );
-        let notified = matches!(mode, "rename" | "headless");
+        let notified = matches!(mode, "dormant" | "rename");
         assert_eq!(!ui.text("messages").is_empty(), notified, "{mode}");
     }
 }

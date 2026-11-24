@@ -1343,7 +1343,11 @@ fn dashboard_groups_issues_by_what_they_need() {
     s.write(HUMAN, false, |c| c.close(&done, "done", None, false))
         .unwrap();
 
-    let d = s.read(None, |c| c.dashboard(3, &|_| Some(true))).unwrap();
+    let d = s
+        .read(None, |c| {
+            c.dashboard(3, &|_, _| Some(true), &|_| Some(true))
+        })
+        .unwrap();
     let group = |id: &str| d.issues.iter().find(|i| i.id == id).unwrap().group;
     assert_eq!(group(&ready), Group::Ready);
     assert_eq!(group(&blocked), Group::Blocked);
@@ -1373,13 +1377,21 @@ fn dashboard_groups_issues_by_what_they_need() {
     let bounce = d.issues.iter().find(|i| i.id == bounced).unwrap();
     assert_eq!(bounce.attention, ["check failed; open again"]);
 
-    // A session whose server is gone, and a lease nobody has swept yet.
-    let d = s.read(None, |c| c.dashboard(0, &|_| Some(false))).unwrap();
+    // Only a terminal known to be gone marks the session ended.
+    let d = s
+        .read(None, |c| {
+            c.dashboard(0, &|_, _| Some(false), &|_| Some(true))
+        })
+        .unwrap();
     let r = d.issues.iter().find(|i| i.id == running).unwrap();
     assert_eq!(r.group, Group::Attention);
     assert_eq!(r.attention, ["session ended; reap to release"]);
     s.opts.now = Some(ts("2026-11-20T12:00:00Z"));
-    let d = s.read(None, |c| c.dashboard(0, &|_| Some(true))).unwrap();
+    let d = s
+        .read(None, |c| {
+            c.dashboard(0, &|_, _| Some(true), &|_| Some(false))
+        })
+        .unwrap();
     let r = d.issues.iter().find(|i| i.id == running).unwrap();
     assert_eq!(r.attention, ["lease expired"]);
     assert_eq!(state(&s, &running), State::Claimed);
@@ -1387,4 +1399,67 @@ fn dashboard_groups_issues_by_what_they_need() {
     let detail = s.read(None, |c| c.dashboard_detail(&bounced)).unwrap();
     assert_eq!(detail.description, "why and what");
     assert!(!detail.notes.is_empty() && !detail.events.is_empty());
+}
+
+#[test]
+fn dashboard_tracks_terminal_and_mcp_liveness_independently() {
+    use trk_core::dashboard::Group;
+
+    let (_d, mut s) = setup();
+    let active = create(&mut s, "Active");
+    let waiting = create(&mut s, "Waiting");
+    for id in [&active, &waiting] {
+        s.write(AGENT, false, |c| {
+            c.claim(
+                id,
+                ClaimOpts {
+                    host: Some("session-host".into()),
+                    terminal: Some("original-terminal".into()),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    }
+    wait(&mut s, AGENT, &waiting, Some("false"), None);
+
+    for terminal_alive in [Some(true), Some(false), None] {
+        for mcp_alive in [Some(true), Some(false), None] {
+            let d = s
+                .read(None, |c| {
+                    c.dashboard(
+                        0,
+                        &|host, terminal| {
+                            assert_eq!(host, Some("session-host"));
+                            assert_eq!(terminal, Some("original-terminal"));
+                            terminal_alive
+                        },
+                        &|_| mcp_alive,
+                    )
+                })
+                .unwrap();
+            for issue in &d.issues {
+                let session = issue.session.as_ref().unwrap();
+                assert_eq!(session.alive, terminal_alive);
+                assert_eq!(session.mcp_alive, mcp_alive);
+                let json = serde_json::to_value(session).unwrap();
+                assert_eq!(json["alive"], serde_json::json!(terminal_alive));
+                assert_eq!(json["mcp_alive"], serde_json::json!(mcp_alive));
+            }
+            let a = d.issues.iter().find(|i| i.id == active).unwrap();
+            if terminal_alive == Some(false) {
+                assert_eq!(a.group, Group::Attention);
+                assert_eq!(a.attention, ["session ended; reap to release"]);
+            } else {
+                assert_eq!(a.group, Group::Running);
+                assert!(a.attention.is_empty());
+            }
+            let w = d.issues.iter().find(|i| i.id == waiting).unwrap();
+            assert_eq!(w.group, Group::Waiting);
+            assert!(w.attention.is_empty());
+            assert!(!w.session.as_ref().unwrap().active);
+        }
+    }
+    assert_eq!(state(&s, &active), State::Claimed);
+    assert_eq!(state(&s, &waiting), State::Waiting);
 }
