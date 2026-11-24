@@ -378,6 +378,7 @@ trk note orch-4kq --to-agent "Also update the docs"   # delivered with the agent
 trk send orch-4kq "Wrap up and finish"                # typed into the session
 trk reap                         # release claims whose MCP server has gone, with a note
 trk run orch-4kq --dry-run       # print the launch spec; claims nothing
+trk run orch-4kq --model provider/model --dry-run      # one-run model override and resolved argv
 trk agent preview implementer --issue orch-4kq        # instructions, briefing, tool schemas
 ```
 
@@ -409,6 +410,8 @@ project root, creates neither branch nor worktree, and records no worktree path 
 
 The harness is `--harness`, else the first installed harness the agent prefers (see Configuration).
 The seed config prefers `omp` running `openai-codex/gpt-6-luna`.
+Model precedence is `--model`, then the agent's model for the selected harness, then
+the profile's `model`. With none set, the harness chooses its own default.
 
 The MCP server (`trk mcp --issue … --actor … --agent …`, started by the harness) serves exactly one
 issue with six tools: `get_task`, `add_note`, `report_followup`, `hand_back`, `close` and `wait`.
@@ -555,6 +558,44 @@ There is no schema to apply: states, the close reasons (`done`, `abandoned`), pr
 one dependency kind (`blocks`) are fixed. Agents and prompts are read when a session starts;
 `trk agent check` validates them. `trk show` and `trk run --dry-run` print which type and agent
 files a run would use.
+
+Agents can choose models and add arguments without duplicating harness profiles:
+
+```toml
+# .trk/agents/reviewer.toml
+[harness]
+prefer = ["omp", "claude-code"]
+model = { omp = "provider/reviewer-model", claude-code = "reviewer-model" }
+args = { omp = ["--thinking", "high"] }
+```
+
+`harness.model` also accepts a string, applying it to every harness. A missing entry
+in a model table falls back to the profile default. `harness.args` is a table of
+harness names to argument lists; only the selected harness's list is used.
+
+```toml
+# .trk/config.toml
+[harness.omp]
+command = "omp"
+args = ["--config", "{session_dir}/omp.yml", "{briefing}"]
+model = "openai-codex/gpt-6-luna"
+model_args = ["--model", "{model}"]
+```
+
+`model` is optional; `model_args` defaults to an empty list and is inserted only
+when a model resolves. Set `model_args` to the harness's model-selection flags.
+All seeded profiles provide it; only omp sets a default model. Older installed
+configs need these keys added manually, replacing any literal model flags in `args`.
+`{model}` expands to the resolved model (or an empty string if unset) in profile
+arguments, environment and files, and agent arguments. Optional arguments are inserted
+in this order: built-in tool restrictions, `model_args`, agent `args`, then the first
+argument containing `{briefing}`. Without a briefing argument, they are appended.
+Arguments remain separate argv entries; they are not shell-split.
+
+`trk run --dry-run --json` includes the resolved `model` (or null) and `argv`.
+`trk agents` shows effective models per profile; its JSON includes the agent's
+configured `model`, effective `models` by harness (null means harness default),
+and extra `args`.
 
 Agent instructions and briefings are MiniJinja templates with the same context in `trk run`,
 the MCP server and `trk agent preview`:

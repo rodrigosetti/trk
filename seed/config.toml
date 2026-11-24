@@ -54,16 +54,20 @@ send_delay = 5
 # Harness profiles. Placeholders: {briefing} {briefing_file} {instructions}
 # {instructions_file} {mcp_json} {mcp_json_file} {opencode_json}
 # {trk_command} {trk_args_toml} {trk_env_toml} {session_dir} {worktree}
-# {issue} {actor} {agent} {name}, and {trk_tools:PREFIX}: the agent's trk tool
-# names, each with PREFIX, comma-separated.
+# {issue} {actor} {agent} {name} {model}, and {trk_tools:PREFIX}: the agent's trk
+# tool names, each with PREFIX, comma-separated.
 #   files                = files written before launch (relative to the worktree)
+#   model                = default model (agent or --model may override)
+#   model_args           = extra args added only when a model is set
 #   builtin_tools.<lvl>  = extra args enforcing an agent's builtin_tools level
 #   server_instructions  = false folds the MCP server instructions into the briefing
 #   briefing             = "arg" | "send"
 
 [harness.omp]
 command = "omp"
-args    = ["--model", "openai-codex/gpt-6-luna", "--config", "{session_dir}/omp.yml", "{briefing}"]
+args    = ["--config", "{session_dir}/omp.yml", "{briefing}"]
+model   = "openai-codex/gpt-6-luna"
+model_args = ["--model", "{model}"]
 # .omp/mcp.json goes in the worktree (added to .git/info/exclude). The overlay
 # hides the `trk` skill: sessions reach trk through MCP only.
 files   = { ".omp/mcp.json" = "{mcp_json}", "{session_dir}/omp.yml" = "skills:\n  ignoredSkills: [trk]\n" }
@@ -74,6 +78,7 @@ builtin_tools = { read-only = ["--tools", "read,grep,glob,lsp,todo,{trk_tools:mc
 [harness.claude-code]
 command = "claude"
 args    = ["--strict-mcp-config", "--mcp-config", "{mcp_json_file}", "{briefing}"]
+model_args = ["--model", "{model}"]
 builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdit"], none = ["--tools", ""] }
 
 [harness.codex]
@@ -82,16 +87,19 @@ args    = ["-c", "mcp_servers.trk.command=\"{trk_command}\"",
            "-c", "mcp_servers.trk.args={trk_args_toml}",
            "-c", "mcp_servers.trk.env={trk_env_toml}",
            "{briefing}"]
+model_args = ["--model", "{model}"]
 builtin_tools = { read-only = ["--sandbox", "read-only"] }
 
 [harness.opencode]
 command  = "opencode"
+model_args = ["--model", "{model}"]
 env      = { OPENCODE_CONFIG_CONTENT = "{opencode_json}" }
 briefing = "send"
 
 [harness.pi]
 command = "pi"
 args    = ["{briefing}"]
+model_args = ["--model", "{model}"]
 env     = { PI_CODING_AGENT_DIR = "{session_dir}" }
 files   = { "{session_dir}/mcp.json" = "{mcp_json}" }
 
