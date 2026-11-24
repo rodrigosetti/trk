@@ -20,7 +20,7 @@ struct Env {
 impl Env {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        for (path, content) in trk_core::seed::FILES {
+        for (path, content) in trk_core::seed::preset("default").unwrap() {
             let path = dir.path().join("seed").join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, content).unwrap();

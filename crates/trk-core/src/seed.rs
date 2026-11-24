@@ -1,65 +1,35 @@
-//! Default configuration embedded for `trk install` and checkout-independent tests.
-//!
-//! Consumers needing files on disk must materialize these contents in their own
-//! directory, never read the compile-time checkout at runtime.
+//! Build-time embedded configuration, independent of the source checkout.
 
-pub const FILES: &[(&str, &str)] = &[
-    (
-        "types/code-change.toml",
-        include_str!("../../../seed/types/code-change.toml"),
-    ),
-    (
-        "types/research.toml",
-        include_str!("../../../seed/types/research.toml"),
-    ),
-    (
-        "types/review.toml",
-        include_str!("../../../seed/types/review.toml"),
-    ),
-    (
-        "agents/implementer.toml",
-        include_str!("../../../seed/agents/implementer.toml"),
-    ),
-    (
-        "agents/researcher.toml",
-        include_str!("../../../seed/agents/researcher.toml"),
-    ),
-    (
-        "agents/reviewer.toml",
-        include_str!("../../../seed/agents/reviewer.toml"),
-    ),
-    (
-        "prompts/_rules.md.j2",
-        include_str!("../../../seed/prompts/_rules.md.j2"),
-    ),
-    (
-        "prompts/_landing.merge.md.j2",
-        include_str!("../../../seed/prompts/_landing.merge.md.j2"),
-    ),
-    (
-        "prompts/_landing.pr.md.j2",
-        include_str!("../../../seed/prompts/_landing.pr.md.j2"),
-    ),
-    (
-        "prompts/briefing.md.j2",
-        include_str!("../../../seed/prompts/briefing.md.j2"),
-    ),
-    (
-        "prompts/implementer.instructions.md.j2",
-        include_str!("../../../seed/prompts/implementer.instructions.md.j2"),
-    ),
-    (
-        "prompts/researcher.instructions.md.j2",
-        include_str!("../../../seed/prompts/researcher.instructions.md.j2"),
-    ),
-    (
-        "prompts/reviewer.instructions.md.j2",
-        include_str!("../../../seed/prompts/reviewer.instructions.md.j2"),
-    ),
-];
+use std::collections::BTreeMap;
+
+include!(concat!(env!("OUT_DIR"), "/seed.rs"));
 
 pub const CONFIG_TOML: &str = include_str!("../../../seed/config.toml");
 
-/// `.trk/.gitignore`: everything in `.trk/` starts out ignored. Edit it to
-/// share configuration through git.
-pub const GITIGNORE: &str = "# Written by `trk install`: nothing in .trk/ is tracked.\n*\n";
+/// Installed ignore rules live outside the seed tree so they do not hide new
+/// seed files from Git.
+pub const GITIGNORE: &[u8] = b"# Written by `trk install`: nothing in .trk/ is tracked.\n*\n";
+
+/// Common files with the named preset layered over them. Preset paths are
+/// relative to the install directory, not to `seed/presets/`.
+pub fn preset(name: &str) -> Option<BTreeMap<&'static str, &'static [u8]>> {
+    if !PRESETS.contains(&name) {
+        return None;
+    }
+    let mut files: BTreeMap<_, _> = TREE
+        .iter()
+        .copied()
+        .filter(|(path, _)| !path.starts_with("presets/"))
+        .collect();
+    files.insert(".gitignore", GITIGNORE);
+    for &(path, content) in TREE {
+        if let Some((preset, relative)) = path
+            .strip_prefix("presets/")
+            .and_then(|p| p.split_once('/'))
+            && preset == name
+        {
+            files.insert(relative, content);
+        }
+    }
+    Some(files)
+}
