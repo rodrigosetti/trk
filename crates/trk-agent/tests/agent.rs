@@ -484,26 +484,20 @@ fn claude_launch_passes_mcp_file_and_multiline_briefing_as_separate_arguments() 
         .filter(|arg| !arg.is_empty())
         .map(|arg| String::from_utf8(arg.to_vec()).unwrap())
         .collect();
-    assert_eq!(args[0], "--strict-mcp-config");
-    assert_eq!(args[1], "--mcp-config");
-    assert_eq!(args[2], format!("{}/mcp.json", session.display()));
-    assert_eq!(
-        &args[3..7],
-        [
-            "--model",
-            model,
-            "--label",
-            &format!("issue test-abc: {model}"),
-        ]
-    );
-    assert_eq!(args[7], briefing);
+    let mcp_index = args.iter().position(|arg| arg == "--mcp-config").unwrap() + 1;
+    assert_eq!(args[mcp_index], format!("{}/mcp.json", session.display()));
+    let model_index = args.iter().position(|arg| arg == "--model").unwrap() + 1;
+    assert_eq!(args[model_index], model);
+    let label_index = args.iter().position(|arg| arg == "--label").unwrap() + 1;
+    assert_eq!(args[label_index], format!("issue test-abc: {model}"));
+    assert_eq!(args.last().unwrap(), briefing);
     assert_eq!(spec.env["SELECTED_MODEL"], model);
     assert_eq!(
         std::fs::read_to_string(session.join("model.txt")).unwrap(),
         model
     );
     let mcp: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&args[2]).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(&args[mcp_index]).unwrap()).unwrap();
     assert_eq!(mcp["mcpServers"]["trk"]["command"], "/bin/trk");
     assert_eq!(
         mcp["mcpServers"]["trk"]["args"],

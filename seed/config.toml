@@ -136,9 +136,17 @@ builtin_tools = { read-only = ["--tools", "read,grep,glob,lsp,todo,{% for tool i
 
 [harness.claude-code]
 command = "claude"
-args    = ["--strict-mcp-config", "--mcp-config", "{{ mcp_json_file }}", "{builtin_tools_args}", "{model_args}", "{agent_args}", "{{ briefing }}"]
+# Explicit approvals work independently of Claude's user/default permission mode.
+# dontAsk denies anything else instead of stalling. Bash is arbitrary execution:
+# this is not a sandbox. Only this session's trk tools are pre-approved; extra
+# agent MCP servers are not. Tool restrictions below still remove built-ins.
+# In the verified Claude version, dontAsk also skips workspace trust: launch only
+# in repositories you trust. End options before the positional briefing.
+args    = ["--strict-mcp-config", "--mcp-config", "{{ mcp_json_file }}", "--permission-mode", "dontAsk", "--allowedTools", "Bash,Edit,Write,NotebookEdit{% for tool in trk_tools %},mcp__trk__{{ tool }}{% endfor %}", "{builtin_tools_args}", "{model_args}", "{agent_args}", "--", "{{ briefing }}"]
 model_args = ["--model", "{{ model }}"]
-builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdit"], none = ["--tools", ""] }
+# ToolSearch is discovery only: retain it so restricted sessions can find/wait
+# for MCP tools on their first turn. No file, shell or delegation tools in none.
+builtin_tools = { read-only = ["--tools", "Read,Grep,Glob,ToolSearch"], none = ["--tools", "ToolSearch"] }
 
 [harness.codex]
 command = "codex"

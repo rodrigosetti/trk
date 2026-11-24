@@ -6,12 +6,6 @@ model_args = ["--model", "{model}"]
 files = { ".omp/mcp.json" = "{mcp_json}", "{session_dir}/omp.yml" = "skills:\n  ignoredSkills: [trk]\n" }
 builtin_tools = { read-only = ["--tools", "read,grep,glob,lsp,todo,{trk_tools:mcp__trk_}"] }
 
-[harness.claude-code]
-command = "claude"
-args = ["--strict-mcp-config", "--mcp-config", "{mcp_json_file}", "{briefing}"]
-model_args = ["--model", "{model}"]
-builtin_tools = { read-only = ["--disallowedTools", "Edit,Write,Bash,NotebookEdit"], none = ["--tools", ""] }
-
 [harness.codex]
 command = "codex"
 args = ["-c", "mcp_servers.trk.command=\"{trk_command}\"", "-c", "mcp_servers.trk.args={trk_args_toml}", "-c", "mcp_servers.trk.env={trk_env_toml}", "{briefing}"]

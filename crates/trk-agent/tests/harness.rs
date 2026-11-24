@@ -53,14 +53,16 @@ fn launch(
 }
 
 #[test]
-fn seed_profiles_preserve_complete_legacy_launch_specs() {
-    let current = harness::profiles(&seed_config()).unwrap();
+fn unchanged_seed_profiles_preserve_complete_legacy_launch_specs() {
+    let mut current = harness::profiles(&seed_config()).unwrap();
+    // Claude's explicit permissions intentionally replace its legacy defaults.
+    current.remove("claude-code");
     let fixture: toml::Table =
         toml::from_str(include_str!("fixtures/harness-legacy.toml")).unwrap();
     let mut legacy = seed_config();
     legacy.harness = fixture["harness"].clone().try_into().unwrap();
     let legacy = harness::profiles(&legacy).unwrap();
-    assert_eq!(current.len(), 5);
+    assert_eq!(current.len(), 4);
     assert_eq!(
         current.keys().collect::<Vec<_>>(),
         legacy.keys().collect::<Vec<_>>()
