@@ -90,6 +90,7 @@ pub struct DashIssue {
     pub id: String,
     pub title: String,
     pub priority: String,
+    pub epic: Option<String>,
     #[serde(rename = "type")]
     pub issue_type: String,
     pub state: State,
@@ -331,6 +332,7 @@ impl Ctx<'_> {
                 id: i.id,
                 title: i.title,
                 priority: i.priority,
+                epic: i.epic,
                 issue_type: i.issue_type,
                 state: i.state,
                 group,

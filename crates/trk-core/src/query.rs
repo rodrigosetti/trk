@@ -8,7 +8,7 @@
 //! op     := '=' | '!=' | '<' | '<=' | '>' | '>=' | '~'
 //! flag   := 'ready' | 'blocked' | 'due' | 'stale-lease'
 //! value  := word | quoted | 'me' | '.' | reltime
-//! name   := id | state | priority | type | reason | claimed-by | created-by
+//! name   := id | state | priority | type | epic | reason | claimed-by | created-by
 //!         | title | created | updated | closed | next-check | text | blocks | blocked-by
 //! ```
 
@@ -243,7 +243,7 @@ enum Target {
     BlockedBy,
 }
 
-const NAMES: &str = "id state priority type reason claimed-by created-by title created updated closed next-check text blocks blocked-by";
+const NAMES: &str = "id state priority type epic reason claimed-by created-by title created updated closed next-check text blocks blocked-by";
 
 fn target(name: &str) -> Result<Target> {
     Ok(match name {
@@ -251,6 +251,7 @@ fn target(name: &str) -> Result<Target> {
         "state" | "status" => Target::Column("i.state"),
         "priority" => Target::Column("i.priority"),
         "type" => Target::Column("i.type"),
+        "epic" => Target::Column("i.epic"),
         "reason" => Target::Column("i.close_reason"),
         "claimed-by" => Target::Column("i.claimant"),
         "created-by" => Target::Column("i.created_by"),
@@ -374,6 +375,13 @@ pub fn compile(terms: &[Term], ctx: &dyn QueryCtx) -> Result<Compiled> {
                 let one = |v: &Val, params: &mut Vec<SqlValue>| -> Result<String> {
                     Ok(match &tgt {
                         Target::Column(c) => {
+                            if *c == "i.epic" && v.text().is_empty() {
+                                match op {
+                                    Op::Eq => return Ok(format!("{c} IS NULL")),
+                                    Op::Ne => return Ok(format!("{c} IS NOT NULL")),
+                                    _ => {}
+                                }
+                            }
                             let sv = resolve_value(v, ctx, false)?;
                             let sv = match sv {
                                 SqlValue::Integer(n) => SqlValue::Text(n.to_string()),
@@ -472,6 +480,7 @@ pub fn order_by(sort: Option<&str>) -> Result<String> {
             "title" => "i.title",
             "priority" => "i.priority",
             "type" => "i.type",
+            "epic" => "i.epic",
             "created" => "i.created_at",
             "updated" => "i.updated_at",
             "closed" => "i.closed_at",
@@ -483,10 +492,14 @@ pub fn order_by(sort: Option<&str>) -> Result<String> {
                     Code::BadArgs,
                     format!("cannot sort by '{f}'"),
                 )
-                .with_hint("sort by: id state title priority type created updated closed claimed-by lease next-check"));
+                .with_hint("sort by: id state title priority type epic created updated closed claimed-by lease next-check"));
             }
         };
-        out.push(format!("{col} {}", if desc { "DESC" } else { "ASC" }));
+        out.push(format!(
+            "{col} {}{}",
+            if desc { "DESC" } else { "ASC" },
+            if name == "epic" { " NULLS LAST" } else { "" }
+        ));
     }
     out.push("i.id".into());
     Ok(out.join(", "))

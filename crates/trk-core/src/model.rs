@@ -208,6 +208,7 @@ pub struct Edge {
     pub title: String,
     pub state: State,
     pub priority: String,
+    pub epic: Option<String>,
 }
 
 /// A pointer from an issue to something outside trk: a pull request, a
