@@ -82,6 +82,7 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
                     description,
                     priority,
                     issue_type: opt_arg(&a, "type").map(String::from),
+                    epic: None,
                     blocks: if blocks_this {
                         vec![id.clone()]
                     } else {

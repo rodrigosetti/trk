@@ -49,6 +49,7 @@ Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `cl
 | Key | Content |
 | --- | --- |
 | `id`, `title`, `description`, `priority`, `type` | the authored issue |
+| `epic` | optional curated epic name, or null |
 | `state`, `close_reason` | where it is |
 | `claim` | the active claim: `actor`, `claimed_at`, `lease_until`, `worktree`, `agent`, `terminal` |
 | `waiting` | while waiting: `reason`, `check`, `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit`, `cwd` |
@@ -65,8 +66,12 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | --- | --- |
 | `trk list [QUERY]`, `trk ready [QUERY]` | Query issues |
 | `trk show <ID>... [--with notes,events,deps,claims]` | Full issues with derived state |
-| `trk create [TITLE] [-d TEXT] [-p P0..P3] [--type T] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; type defaults to `[issues] default_type` (initially `change`) |
-| `trk edit <ID> [-t TITLE] [-d TEXT] [-p P0..P3] [--type T] [--dry-run]` | Change authored fields; a set type must exist in `.trk/types/` |
+| `trk create [TITLE] [-d TEXT] [-p P0..P3] [--type T] [--epic NAME] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; type defaults to `[issues] default_type` (initially `change`); epic must already be active |
+| `trk edit <ID> [-t TITLE] [-d TEXT] [-p P0..P3] [--type T] [--epic NAME or --clear-epic] [--dry-run]` | Change authored fields; a set type must exist in `.trk/types/` |
+| `trk epic new <name> [-d TEXT]` | Explicitly create a curated epic; any actor |
+| `trk epic ls [--all]` | Active epics with descriptions and total issue counts; include archived with `--all` |
+| `trk epic rename <old> <new>` | Rename and cascade existing issue references |
+| `trk epic archive <name>` | Reject assignments and hide by default; retain existing members |
 | `trk claim <ID> [--lease 30m] [--worktree PATH] [--steal]` | open → claimed |
 | `trk unclaim <ID> [-m NOTE] [--force]` | claimed → open |
 | `trk renew <ID> [--lease 30m]` | Extend a lease |
@@ -78,7 +83,7 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk note <ID> [TEXT or -] [--amends SEQ] [--to-agent]` | Append a note |
 | `trk dep add or rm <BLOCKER> <BLOCKED>` | Blocker edges |
 | `trk link <ID> <URL> [-l LABEL]`, `trk unlink <ID> <URL>` | Attach or remove an http(s) address the dashboard opens (a pull request, a preview) |
-| `trk log <ID>` | Timeline |
+| `trk log [ID]` | Issue timeline, or all project events including epic changes without an ID |
 | `trk run [ID] [--agent A] [--harness H] [--dry-run or --print]` | Start an agent session; without ID, first ready issue by priority then age; agent override is one-off |
 | `trk runs`, `trk send <ID> TEXT`, `trk reap` | List active/waiting sessions by state, steer the active or waiting terminal, release only ended active claims |
 | `trk gc [ID...] [--dry-run] [--abandoned] [--older-than DURATION]` | Collect closed issues' local sessions, worktrees and safely deletable issue-ID branches |
@@ -89,6 +94,18 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 `-d` and `-c` take text, `@file`, or `@-` for stdin.
 
 Issue creation (including MCP `report_followup`) and setting a type require a project `.trk/types/<name>.toml` definition. Unknown or empty types return `invalid_field`: the core error's `detail.allowed` is serialized as `error.allowed`, listing accepted names, with a hint naming `.trk/types/`. The editor uses the same validation. `report_followup` advertises those names as an enum and includes each type's description in the field description. Existing issues whose type definition was removed remain listable, showable and editable without changing their type; leaving it unchanged in the editor is allowed, but explicitly setting an unknown type is refused. `trk agent check` reports an `[issues] default_type` with no matching type file.
+
+Epics are optional curated themes, never created implicitly by assignment. Names start with
+a lowercase letter, then use lowercase letters, digits and hyphens. Unknown or archived epic
+assignments return `invalid_field` with active names in `error.allowed` and a hint to pick
+one or omit the epic if none fits. An issue has at most one epic. Archiving keeps existing
+members; unrelated edits preserve that membership. In the interactive editor, `epic = ""`
+or removing the `epic` key clears it. Epic command JSON uses the standard envelope:
+mutations return one epic object and `ls` an array, with `name`, `description`,
+`created_by`, `created_at`, `archived_at` and `issue_count` (all states, including closed).
+`trk show` displays membership; `trk log` without an ID includes `epic_create`,
+`epic_rename` and `epic_archive` with null `issue_id`. Membership changes, including
+initial assignment, are per-issue `set` events.
 
 Both built-in presets install implementer/researcher/operator agents and `change`
 (default), `bug`, `research`, and `ops` types. Change and bug use implementer

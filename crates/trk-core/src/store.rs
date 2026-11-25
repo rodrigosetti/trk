@@ -16,7 +16,7 @@ use crate::model::*;
 pub const ISSUE_COLS: &str = "i.id, i.state, i.title, i.description, \
      i.priority, i.type, i.close_reason, i.waiting_reason, i.waiting_check, i.check_interval, \
      i.next_check_at, i.last_check_at, i.last_check_exit, i.wait_cwd, i.created_by, i.created_at, \
-     i.updated_at, i.closed_at, i.wake_count";
+     i.updated_at, i.closed_at, i.wake_count, i.epic";
 
 #[derive(Debug, Clone)]
 pub struct StoreOpts {
@@ -202,10 +202,11 @@ fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<(
     }
 }
 
-fn migrations() -> [M<'static>; 2] {
+fn migrations() -> [M<'static>; 3] {
     [
-        M::up(include_str!("schema.sql")),
+        M::up(include_str!("schema_v1.sql")),
         M::up(include_str!("resume_chat.sql")).foreign_key_check(),
+        M::up(include_str!("epics.sql")).foreign_key_check(),
     ]
 }
 
@@ -470,6 +471,17 @@ impl<'a> Ctx<'a> {
             .collect::<std::result::Result<_, _>>()?;
         Ok(v)
     }
+
+    /// All project history, including events that do not belong to an issue.
+    pub fn all_events(&self) -> Result<Vec<Event>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT seq, issue_id, actor, at, op, payload FROM event ORDER BY seq")?;
+        let events = st
+            .query_map([], row_to_event)?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(events)
+    }
 }
 
 pub(crate) const SESSION_CLAIM_FILTER: &str = "(c.released_at IS NULL OR (
@@ -542,6 +554,7 @@ pub fn row_to_issue(r: &rusqlite::Row) -> rusqlite::Result<Issue> {
         updated_at: r.get(16)?,
         closed_at: r.get(17)?,
         wake_count: r.get(18)?,
+        epic: r.get(19)?,
     })
 }
 
@@ -587,6 +600,23 @@ mod tests {
     use crate::ops::{ClaimOpts, NewIssue};
     use crate::view::With;
 
+    fn seed_legacy_database(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO actor(id, kind, first_seen)
+             VALUES ('human:alice@example.com', 'human', '2026-11-20T10:00:00Z');
+             INSERT INTO issue(id, title, created_by, created_at, updated_at)
+             VALUES ('trk-old', 'Existing issue', 'human:alice@example.com',
+                     '2026-11-20T10:00:00Z', '2026-11-20T10:00:00Z');
+             INSERT INTO event(seq, issue_id, actor, at, op)
+             VALUES (7, 'trk-old', 'human:alice@example.com', '2026-11-20T10:00:00Z', 'create');
+             INSERT INTO event(seq, issue_id, actor, at, op, payload)
+             VALUES (41, 'trk-old', 'human:alice@example.com', '2026-11-20T10:00:00Z',
+                     'note', '{\"body\":\"preserved searchable reply\"}');
+             INSERT INTO inbox(note_seq, issue_id) VALUES (41, 'trk-old');",
+        )
+        .unwrap();
+    }
+
     #[test]
     fn open_requires_an_installed_database() {
         let dir = tempfile::tempdir().unwrap();
@@ -604,24 +634,16 @@ mod tests {
         let path = dir.path().join("trk.db");
         let mut conn = Connection::open(&path).unwrap();
         let old = migrations();
-        Migrations::from_slice(&old[..old.len() - 1])
+        Migrations::from_slice(&old[..1])
             .to_latest(&mut conn)
             .unwrap();
-        let mut store = Store {
+        seed_legacy_database(&conn);
+        let store = Store {
             conn,
             opts: StoreOpts::default(),
         };
         let human = "human:alice@example.com";
-        let id = store
-            .write(human, false, |c| {
-                let id = c.create(NewIssue {
-                    title: "Existing issue".into(),
-                    ..Default::default()
-                })?;
-                c.note(&id, "preserved searchable reply", None, true)?;
-                Ok(id)
-            })
-            .unwrap();
+        let id = "trk-old".to_string();
         let before = store.read(None, |c| c.events(&id)).unwrap();
         drop(store);
         let mut store = Store::open(&path, StoreOpts::default()).unwrap();
@@ -663,6 +685,212 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn epic_migration_preserves_existing_data_and_extends_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let mut conn = Connection::open(&path).unwrap();
+        let old = migrations();
+        Migrations::from_slice(&old[..2])
+            .to_latest(&mut conn)
+            .unwrap();
+        seed_legacy_database(&conn);
+        conn.execute(
+            "INSERT INTO event(seq, issue_id, actor, at, op)
+             VALUES (99, 'trk-old', 'human:alice@example.com',
+                     '2026-11-20T10:00:00Z', 'resume_chat')",
+            [],
+        )
+        .unwrap();
+        let before = {
+            let store = Store {
+                conn,
+                opts: StoreOpts::default(),
+            };
+            store.read(None, |c| c.events("trk-old")).unwrap()
+        };
+
+        let mut store = Store::open(&path, StoreOpts::default()).unwrap();
+        let human = "human:alice@example.com";
+        assert_eq!(store.read(None, |c| c.events("trk-old")).unwrap(), before);
+        assert_eq!(store.read(None, |c| c.all_events()).unwrap(), before);
+        assert_eq!(store.read(None, |c| c.issue("trk-old")).unwrap().epic, None);
+        assert_eq!(
+            store.read(None, |c| c.notes("trk-old")).unwrap()[0]["body"],
+            "preserved searchable reply"
+        );
+        let inbox = store
+            .write(human, false, |c| c.take_inbox("trk-old"))
+            .unwrap();
+        assert_eq!(inbox[0]["body"], "preserved searchable reply");
+        store
+            .write(human, false, |c| {
+                c.note("trk-old", "new searchable reply", None, false)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM search WHERE search MATCH 'searchable'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM search WHERE source = 'issue'",
+                    [],
+                    |r| { r.get::<_, i64>(0) }
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM inbox WHERE note_seq = 41 AND delivered_at IS NOT NULL",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO epic(name, created_by, created_at)
+                 VALUES ('curated', 'human:alice@example.com', '2026-11-20T10:00:00Z');
+                 UPDATE issue SET epic = 'curated' WHERE id = 'trk-old';
+                 UPDATE epic SET name = 'renamed' WHERE name = 'curated';",
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .read(None, |c| c.issue("trk-old"))
+                .unwrap()
+                .epic
+                .as_deref(),
+            Some("renamed")
+        );
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT description FROM epic", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            ""
+        );
+        let events = store
+            .write(human, false, |c| {
+                ["epic_create", "epic_rename", "epic_archive"]
+                    .into_iter()
+                    .map(|op| c.event(None, op, json!({"name": "renamed"})))
+                    .collect::<Result<Vec<_>>>()
+            })
+            .unwrap();
+        assert_eq!(events, [101, 102, 103]);
+        let history = store.read(None, |c| c.all_events()).unwrap();
+        assert_eq!(&history[..before.len()], before.as_slice());
+        assert!(
+            history[history.len() - 3..]
+                .iter()
+                .all(|event| event.issue_id.is_none())
+        );
+        assert!(
+            store
+                .conn
+                .execute("UPDATE event SET op = 'note'", [])
+                .is_err()
+        );
+        assert!(store.conn.execute("DELETE FROM event", []).is_err());
+        assert!(store.conn.execute("DELETE FROM issue", []).is_err());
+        assert!(
+            store
+                .conn
+                .execute("UPDATE issue SET epic = 'missing'", [])
+                .is_err()
+        );
+        assert!(
+            store
+                .conn
+                .execute(
+                    "INSERT INTO inbox(note_seq, issue_id) VALUES (-1, 'trk-old')",
+                    []
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .conn
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .query([])
+                .unwrap()
+                .next()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn latest_schema_supports_epics_without_migrations() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        conn.execute_batch(include_str!("schema.sql")).unwrap();
+        seed_legacy_database(&conn);
+        conn.execute_batch(
+            "INSERT INTO epic(name, created_by, created_at)
+             VALUES ('fresh-epic', 'human:alice@example.com', '2026-11-20T10:00:00Z');
+             UPDATE issue SET epic = 'fresh-epic';
+             UPDATE epic SET name = 'renamed';
+             INSERT INTO event(actor, at, op)
+             VALUES ('human:alice@example.com', '2026-11-20T10:00:00Z', 'resume_chat'),
+                    ('human:alice@example.com', '2026-11-20T10:00:00Z', 'epic_create'),
+                    ('human:alice@example.com', '2026-11-20T10:00:00Z', 'epic_rename'),
+                    ('human:alice@example.com', '2026-11-20T10:00:00Z', 'epic_archive');",
+        )
+        .unwrap();
+        let issue = conn
+            .query_row(
+                &format!("SELECT {ISSUE_COLS} FROM issue i"),
+                [],
+                row_to_issue,
+            )
+            .unwrap();
+        assert_eq!(issue.epic.as_deref(), Some("renamed"));
+        for name in ["", "Invalid", "9invalid", "invalid_name", "two words"] {
+            assert!(
+                conn.execute(
+                    "INSERT INTO epic(name, created_by, created_at)
+                     VALUES (?1, 'human:alice@example.com', '2026-11-20T10:00:00Z')",
+                    [name],
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            conn.execute(
+                "INSERT INTO epic(name, created_by, created_at)
+                 VALUES ('missing-actor', 'human:missing', '2026-11-20T10:00:00Z')",
+                [],
+            )
+            .is_err()
+        );
+        assert!(
+            conn.execute("UPDATE issue SET epic = 'missing'", [])
+                .is_err()
+        );
+        assert!(conn.execute("UPDATE event SET op = 'note'", []).is_err());
+        assert!(conn.execute("DELETE FROM event", []).is_err());
     }
 
     #[test]

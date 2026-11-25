@@ -139,6 +139,9 @@ enum Cmd {
         /// Issue type (default: [issues] default_type in config.toml)
         #[arg(long = "type")]
         issue_type: Option<String>,
+        /// Existing active epic; omit when none fits
+        #[arg(long)]
+        epic: Option<String>,
         /// An issue that must close before this one is ready (repeatable)
         #[arg(long = "blocked-by", value_name = "ID")]
         blocked_by: Vec<String>,
@@ -154,7 +157,7 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Change title, description, priority or type; $EDITOR with no options
+    /// Change authored fields; $EDITOR with no options
     Edit {
         id: String,
         #[arg(short = 't', long)]
@@ -167,6 +170,12 @@ enum Cmd {
         /// Issue type
         #[arg(long = "type")]
         issue_type: Option<String>,
+        /// Existing active epic
+        #[arg(long, conflicts_with = "clear_epic")]
+        epic: Option<String>,
+        /// Remove the issue's epic
+        #[arg(long)]
+        clear_epic: bool,
         #[arg(long)]
         dry_run: bool,
     },
@@ -290,6 +299,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: DepCmd,
     },
+    /// Manage explicitly curated issue groupings
+    Epic {
+        #[command(subcommand)]
+        cmd: EpicCmd,
+    },
     /// Attach a web address to an issue (a pull request, a preview); the dashboard opens it
     Link {
         id: String,
@@ -300,8 +314,8 @@ enum Cmd {
     },
     /// Remove a link from an issue
     Unlink { id: String, url: String },
-    /// Timeline: events and notes
-    Log { id: String },
+    /// Timeline of one issue, or all events including epic changes
+    Log { id: Option<String> },
     /// Start an agent session; defaults to the first ready issue
     Run {
         id: Option<String>,
@@ -385,6 +399,27 @@ enum Cmd {
     Whoami,
     /// Consistent copy via VACUUM INTO
     Backup { path: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum EpicCmd {
+    /// Explicitly create an epic (any actor)
+    New {
+        name: String,
+        /// Description: text, @file, or @- for stdin
+        #[arg(short = 'd', long)]
+        description: Option<String>,
+    },
+    /// List active epics with descriptions and total issue counts
+    Ls {
+        /// Include archived epics
+        #[arg(long)]
+        all: bool,
+    },
+    /// Rename an epic and cascade existing issue references
+    Rename { old: String, new: String },
+    /// Retain existing members but reject new assignments
+    Archive { name: String },
 }
 
 #[derive(Subcommand)]
@@ -656,6 +691,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer) -> Result
             description,
             priority,
             issue_type,
+            epic,
             blocked_by,
             blocks,
             id,
@@ -673,6 +709,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer) -> Result
                     .unwrap_or_default(),
                 priority,
                 issue_type,
+                epic,
                 blocked_by,
                 blocks,
                 ..Default::default()
@@ -686,6 +723,8 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer) -> Result
             description,
             priority,
             issue_type,
+            epic,
+            clear_epic,
             dry_run,
         } => edit(
             &env,
@@ -695,9 +734,15 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer) -> Result
                 description: description.as_deref().map(read_value).transpose()?,
                 priority,
                 issue_type,
+                epic: if clear_epic {
+                    Some(None)
+                } else {
+                    epic.map(Some)
+                },
             },
             dry_run,
         ),
+        Cmd::Epic { cmd } => epic_cmd(&env, cmd, r),
         Cmd::Claim {
             id,
             lease,
@@ -916,9 +961,12 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer) -> Result
         }
         Cmd::Log { id } => {
             let store = env.store()?;
-            let (id, events) = store.read(None, |c| {
-                let id = c.resolve_id(&id)?;
-                Ok((id.clone(), c.log(&id)?))
+            let (id, events) = store.read(None, |c| match id {
+                Some(id) => {
+                    let id = c.resolve_id(&id)?;
+                    Ok((id.clone(), c.log(&id)?))
+                }
+                None => Ok(("All events".to_string(), c.all_events()?)),
             })?;
             Ok(Out::Log {
                 issue: id,
@@ -934,7 +982,14 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer) -> Result
             abandoned,
             older_than,
             legacy_hc,
-        } => gc::run(&env, ids, dry_run, abandoned, older_than.as_deref(), legacy_hc),
+        } => gc::run(
+            &env,
+            ids,
+            dry_run,
+            abandoned,
+            older_than.as_deref(),
+            legacy_hc,
+        ),
         Cmd::Run {
             id,
             agent,
@@ -1340,6 +1395,31 @@ fn list(
     Ok(Out::Issues { items, fields })
 }
 
+fn epic_cmd(env: &Env, cmd: EpicCmd, r: &Renderer) -> Result<Out> {
+    let mut store = env.store()?;
+    if let EpicCmd::Ls { all } = cmd {
+        let epics = store.read(None, |c| c.epics(all))?;
+        return Ok(Out::Text(r.epics(&epics), json!(epics)));
+    }
+    let actor = env.actor()?.to_string();
+    let epic = match cmd {
+        EpicCmd::New { name, description } => {
+            let description = description
+                .as_deref()
+                .map(read_value)
+                .transpose()?
+                .unwrap_or_default();
+            store.write(&actor, false, |c| c.create_epic(&name, &description))?
+        }
+        EpicCmd::Rename { old, new } => {
+            store.write(&actor, false, |c| c.rename_epic(&old, &new))?
+        }
+        EpicCmd::Archive { name } => store.write(&actor, false, |c| c.archive_epic(&name))?,
+        EpicCmd::Ls { .. } => unreachable!(),
+    };
+    Ok(Out::Data(json!(epic)))
+}
+
 fn create(env: &Env, new: NewIssue, dry_run: bool, run: bool) -> Result<Out> {
     let actor = env.actor()?.to_string();
     let mut store = env.store()?;
@@ -1360,6 +1440,7 @@ fn create(env: &Env, new: NewIssue, dry_run: bool, run: bool) -> Result<Out> {
                 .issue_type
                 .clone()
                 .unwrap_or_else(|| env.user.issues.default_type.clone()),
+            epic: new.epic.clone().unwrap_or_default(),
             description: if new.description.is_empty() {
                 "<!-- What is needed and why, with enough context to start cold. -->\n".into()
             } else {
@@ -1373,6 +1454,7 @@ fn create(env: &Env, new: NewIssue, dry_run: bool, run: bool) -> Result<Out> {
                 title: d.title,
                 priority: Some(d.priority).filter(|p| !p.trim().is_empty()),
                 issue_type: Some(d.issue_type),
+                epic: (!d.epic.trim().is_empty()).then(|| d.epic.trim().to_string()),
                 description: if placeholder {
                     String::new()
                 } else {
@@ -1415,7 +1497,8 @@ fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
     let nothing = e.title.is_none()
         && e.description.is_none()
         && e.priority.is_none()
-        && e.issue_type.is_none();
+        && e.issue_type.is_none()
+        && e.epic.is_none();
     if !nothing {
         return store
             .write(&actor, dry_run, |c| {
@@ -1426,8 +1509,9 @@ fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
             .map(Out::Issue);
     }
     if !editor::is_tty() {
-        return Err(bad_args("nothing to change")
-            .with_hint("pass -t TITLE, -d DESCRIPTION, -p PRIORITY or --type NAME"));
+        return Err(bad_args("nothing to change").with_hint(
+            "pass -t TITLE, -d DESCRIPTION, -p PRIORITY, --type NAME, --epic NAME or --clear-epic",
+        ));
     }
     let cur = store.read(None, |c| {
         let id = c.resolve_id(&id)?;
@@ -1437,6 +1521,7 @@ fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
         title: cur.title.clone(),
         priority: cur.priority.clone(),
         issue_type: cur.issue_type.clone(),
+        epic: cur.epic.clone().unwrap_or_default(),
         description: cur.description.clone(),
     };
     let v = editor::edit_loop(&doc, |d| {
@@ -1448,6 +1533,10 @@ fn edit(env: &Env, id: String, e: Edit, dry_run: bool) -> Result<Out> {
                     description: Some(d.description),
                     priority: Some(d.priority),
                     issue_type: (d.issue_type.trim() != cur.issue_type).then_some(d.issue_type),
+                    epic: {
+                        let epic = (!d.epic.trim().is_empty()).then(|| d.epic.trim().to_string());
+                        (epic != cur.epic).then_some(epic)
+                    },
                 },
             )?;
             c.show(&cur.id, SHOWN)

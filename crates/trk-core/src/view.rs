@@ -115,6 +115,7 @@ impl Ctx<'_> {
         o.insert("state".into(), json!(issue.state));
         o.insert("priority".into(), json!(issue.priority));
         o.insert("type".into(), json!(issue.issue_type));
+        o.insert("epic".into(), json!(issue.epic));
         o.insert("close_reason".into(), json!(issue.close_reason));
         if issue.wake_count > 0 && matches!(issue.state, State::Waiting | State::Claimed) {
             o.insert("wake_count".into(), json!(issue.wake_count));

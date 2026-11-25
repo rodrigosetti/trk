@@ -41,7 +41,9 @@ The type of `data` depends on the command:
 | `list`, `ready` | Array of issue objects, or projected objects when `--fields` is set. Empty results are `[]`. |
 | `show <ID>` | One issue object. |
 | `show <ID> <ID>...` | Array of issue objects. |
-| `log <ID>` | Array of timeline events, including notes, in sequence order. |
+| `log [ID]` | Array of timeline events, including notes, in sequence order; without ID, all project events including epic changes with null `issue_id`. |
+| `epic new`, `epic rename`, `epic archive` | Epic object: `name`, `description`, `created_by`, `created_at`, `archived_at`, `issue_count` (members in all states). |
+| `epic ls [--all]` | Array of epic objects; active by default. |
 | `check` (one pass) | Object with `busy`, `results`, and optional `holder` or `gc`; see below. |
 | Other commands | The command's typed object/array. Even commands silent in pretty mode can return JSON data. |
 
@@ -85,6 +87,7 @@ The normal issue representation contains:
 | Fields | Meaning |
 | --- | --- |
 | `id`, `title`, `description`, `priority`, `type` | Authored identity and content; priorities are `P0`–`P3`, and type is required. |
+| `epic` | Optional curated epic name or null. Unknown or archived assignments return `invalid_field` with active epic names in `error.allowed`; assignment never creates one. |
 | `state`, `close_reason` | State is `open`, `claimed`, `waiting` or `closed`; close reason is `done`, `abandoned` or null. |
 | `waiting` | Null unless waiting. Otherwise an object with `reason`, `check`, `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit` and `cwd`; individual values can be null. A human wait has no check. |
 | `claim` | Active claim or null. Contains `actor`, `on_behalf_of`, `claimed_at`, `lease_until`, `worktree`, `host`, `agent`, `terminal`, and optional pinned `launcher`. A waiting session's released claim is not an active claim. |

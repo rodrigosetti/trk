@@ -31,6 +31,7 @@ pub struct NewIssue {
     pub description: String,
     pub priority: Option<String>,
     pub issue_type: Option<String>,
+    pub epic: Option<String>,
     /// Issues that block the new one.
     pub blocked_by: Vec<String>,
     /// Issues the new one blocks.
@@ -46,6 +47,7 @@ pub struct Edit {
     pub description: Option<String>,
     pub priority: Option<String>,
     pub issue_type: Option<String>,
+    pub epic: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -151,7 +153,7 @@ impl Ctx<'_> {
             "UPDATE issue SET state = ?2, title = ?3, description = ?4, priority = ?5, type = ?6,
                     close_reason = ?7, waiting_reason = ?8, waiting_check = ?9, check_interval = ?10,
                     next_check_at = ?11, last_check_at = ?12, last_check_exit = ?13, wait_cwd = ?14,
-                    closed_at = ?15, updated_at = ?16, wake_count = ?17
+                    closed_at = ?15, updated_at = ?16, wake_count = ?17, epic = ?18
              WHERE id = ?1",
             params![
                 i.id,
@@ -171,6 +173,7 @@ impl Ctx<'_> {
                 i.closed_at,
                 self.ts(),
                 i.wake_count,
+                i.epic,
             ],
         )?;
         Ok(())
@@ -320,6 +323,9 @@ impl Ctx<'_> {
             new.issue_type.as_deref().unwrap_or(&self.opts.default_type),
             &self.opts.known_types,
         )?;
+        if let Some(epic) = &new.epic {
+            self.check_epic_assignment(epic)?;
+        }
         let followup_of = new
             .followup_of
             .as_deref()
@@ -373,8 +379,8 @@ impl Ctx<'_> {
         };
         self.conn.execute(
             "INSERT INTO issue (id, state, title, description, priority, type,
-                                created_by, created_at, updated_at)
-             VALUES (?1, 'open', ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                                created_by, created_at, updated_at, epic)
+             VALUES (?1, 'open', ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)",
             params![
                 id,
                 title,
@@ -383,6 +389,7 @@ impl Ctx<'_> {
                 issue_type,
                 self.actor_str(),
                 self.ts(),
+                new.epic,
             ],
         )?;
         self.event(
@@ -394,6 +401,13 @@ impl Ctx<'_> {
                 "followup_of": followup_of,
             }),
         )?;
+        if let Some(epic) = &new.epic {
+            self.event(
+                Some(&id),
+                "set",
+                json!({"changes": {"epic": {"from": null, "to": epic}}}),
+            )?;
+        }
         for b in &blocked_by {
             self.dep_insert(b, &id)?;
         }
@@ -444,6 +458,15 @@ impl Ctx<'_> {
             if t != issue.issue_type {
                 changes.insert("type".into(), json!({"from": issue.issue_type, "to": t}));
                 issue.issue_type = t.to_owned();
+            }
+        }
+        if let Some(epic) = e.epic {
+            if let Some(name) = &epic {
+                self.check_epic_assignment(name)?;
+            }
+            if epic != issue.epic {
+                changes.insert("epic".into(), json!({"from": issue.epic, "to": epic}));
+                issue.epic = epic;
             }
         }
         if changes.is_empty() {

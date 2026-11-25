@@ -49,6 +49,9 @@ mod type_guidance;
 #[path = "cli/check_colors.rs"]
 mod check_colors;
 
+#[path = "cli/epics.rs"]
+mod epics;
+
 fn local_host() -> String {
     let output = StdCommand::new("hostname").output().unwrap();
     assert!(output.status.success());

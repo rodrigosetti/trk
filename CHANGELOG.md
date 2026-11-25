@@ -19,6 +19,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Aligned Herdr dashboard issue IDs, type badges, and text across sections, with wrapped titles and custom type names that stay within narrow list panes.
 - Per-panel Herdr dashboard sorting by priority, updated time, creation time, or type, with direction toggles, `o`/`O` shortcuts, and an optional initial `sort` prop.
 - Semantic terminal colors for `trk check` and `--watch`: highlighted issue IDs, check activity, successes, waiting/retries, warnings, and failures, respecting existing color-disable and JSON behavior.
+- Explicitly curated epics with create/list/rename/archive commands, cascading names, optional issue assignment and clearing in CLI/editor, archived-assignment validation, complete timeline events, and forward database migration.
 
 ### Fixed
 

@@ -10,6 +10,7 @@ expression: snap
   "state": "waiting",
   "priority": "P1",
   "type": "change",
+  "epic": null,
   "close_reason": null,
   "waiting": {
     "reason": "merge into main",

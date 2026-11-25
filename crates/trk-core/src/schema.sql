@@ -27,6 +27,19 @@ CREATE TABLE actor (
 );
 
 -- ============================================================
+-- Curated epics
+-- ============================================================
+
+CREATE TABLE epic (
+  name         TEXT PRIMARY KEY
+               CHECK (name GLOB '[a-z]*' AND name NOT GLOB '*[^a-z0-9-]*'),
+  description  TEXT NOT NULL DEFAULT '',
+  created_by   TEXT NOT NULL REFERENCES actor(id),
+  created_at   TEXT NOT NULL,
+  archived_at  TEXT
+);
+
+-- ============================================================
 -- Issues
 -- ============================================================
 
@@ -59,6 +72,7 @@ CREATE TABLE issue (
   updated_at       TEXT NOT NULL,
   closed_at        TEXT,
   wake_count       INTEGER NOT NULL DEFAULT 0 CHECK (wake_count >= 0),
+  epic             TEXT REFERENCES epic(name) ON UPDATE CASCADE,
   CHECK ((state = 'closed') = (close_reason IS NOT NULL)),
   CHECK ((state = 'closed') = (closed_at IS NOT NULL)),
   CHECK (state = 'waiting' OR (waiting_check IS NULL AND waiting_reason IS NULL AND next_check_at IS NULL))
@@ -66,6 +80,7 @@ CREATE TABLE issue (
 CREATE INDEX issue_state         ON issue(state);
 CREATE INDEX issue_updated       ON issue(updated_at);
 CREATE INDEX issue_due           ON issue(next_check_at) WHERE state = 'waiting';
+CREATE INDEX issue_epic          ON issue(epic);
 
 -- src blocks dst: dst is not ready until src is closed.
 CREATE TABLE dep (
@@ -116,7 +131,8 @@ CREATE TABLE event (
   at        TEXT NOT NULL,                -- RFC 3339 UTC
   op        TEXT NOT NULL CHECK (op IN (
               'create', 'set', 'claim', 'release', 'wait', 'check', 'close',
-              'reopen', 'dep_add', 'dep_rm', 'note')),
+              'reopen', 'dep_add', 'dep_rm', 'note', 'resume_chat',
+              'epic_create', 'epic_rename', 'epic_archive')),
   payload   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(payload))
 );
 CREATE INDEX event_by_issue ON event(issue_id, seq);

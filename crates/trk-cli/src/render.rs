@@ -299,6 +299,29 @@ impl Renderer {
         i["close_reason"].as_str().unwrap_or("").to_string()
     }
 
+    pub fn epics(&self, epics: &[trk_core::model::Epic]) -> String {
+        if epics.is_empty() {
+            return self.dim("no epics");
+        }
+        let mut t = Table::new();
+        t.load_style(presets::NOTHING);
+        if self.color {
+            t.enforce_styling();
+        } else {
+            t.force_no_tty();
+        }
+        t.set_header(["NAME", "DESCRIPTION", "ISSUES", "ARCHIVED"]);
+        for epic in epics {
+            t.add_row(vec![
+                Cell::new(&epic.name),
+                Cell::new(&epic.description),
+                Cell::new(epic.issue_count),
+                Cell::new(epic.archived_at.as_deref().unwrap_or("")),
+            ]);
+        }
+        t.to_string()
+    }
+
     pub fn table(&self, items: &[Value], fields: Option<&[String]>) -> String {
         if items.is_empty() {
             return self.dim("no issues");
@@ -380,6 +403,9 @@ impl Renderer {
                 .unwrap_or_default()
         );
         s.push_str(&format!("{}\n", self.dim(&meta)));
+        if let Some(epic) = i["epic"].as_str() {
+            s.push_str(&format!("{} {epic}\n", self.dim("epic")));
+        }
         if let Some(count) = i["wake_count"].as_u64() {
             s.push_str(&format!("{} {count}\n", self.dim("wakes")));
         }
@@ -611,6 +637,13 @@ impl Renderer {
                     .map(|f| format!(" as a follow-up of {}", self.issue_id(f)))
                     .unwrap_or_default()
             ),
+            "epic_create" => format!("created epic {}", p["name"].as_str().unwrap_or("")),
+            "epic_rename" => format!(
+                "renamed epic {} → {}",
+                p["from"].as_str().unwrap_or(""),
+                p["to"].as_str().unwrap_or("")
+            ),
+            "epic_archive" => format!("archived epic {}", p["name"].as_str().unwrap_or("")),
             "set" => {
                 let ch: Vec<String> = p["changes"]
                     .as_object()

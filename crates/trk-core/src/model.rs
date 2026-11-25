@@ -152,12 +152,24 @@ pub struct Issue {
     pub created_at: String,
     pub updated_at: String,
     pub closed_at: Option<String>,
+    pub epic: Option<String>,
 }
 
 impl Issue {
     pub fn is_closed(&self) -> bool {
         self.state == State::Closed
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Epic {
+    pub name: String,
+    pub description: String,
+    pub created_by: String,
+    pub created_at: String,
+    pub archived_at: Option<String>,
+    /// All member issues, including closed issues.
+    pub issue_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -1,4 +1,4 @@
-//! Interactive editing: `title`, `priority` and `type` are TOML front matter
+//! Interactive editing: `title`, `priority`, `type` and `epic` are TOML front matter
 //! between `+++` lines and the description is the markdown body. When
 //! validation fails on save, the file reopens with the errors as comments.
 
@@ -18,6 +18,7 @@ pub struct Doc {
     pub title: String,
     pub priority: String,
     pub issue_type: String,
+    pub epic: String,
     pub description: String,
 }
 
@@ -36,6 +37,10 @@ pub fn document(errors: &[String], d: &Doc) -> String {
         toml_str(&d.priority)
     ));
     s.push_str(&format!("type     = {}\n", toml_str(&d.issue_type)));
+    s.push_str(&format!(
+        "epic     = {}  # existing active epic; empty clears it\n",
+        toml_str(&d.epic)
+    ));
     s.push_str("+++\n");
     s.push_str(&d.description);
     if !d.description.ends_with('\n') {
@@ -71,6 +76,7 @@ pub fn parse(doc: &str) -> Result<Doc> {
             "title" => d.title = v,
             "priority" => d.priority = v,
             "type" => d.issue_type = v,
+            "epic" => d.epic = v,
             other => return Err(bad(format!("unknown key '{other}' in the front matter"))),
         }
     }
@@ -140,6 +146,7 @@ mod tests {
             title: "Say \"hello\"".into(),
             priority: "P1".into(),
             issue_type: "change".into(),
+            epic: "reliability".into(),
             description: "Some context\n\nMore.".into(),
         };
         let text = document(&["bad priority".into()], &d);

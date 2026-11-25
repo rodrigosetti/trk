@@ -4,7 +4,7 @@ A local issue tracker and agent launcher in one Rust binary. Each project has it
 database in `.trk/`; humans use the CLI, agents work through a per-issue MCP server, and `trk run [ID]` starts
 an agent session on one issue through a named launcher profile (Herdr, `hc`, or tmux). See [Design and state machine](design.md) for the model.
 
-An issue has a title, a description, notes, a priority, a required type (from `[issues] default_type`, initially `code-change`), and one of four states:
+An issue has a title, a description, notes, a priority, a required type (from `[issues] default_type`, initially `code-change`), an optional epic, and one of four states:
 
 ```
 open → claimed → closed
@@ -49,4 +49,36 @@ are dimmed; description and note bodies retain their existing rendering. Labels 
 remain present without color. ANSI styling is enabled only for pretty output on a terminal;
 `NO_COLOR` or `--no-color` disables it, and piped output is unstyled. JSON and JSONL output never
 contain ANSI styling.
+
+
+## Epics
+
+Epics are deliberately curated, named groupings for themes; an issue belongs to at most one.
+Create one explicitly before assigning it. Names start with a lowercase letter and contain
+only lowercase letters, digits and hyphens. Any actor may create an epic.
+
+| Command | Purpose |
+| --- | --- |
+| `trk epic new <name> [-d DESCRIPTION]` | Create an epic explicitly |
+| `trk epic ls [--all]` | Active epics, descriptions and total member issue counts; `--all` includes archived |
+| `trk epic rename <old> <new>` | Rename and cascade every existing issue reference |
+| `trk epic archive <name>` | Hide from the default listing and reject assignments; retain existing members |
+| `trk create TITLE --epic <name>` | Assign an existing active epic at creation |
+| `trk edit <ID> --epic <name>` | Assign or change the epic |
+| `trk edit <ID> --clear-epic` | Remove the epic |
+
+All commands support `--json`. Epic mutations return an epic object; listing returns an array.
+Each epic has `name`, `description`, `created_by`, `created_at`, `archived_at` and `issue_count`.
+Counts include member issues in every state, including closed issues.
+`-d` accepts text, `@file`, or `@-` for stdin.
+
+Unknown or archived assignments return `invalid_field` with active names in `error.allowed`
+and a hint to pick one or omit the epic if none fits. Assignment never creates an epic.
+Unrelated edits preserve membership in an archived epic. The interactive editor includes
+`epic = ""` in its TOML front matter; an empty value or removing that key clears membership.
+`trk show` displays the epic in pretty output and as a string or null in JSON.
+
+`trk log [ID]` shows an issue's timeline when given an ID; without one, it shows the entire
+project timeline, including `epic_create`, `epic_rename` and `epic_archive` events with no
+issue ID. Assigning or clearing membership records an issue `set` event.
 

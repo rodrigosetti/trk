@@ -3,6 +3,7 @@
 
 pub mod config;
 pub mod dashboard;
+pub mod epic;
 pub mod error;
 pub mod model;
 pub mod ops;

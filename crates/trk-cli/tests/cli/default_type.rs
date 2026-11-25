@@ -237,3 +237,41 @@ fn editor_create_and_edit_reject_changed_unknown_type() {
         }
     }
 }
+
+#[test]
+fn epic_editor_assigns_preserves_archived_membership_and_clears() {
+    let e = Env::new();
+    e.ok(&["epic", "new", "session-safety"]);
+    let output = run_editor(
+        &e,
+        &["create"],
+        "cat > \"$1\" <<'EOF'\n+++\ntitle = \"Editor epic\"\npriority = \"P2\"\ntype = \"change\"\nepic = \"session-safety\"\n+++\nCreated through editor.\nEOF\n",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let issue = e.ok(&["list", "title=\"Editor epic\""]);
+    let id = issue[0]["id"].as_str().unwrap();
+    assert_eq!(e.ok(&["show", id])["epic"], "session-safety");
+    e.ok(&["epic", "archive", "session-safety"]);
+    let output = run_editor(&e, &["edit", id], "exit 0\n");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(e.ok(&["show", id])["epic"], "session-safety");
+    let output = run_editor(
+        &e,
+        &["edit", id],
+        "cat > \"$1\" <<'EOF'\n+++\ntitle = \"Editor epic\"\npriority = \"P2\"\ntype = \"change\"\nepic = \"\"\n+++\nCleared through editor.\nEOF\n",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(e.ok(&["show", id])["epic"], Value::Null);
+}
