@@ -139,6 +139,7 @@ export default class Trk extends View {
     this.selected = null;
     this.open = false;
     this.folded = new Set(["blocked"]);
+    this.foldedEpics = new Set();
     this.sort = initialSort(props()?.sort);
     this.group = props()?.group === "epic" ? "epic" : null;
     this.busy = null;
@@ -457,6 +458,12 @@ export default class Trk extends View {
 
   toggleGrouping(cx) {
     this.group = this.group === "epic" ? null : "epic";
+    cx.notify();
+  }
+
+  toggleEpic(key, cx) {
+    this.foldedEpics.has(key) ? this.foldedEpics.delete(key) : this.foldedEpics.add(key);
+    this.handle.focus();
     cx.notify();
   }
 
@@ -785,9 +792,22 @@ export default class Trk extends View {
     const groups = GROUPS.map((g) => {
       const members = issues.filter((i) => this.groupOf(i) === g.id).sort(comparator);
       const buckets = this.group === "epic" ? epicBuckets(members, this.sort) : [{ members }];
+      for (const bucket of buckets) {
+        if (bucket.epic === undefined) continue;
+        bucket.key = JSON.stringify([g.id, bucket.epic]);
+        bucket.folded = this.foldedEpics.has(bucket.key);
+      }
       return { ...g, members, buckets };
     }).filter((g) => g.members.length);
-    this.order = groups.flatMap((g) => this.folded.has(g.id) ? [] : g.buckets.flatMap((b) => b.members.map((i) => i.id)));
+    this.order = groups.flatMap((g) => this.folded.has(g.id) ? [] : g.buckets.flatMap((b) => b.folded ? [] : b.members.map((i) => i.id)));
+    // Also covers refreshes and turning grouping back on around a flat-mode selection.
+    if (groups.some((g) => g.buckets.some((b) => b.folded && b.members.some((i) => i.id === this.selected)))) {
+      this.selected = null;
+      this.detail = null;
+      this.open = false;
+      this.prompt = null;
+      this.confirm = null;
+    }
     if (props()?.focus === "agent") setAgentOrder(groups.flatMap((g) => g.buckets.flatMap((b) => b.members)).map((i) => i.session?.terminal).filter(Boolean));
     const selected = issues.find((i) => i.id === this.selected);
     const inline = !this.wide && this.open;
@@ -808,12 +828,18 @@ export default class Trk extends View {
         .when(!open, (el) => el.child(div().text_color(t.dim).child("›")));
       if (!open) return [head];
       return [head, ...g.buckets.flatMap((bucket) => {
+        const id = `epic-${g.id}-${JSON.stringify(bucket.epic)}`;
         const subhead = bucket.epic !== undefined
-          ? [h_flex().id(`epic-${g.id}-${JSON.stringify(bucket.epic)}`).min_h(22).px(12).gap(6).flex_none().items_center().text_size(10.5).text_color(t.dim)
+          ? [h_flex().id(id).min_h(22).px(12).gap(6).flex_none().items_center().text_size(10.5).text_color(t.dim)
+            .child(div().id(`fold-${id}`).size(20).flex_none().flex().items_center().justify_center().rounded(4)
+              .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+              .tooltip(`${bucket.folded ? "Expand" : "Collapse"} ${bucket.epic ?? "No epic"}`)
+              .on_click((_e, cx) => { cx.stop_propagation(); this.toggleEpic(bucket.key, cx); })
+              .child(bucket.folded ? "▸" : "▾"))
             .child(div().min_w(0).whitespace_normal().child(bucket.epic ?? "No epic"))
             .child(div().flex_none().child(String(bucket.members.length)))]
           : [];
-        return [...subhead, ...bucket.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now, columns), this.detailView(t, i, now)] : [this.row(t, i, now, columns)]))];
+        return [...subhead, ...(bucket.folded ? [] : bucket.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now, columns), this.detailView(t, i, now)] : [this.row(t, i, now, columns)])))];
       })];
     });
 

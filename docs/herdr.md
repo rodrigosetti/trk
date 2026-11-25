@@ -31,12 +31,20 @@ subgroups inside every state group; grouping is off by default. Each dim epic su
 shows its name and count in that state. Rows retain the selected sort and fixed tie-breaks;
 buckets rank by their top row's selected sort value, then epic name. **No epic** is always
 last. An entirely unassigned state group stays flat, without a **No epic** header.
-Only state groups fold; epic sub-headers do not. With grouping off, rows show a dim epic tag.
+Each epic sub-header has a separate disclosure arrow: **▾** expanded, **▸** collapsed.
+Click the arrow to hide or reveal just that subgroup's issue rows; its name and total count
+remain visible, including **No epic**. The same epic folds independently in each state group.
+Epic folds start expanded and survive refreshes, sorting, state-group folding and toggling
+grouping off/on within the panel. An entirely unassigned state group remains flat even if
+its **No epic** subgroup was previously folded. With grouping off, rows show a dim epic tag.
 A blocked row's `by` hint includes each blocker's epic when different from its own
 (including **No epic** for an unassigned blocker).
-Keyboard navigation follows the displayed issue order, skipping both header levels.
-Changing sort or toggling grouping keeps the selected issue and its details.
-Sort and grouping state are in memory per panel, not saved; the sidebar launcher is unchanged.
+Keyboard navigation follows the displayed issue order, skipping headers and folded rows.
+Folding the selected issue's epic clears selection and closes its details. Changing sort or
+toggling grouping otherwise keeps selection and details, unless grouping hides that issue
+inside a folded epic. State-group folding is unchanged.
+Sort, grouping and epic folds are in memory per panel, not saved across panel restarts;
+the sidebar launcher is unchanged.
 
 That is the whole setup. Herdr mods are machine-wide and a space shows one once a pane or tab
 there holds it, so `open` does both steps: it installs or refreshes the mod when needed, then

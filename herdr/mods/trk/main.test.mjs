@@ -410,7 +410,7 @@ for (const [key, expected, reversed] of [
       assert.deepEqual(entries.filter((n) => n.id.startsWith("row-")).map((n) => n.id), order.map((id) => `row-${id}`));
       const epics = [...new Set(order.map((id) => issues.find((i) => i.id === id).epic))];
       assert.deepEqual(entries.filter((n) => n.id.startsWith("epic-")).map((n) => n.text),
-        epics.map((epic) => [epic ?? "No epic", epic === "Alpha" ? "2" : "1"]));
+        epics.map((epic) => ["▾", epic ?? "No epic", epic === "Alpha" ? "2" : "1"]));
       assert.deepEqual(issues.map((i) => i.id), ["a", "b", "c", "d", "unassigned"], "leave snapshot order intact");
     }
   });
@@ -434,24 +434,33 @@ for (const [key, expected, reversed] of [
   });
 }
 
-test("all five states share epic subheaders and counts, but only state headers fold", async () => {
-  const { view } = await dashboard({ ...spaceState(), props: { group: "epic" } });
+test("epic disclosures fold independently in every state, including No epic, without folding parents", async () => {
+  const { view, commands } = await dashboard({ ...spaceState(), props: { group: "epic" } });
   const groups = ["attention", "running", "waiting", "ready", "blocked"];
-  const issues = groups.flatMap((group) => epicIssues().slice(0, 3).map((i) => ({
+  view.data = { issues: groups.flatMap((group) => epicIssues().map((i) => ({
     ...i, id: `${group}-${i.id}`, group,
     state: group === "running" ? "claimed" : group === "waiting" ? "waiting" : "open",
     attention: group === "attention" ? ["review"] : [],
-  })));
-  view.data = { issues };
+  }))) };
   view.folded.clear();
   let tree = view.render();
-  assert.deepEqual(listEntries(tree).filter((n) => n.id.startsWith("group-")).map((n) => n.text),
-    ["Needs you", "In flight", "Waiting", "Ready", "Blocked"].map((label) => [label, "3"]));
-  assert.deepEqual(listEntries(tree).filter((n) => n.id.startsWith("epic-")).map((n) => n.text),
-    groups.flatMap(() => [["Zulu", "1"], ["Alpha", "2"]]));
+  const all = [...view.order];
   for (const group of groups) {
-    const header = listEntries(tree).find((n) => n.id.startsWith(`epic-${group}-`));
-    assert.equal(Object.hasOwn(findElement(tree, header.id), "click"), false);
+    for (const epic of ["Alpha", "Zulu", "Beta", null]) {
+      const header = `epic-${group}-${JSON.stringify(epic)}`;
+      let stopped = false;
+      findElement(tree, `fold-${header}`).click({}, { ...sortContext, stop_propagation() { stopped = true; } });
+      tree = view.render();
+      const hidden = view.data.issues.filter((i) => i.group === group && i.epic === epic).map((i) => i.id);
+      assert.equal(stopped, true, "disclosure must not bubble to future scope navigation");
+      assert.deepEqual(content(findElement(tree, header)), ["▸", epic ?? "No epic", String(hidden.length)]);
+      assert.deepEqual(view.order, all.filter((id) => !hidden.includes(id)));
+      for (const id of hidden) assert.equal(findElement(tree, `row-${id}`), undefined);
+      findElement(tree, `fold-${header}`).click({}, sortContext);
+      tree = view.render();
+      assert.deepEqual(content(findElement(tree, header)), ["▾", epic ?? "No epic", String(hidden.length)]);
+      assert.deepEqual(view.order, all);
+    }
     findElement(tree, `group-${group}`).click({}, sortContext);
     tree = view.render();
     assert.equal(listEntries(tree).some((n) => n.id.startsWith(`epic-${group}-`) || n.id.startsWith(`row-${group}-`)), false);
@@ -459,6 +468,7 @@ test("all five states share epic subheaders and counts, but only state headers f
     findElement(tree, `group-${group}`).click({}, sortContext);
     tree = view.render();
   }
+  assert.deepEqual(commands, [], "folding must not navigate to an epic or agent");
 });
 
 test("all-unassigned states stay flat, while a single assigned epic still gets a header", async () => {
@@ -474,7 +484,7 @@ test("all-unassigned states stay flat, while a single assigned epic still gets a
   assert.equal(content(tree).includes("No epic"), false);
   view.data.issues = [{ ...sortIssues()[0], epic: "Only epic" }];
   tree = view.render();
-  assert.deepEqual(listEntries(tree).filter((n) => n.id.startsWith("epic-")).map((n) => n.text), [["Only epic", "1"]]);
+  assert.deepEqual(listEntries(tree).filter((n) => n.id.startsWith("epic-")).map((n) => n.text), [["▾", "Only epic", "1"]]);
 });
 
 test("flat mode shows epic tags and blocked hints identify only cross-epic blockers", async () => {
@@ -547,4 +557,109 @@ test("group toggle and sort preserve selection and details, and navigation skips
   another.data = view.data;
   another.render();
   assert.deepEqual(another.order, ["unassigned", "b", "c", "a", "d"]);
+});
+
+test("epic folds survive sorting, refresh, parent folding and grouping toggles without sharing panel state", async () => {
+  const state = { ...spaceState(), props: { group: "epic", focus: "agent" } };
+  const { view } = await dashboard(state);
+  view.data = { issues: epicIssues() };
+  let tree = view.render();
+  const header = 'epic-ready-"Alpha"';
+  findElement(tree, `fold-${header}`).click({}, sortContext);
+  tree = view.render();
+  assert.deepEqual(view.order, ["b", "d", "unassigned"]);
+  assert.deepEqual(state.agentOrder, ["t-b", "t-c", "t-a", "t-d", "t-unassigned"], "folding must not change session navigation");
+  findElement(tree, "sort-type").click({}, sortContext);
+  tree = view.render();
+  assert.deepEqual(view.order, ["b", "d", "unassigned"]);
+  findElement(tree, "group-ready").click({}, sortContext);
+  tree = view.render();
+  assert.deepEqual(view.order, []);
+  findElement(tree, "group-ready").click({}, sortContext);
+  tree = view.render();
+  assert.deepEqual(content(findElement(tree, header)), ["▸", "Alpha", "2"]);
+  findElement(tree, "group-epic").click({}, sortContext);
+  tree = view.render();
+  assert.deepEqual(view.order, ["unassigned", "b", "d", "c", "a"]);
+  findElement(tree, "group-epic").click({}, sortContext);
+  view.context = { root: "/current-project", cwd: "/current-project" };
+  const refreshed = [...epicIssues().reverse(), { ...epicIssues()[0], id: "new-alpha" }];
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 4, data: { issues: refreshed } }) };
+  let pending;
+  const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
+  view.load(cx);
+  await pending;
+  tree = view.render();
+  assert.deepEqual(view.order, ["b", "d", "unassigned"]);
+  assert.deepEqual(content(findElement(tree, header)), ["▸", "Alpha", "3"]);
+  findElement(tree, `fold-${header}`).click({}, sortContext);
+  view.render();
+  assert.deepEqual(view.order, ["b", "d", "c", "a", "new-alpha", "unassigned"]);
+  const { view: another } = await dashboard({ ...spaceState(), props: { group: "epic" } });
+  another.data = { issues: epicIssues() };
+  another.render();
+  assert.deepEqual(another.order, ["b", "c", "a", "d", "unassigned"]);
+});
+
+for (const width of [500, 1000]) {
+  test(`collapsing a selected epic clears selection and details at width ${width}; keyboard skips hidden rows`, async () => {
+    const { view } = await dashboard({ ...spaceState(), props: { group: "epic" } });
+    view.data = { issues: epicIssues() };
+    view.size = { width };
+    view.selected = "a";
+    view.detail = { id: "a" };
+    view.open = true;
+    let tree = view.render();
+    assert.ok(findElement(tree, "detail-a"));
+    findElement(tree, 'fold-epic-ready-"Alpha"').click({}, sortContext);
+    tree = view.render();
+    assert.equal(view.selected, null);
+    assert.equal(view.detail, null);
+    assert.equal(view.open, false);
+    assert.equal(findElement(tree, "detail-a"), undefined);
+    for (const [event, expected] of [
+      [{ key_char: "j" }, "b"], [{ key: "down" }, "d"], [{ key_char: "G" }, "unassigned"],
+      [{ key: "up" }, "d"], [{ key_char: "g" }, "b"], [{ key_char: "k" }, "b"],
+    ]) {
+      view.key(event, sortContext);
+      assert.equal(view.selected, expected);
+      assert.equal(view.open, false);
+    }
+    findElement(tree, 'fold-epic-ready-"Alpha"').click({}, sortContext);
+    view.render();
+    assert.equal(view.selected, "b", "expanding another subgroup preserves selection");
+    view.key({ key_char: "j" }, sortContext);
+    assert.equal(view.selected, "c");
+  });
+}
+
+test("grouping and refresh cannot leave a selected issue inside a folded epic; all-unassigned remains flat", async () => {
+  const state = { ...spaceState(), props: { group: "epic" } };
+  const { view } = await dashboard(state);
+  view.data = { issues: epicIssues() };
+  let tree = view.render();
+  findElement(tree, "fold-epic-ready-null").click({}, sortContext);
+  view.toggleGrouping(sortContext);
+  view.render();
+  view.select("unassigned", sortContext, false);
+  view.toggleGrouping(sortContext);
+  view.render();
+  assert.equal(view.selected, null);
+  assert.deepEqual(view.order, ["b", "c", "a", "d"]);
+  view.selected = "b";
+  view.context = { root: "/current-project", cwd: "/current-project" };
+  const issues = epicIssues().map((i) => i.id === "b" ? { ...i, epic: null } : i);
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 4, data: { issues } }) };
+  let pending;
+  const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
+  view.load(cx);
+  await pending;
+  tree = view.render();
+  assert.equal(view.selected, null);
+  assert.deepEqual(view.order, ["c", "a", "d"]);
+  assert.deepEqual(content(findElement(tree, "epic-ready-null")), ["▸", "No epic", "2"]);
+  view.data = { issues: issues.filter((i) => i.epic === null) };
+  tree = view.render();
+  assert.deepEqual(view.order, ["unassigned", "b"], "a remembered No epic fold must not hide a flat unassigned state");
+  assert.equal(findElement(tree, "epic-ready-null"), undefined);
 });
