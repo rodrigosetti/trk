@@ -128,6 +128,10 @@ fn host_matches(claim: &Claim, host: Option<&str>) -> bool {
     host.is_some() && claim.host.as_deref() == host
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep host/protection gates and per-collection recovery state explicit at the cleanup boundary"
+)]
 fn session(
     env: &Env,
     claim: &Claim,
@@ -365,6 +369,10 @@ pub(crate) fn collect(
     collect_with_recovery(env, c, ids, dry_run, abandoned, older_than, sweep, false)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Share all collection safety gates while keeping legacy recovery opt-in for explicit runs"
+)]
 fn collect_with_recovery(
     env: &Env,
     c: &mut Ctx<'_>,

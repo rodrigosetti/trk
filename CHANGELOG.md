@@ -24,6 +24,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Human unclaim permission errors now include the issue-specific `trk unclaim <ID> --force` recovery command; Herdr shows CLI error hints in a wrapping status footer.
 - Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
 - The Herdr dashboard's wide list/details split now starts at 50/50 instead of a fixed list width, retaining user resizing and pane minimums.
+- Restored CI Clippy checks with narrowly scoped argument-count expectations on GC helpers, preserving cleanup safety gates and opt-in legacy recovery behavior.
 
 ### Beta compatibility and upgrades
 
