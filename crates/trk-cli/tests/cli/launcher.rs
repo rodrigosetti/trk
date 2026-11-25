@@ -168,6 +168,80 @@ fn named_tmux_run_binds_only_first_stdout_line_and_pins_send_and_attach() {
 }
 
 #[test]
+fn named_start_and_send_preserve_placeholders_and_shell_sensitive_issue_content() {
+    for delivery in ["arg", "send"] {
+        let e = Env::named();
+        let mut config: toml::Value = toml::from_str(
+            r#"
+[issues]
+prefix = "orch"
+[claims]
+agent_lease = "30m"
+[run]
+worktrees = ".trk/worktrees"
+[launcher]
+use = ["shell"]
+[launcher.shell]
+start = ["sh", "-c", "sh -c \"$1\" || exit; printf '%s' \"$2\" > \"$TRK_TEST_TITLE\"; printf 'test-terminal\\n'", "trk-launch", "{shell_command}", "{title}"]
+send = ["sh", "-c", "printf '%s' \"$1\" > \"$TRK_TEST_SENT\"", "trk-send", "{text}"]
+send_delay = 0
+send_retries = 1
+[harness.shell]
+command = "sh"
+briefing = "arg"
+args = ["-c", "printf '%s' \"$1\" > \"$TRK_TEST_BRIEFING\"", "trk-harness", "{{ briefing }}"]
+builtin_tools = { read-only = [] }
+"#,
+        )
+        .unwrap();
+        config["harness"]["shell"]["briefing"] = delivery.into();
+        if delivery == "send" {
+            config["harness"]["shell"]["args"] = toml::Value::try_from(["-c", "exit 0"]).unwrap();
+        }
+        std::fs::write(
+            e.trk_dir().join("config.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let title = r#"Don't expand {title} {text} {name} {cwd} {shell_command}'; printf injected > "$TRK_TEST_INJECTED"; #"#;
+        let body = "Keep {title} {text} {name} {cwd} {shell_command} verbatim.\n'\"; $(printf injected > \"$TRK_TEST_INJECTED\") `printf literal` 雪";
+        let id = e.create(&[title, "-d", body, "--type", "research"]);
+        let captured = |name: &str| e.dir.path().join(name);
+        let mut command = e.cmd();
+        command
+            .env("TRK_TEST_TITLE", captured("title"))
+            .env("TRK_TEST_BRIEFING", captured("briefing"))
+            .env("TRK_TEST_SENT", captured("sent"))
+            .env("TRK_TEST_INJECTED", captured("injected"));
+        let launched = resume::success(command, &["run", &id, "--harness", "shell"]);
+        assert_eq!(std::fs::read_to_string(captured("title")).unwrap(), title);
+        let briefing = std::fs::read_to_string(
+            Path::new(launched["session_dir"].as_str().unwrap()).join("briefing.md"),
+        )
+        .unwrap();
+        assert!(briefing.contains(title), "{briefing}");
+        assert!(briefing.contains(body), "{briefing}");
+        let received = std::fs::read_to_string(captured(if delivery == "arg" {
+            "briefing"
+        } else {
+            "sent"
+        }))
+        .unwrap();
+        if delivery == "arg" {
+            assert_eq!(received, briefing);
+        } else {
+            assert_eq!(
+                received,
+                format!(
+                    "[trk-delivery source=briefing actor=\"human:alice@example.com\"]\n{briefing}\n[/trk-delivery]"
+                )
+            );
+        }
+        assert!(!captured("injected").exists());
+    }
+}
+
+#[test]
 fn named_start_empty_stdout_keeps_generated_name_and_ignores_stderr() {
     let tmux = Tmux::new();
     let id = tmux

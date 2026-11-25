@@ -28,6 +28,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 
 ### Fixed
 
+- Launcher templates now expand placeholders only once, preserving literal placeholders in issue content and preventing re-expansion from corrupting shell quoting.
 - Brighter, larger Herdr state and epic headings in dark and light themes, with every top-level state heading in ALL CAPS and smaller counts preserving the hierarchy.
 - Restored GC classification of historical claim paths: local primary-checkout claims own no disposable Git resources, and absent outside-root paths are reported as absent. Existing outside-root worktrees and branches held by stale Git registrations remain protected.
 - Herdr issue rows now indent beneath rendered epic subheaders, including **No epic**, while preserving shared responsive columns; grouping off and entirely unassigned state groups remain flat.
