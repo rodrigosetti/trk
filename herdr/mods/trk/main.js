@@ -24,7 +24,7 @@ const GROUPS = [
   { id: "running", label: "In flight", color: "working" },
   { id: "waiting", label: "Waiting", color: "done" },
   { id: "ready", label: "Ready", color: "foreground" },
-  { id: "blocked", label: "Blocked", color: "dim" },
+  { id: "blocked", label: "Blocked", color: "muted" },
 ];
 const PRIORITIES = ["P0", "P1", "P2", "P3"];
 const SORT_KEYS = {
@@ -88,6 +88,7 @@ const PROMPTS = {
 const REFRESH_MS = 10000;
 const FOLLOW_MS = 300;
 const WIDE = 720;
+const EPIC_ROW_INDENT = 12;
 
 // Attention already announced, per project, shared by every copy of the mod.
 const announced = new Map();
@@ -137,6 +138,7 @@ export default class Trk extends View {
     this.selected = null;
     this.open = false;
     this.folded = new Set(["blocked"]);
+    this.foldedEpics = new Set();
     this.sort = initialSort(props()?.sort);
     this.group = props()?.group === "epic" ? "epic" : null;
     this.busy = null;
@@ -490,6 +492,12 @@ export default class Trk extends View {
     cx.notify();
   }
 
+  toggleEpic(key, cx) {
+    this.foldedEpics.has(key) ? this.foldedEpics.delete(key) : this.foldedEpics.add(key);
+    this.handle.focus();
+    cx.notify();
+  }
+
   runnable(issue) {
     return issue.state === "open" && issue.blocked_by.every((b) => b.state === "closed");
   }
@@ -610,12 +618,13 @@ export default class Trk extends View {
     return div().flex_none().text_size(10.5).text_color(t.dim).child(ago(issue.updated_at, now));
   }
 
-  row(t, issue, now, columns) {
+  row(t, issue, now, columns, indent = 0) {
     const on = issue.id === this.selected;
     const urgent = issue.priority === "P0" ? t.blocked : issue.priority === "P1" ? t.done : t.dim;
     const status = this.badge(t, issue, now);
     const epic = this.group !== "epic" && issue.epic;
     return h_flex().id(`row-${issue.id}`).w_full().min_w(0).min_h(28).px(8).py(5).gap(7).flex_none().items_start().rounded(7)
+      .pl(8 + indent)
       .when(on, (el) => el.bg(t.selected)).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.select(issue.id, cx))
       .child(div().w(18).flex_none().text_size(10.5).line_height("18px").font_semibold().text_color(urgent).child(issue.priority))
@@ -796,35 +805,56 @@ export default class Trk extends View {
     const groups = GROUPS.map((g) => {
       const members = issues.filter((i) => this.groupOf(i) === g.id).sort(comparator);
       const buckets = this.group === "epic" ? epicBuckets(members, this.sort) : [{ members }];
+      for (const bucket of buckets) {
+        if (bucket.epic === undefined) continue;
+        bucket.key = JSON.stringify([g.id, bucket.epic]);
+        bucket.folded = this.foldedEpics.has(bucket.key);
+      }
       return { ...g, members, buckets };
     }).filter((g) => g.members.length);
-    this.order = groups.flatMap((g) => this.folded.has(g.id) ? [] : g.buckets.flatMap((b) => b.members.map((i) => i.id)));
+    this.order = groups.flatMap((g) => this.folded.has(g.id) ? [] : g.buckets.flatMap((b) => b.folded ? [] : b.members.map((i) => i.id)));
+    // Also covers refreshes and turning grouping back on around a flat-mode selection.
+    if (groups.some((g) => g.buckets.some((b) => b.folded && b.members.some((i) => i.id === this.selected)))) {
+      this.selected = null;
+      this.detail = null;
+      this.open = false;
+      this.prompt = null;
+      this.confirm = null;
+    }
     if (props()?.focus === "agent") setAgentOrder(groups.flatMap((g) => g.buckets.flatMap((b) => b.members)).map((i) => i.session?.terminal).filter(Boolean));
     const selected = issues.find((i) => i.id === this.selected);
     const inline = !this.wide && this.open;
     // Share boundaries across every section. Measure the list, not the dashboard:
     // the native divider can make this pane narrow even in a wide window.
-    // Reserve row/list padding, priority and gaps before allocating the columns.
-    const available = Math.max(0, (this.listWidth ?? this.size?.width ?? 280) - 67);
+    // Reserve row/list padding, priority, gaps and the deepest rendered hierarchy.
+    const indent = groups.some((g) => !this.folded.has(g.id) && g.buckets.some((b) => b.epic !== undefined)) ? EPIC_ROW_INDENT : 0;
+    const available = Math.max(0, (this.listWidth ?? this.size?.width ?? 280) - 67 - indent);
     const columns = { id: Math.min(88, available * 0.30), type: Math.min(112, available * 0.32) };
 
     const rows = groups.flatMap((g) => {
       const open = !this.folded.has(g.id);
-      const head = h_flex().id(`group-${g.id}`).h(28).pt(6).px(8).gap(6).flex_none().items_center().text_size(11).font_medium().cursor_pointer()
+      const head = h_flex().id(`group-${g.id}`).min_h(30).pt(6).px(8).gap(6).flex_none().items_center().text_size(13).font_semibold().cursor_pointer()
         .hover((s) => s.text_color(t.foreground))
         .on_click((_e, cx) => { open ? this.folded.add(g.id) : this.folded.delete(g.id); cx.notify(); })
-        .child(div().text_color(t[g.color] ?? t.dim).child(g.label))
-        .child(div().text_color(t.dim).child(String(g.members.length)))
+        .child(div().min_w(0).whitespace_normal().text_color(t.foreground).child(g.label.toUpperCase()))
+        .child(div().flex_none().text_size(11.5).font_medium().text_color(t[g.color] ?? t.muted).child(String(g.members.length)))
         .child(div().flex_1())
-        .when(!open, (el) => el.child(div().text_color(t.dim).child("›")));
+        .when(!open, (el) => el.child(div().text_color(t.muted).child("›")));
       if (!open) return [head];
       return [head, ...g.buckets.flatMap((bucket) => {
+        const id = `epic-${g.id}-${JSON.stringify(bucket.epic)}`;
         const subhead = bucket.epic !== undefined
-          ? [h_flex().id(`epic-${g.id}-${JSON.stringify(bucket.epic)}`).min_h(22).px(12).gap(6).flex_none().items_center().text_size(10.5).text_color(t.dim)
+          ? [h_flex().id(id).min_h(22).px(12).gap(6).flex_none().items_center().text_size(12).font_semibold().text_color(t.foreground)
+            .child(div().id(`fold-${id}`).size(20).flex_none().flex().items_center().justify_center().rounded(4)
+              .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+              .tooltip(`${bucket.folded ? "Expand" : "Collapse"} ${bucket.epic ?? "No epic"}`)
+              .on_click((_e, cx) => { cx.stop_propagation(); this.toggleEpic(bucket.key, cx); })
+              .child(bucket.folded ? "▸" : "▾"))
             .child(div().min_w(0).whitespace_normal().child(bucket.epic ?? "No epic"))
-            .child(div().flex_none().child(String(bucket.members.length)))]
+            .child(div().flex_none().text_size(11).font_medium().text_color(t.muted).child(String(bucket.members.length)))]
           : [];
-        return [...subhead, ...bucket.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now, columns), this.detailView(t, i, now)] : [this.row(t, i, now, columns)]))];
+        const indent = subhead.length ? EPIC_ROW_INDENT : 0;
+        return [...subhead, ...(bucket.folded ? [] : bucket.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now, columns, indent), this.detailView(t, i, now)] : [this.row(t, i, now, columns, indent)])))];
       })];
     });
 

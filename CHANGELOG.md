@@ -21,13 +21,16 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Epic query filtering (`epic=""` for unassigned issues), epic sorting with unassigned issues last in both directions, and epic names in dashboard issue and dependency-edge JSON; list/ready JSON retains each issue's optional epic.
 - Optional Herdr dashboard epic grouping within all five state groups, with ranked epic buckets, counts, unassigned issues last, an `e` toggle and initial `group` prop; flat rows show epic tags and blocked hints identify cross-epic blockers.
 - A single installed Herdr `trk` layout with a fixed first dashboard tab for tracked non-worktree projects, a machine-owned `trk-tabs` companion, layout-scoped keyboard routing, and safe backups/migration of the former split/sidebar layouts.
+- Independently collapsible Herdr epic subgroups, including No epic, with per-state fold memory across refresh/sort/group toggles, disclosure arrows separate from epic names, and keyboard navigation that skips hidden rows.
 - Semantic terminal colors for `trk check` and `--watch`: highlighted issue IDs, check activity, successes, waiting/retries, warnings, and failures, respecting existing color-disable and JSON behavior.
 - Explicitly curated epics with create/list/rename/archive commands, cascading names, optional issue assignment and clearing in CLI/editor, archived-assignment validation, complete timeline events, and forward database migration.
 - Agent epic context: briefings and templates expose membership and active epic descriptions; MCP follow-ups can select existing active epics, with no epic-management tools. Interactive skill guidance covers explicit epic curation and omitting assignments when none fits.
 
 ### Fixed
 
+- Brighter, larger Herdr state and epic headings in dark and light themes, with every top-level state heading in ALL CAPS and smaller counts preserving the hierarchy.
 - Restored GC classification of historical claim paths: local primary-checkout claims own no disposable Git resources, and absent outside-root paths are reported as absent. Existing outside-root worktrees and branches held by stale Git registrations remain protected.
+- Herdr issue rows now indent beneath rendered epic subheaders, including **No epic**, while preserving shared responsive columns; grouping off and entirely unassigned state groups remain flat.
 - Human unclaim permission errors now include the issue-specific `trk unclaim <ID> --force` recovery command; Herdr shows CLI error hints in a wrapping status footer.
 - Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
 - The Herdr dashboard's wide list/details split now starts at 50/50 instead of a fixed list width, retaining user resizing and pane minimums.
