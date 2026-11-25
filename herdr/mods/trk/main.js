@@ -89,6 +89,7 @@ const PROMPTS = {
 const REFRESH_MS = 10000;
 const FOLLOW_MS = 300;
 const WIDE = 720;
+const EPIC_ROW_INDENT = 12;
 
 // Attention already announced, per project, shared by every copy of the mod.
 const announced = new Map();
@@ -587,12 +588,13 @@ export default class Trk extends View {
     return div().flex_none().text_size(10.5).text_color(t.dim).child(ago(issue.updated_at, now));
   }
 
-  row(t, issue, now, columns) {
+  row(t, issue, now, columns, indent = 0) {
     const on = issue.id === this.selected;
     const urgent = issue.priority === "P0" ? t.blocked : issue.priority === "P1" ? t.done : t.dim;
     const status = this.badge(t, issue, now);
     const epic = this.group !== "epic" && issue.epic;
     return h_flex().id(`row-${issue.id}`).w_full().min_w(0).min_h(28).px(8).py(5).gap(7).flex_none().items_start().rounded(7)
+      .pl(8 + indent)
       .when(on, (el) => el.bg(t.selected)).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.select(issue.id, cx))
       .child(div().w(18).flex_none().text_size(10.5).line_height("18px").font_semibold().text_color(urgent).child(issue.priority))
@@ -813,8 +815,9 @@ export default class Trk extends View {
     const inline = !this.wide && this.open;
     // Share boundaries across every section. Measure the list, not the dashboard:
     // the native divider can make this pane narrow even in a wide window.
-    // Reserve row/list padding, priority and gaps before allocating the columns.
-    const available = Math.max(0, (this.listWidth ?? this.size?.width ?? 280) - 67);
+    // Reserve row/list padding, priority, gaps and the deepest rendered hierarchy.
+    const indent = groups.some((g) => !this.folded.has(g.id) && g.buckets.some((b) => b.epic !== undefined)) ? EPIC_ROW_INDENT : 0;
+    const available = Math.max(0, (this.listWidth ?? this.size?.width ?? 280) - 67 - indent);
     const columns = { id: Math.min(88, available * 0.30), type: Math.min(112, available * 0.32) };
 
     const rows = groups.flatMap((g) => {
@@ -839,7 +842,8 @@ export default class Trk extends View {
             .child(div().min_w(0).whitespace_normal().child(bucket.epic ?? "No epic"))
             .child(div().flex_none().child(String(bucket.members.length)))]
           : [];
-        return [...subhead, ...(bucket.folded ? [] : bucket.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now, columns), this.detailView(t, i, now)] : [this.row(t, i, now, columns)])))];
+        const indent = subhead.length ? EPIC_ROW_INDENT : 0;
+        return [...subhead, ...(bucket.folded ? [] : bucket.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now, columns, indent), this.detailView(t, i, now)] : [this.row(t, i, now, columns, indent)])))];
       })];
     });
 
