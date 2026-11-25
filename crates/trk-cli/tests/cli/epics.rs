@@ -1,6 +1,57 @@
 use super::*;
 
 #[test]
+fn epic_briefings_show_curated_choices_and_preserve_empty_projects() {
+    let e = Env::new();
+    let unassigned = e.create(&["Unassigned issue"]);
+    let baseline = e.ok(&["agent", "preview", "implementer", "--issue", &unassigned]);
+    for (name, description) in [
+        ("alpha", "Session safety\nand recovery"),
+        ("zebra", "Reliable launches"),
+        ("retired", "Old work"),
+    ] {
+        e.ok(&["epic", "new", name, "-d", description]);
+    }
+    e.ok(&["epic", "archive", "retired"]);
+    let assigned = e.create(&["Assigned issue", "--epic", "alpha"]);
+    let preview = e.ok(&["agent", "preview", "implementer", "--issue", &assigned]);
+    let briefing = preview["briefing"].as_str().unwrap();
+    assert!(briefing.contains("Epic: `alpha`"), "{briefing}");
+    assert!(
+        briefing.contains("- alpha: Session safety and recovery"),
+        "{briefing}"
+    );
+    assert!(
+        briefing.contains("- zebra: Reliable launches"),
+        "{briefing}"
+    );
+    assert!(!briefing.contains("retired"), "{briefing}");
+    let sample = e.ok(&["agent", "preview", "implementer"]);
+    assert!(
+        sample["briefing"]
+            .as_str()
+            .unwrap()
+            .contains("- zebra: Reliable launches")
+    );
+    let spec = e.ok(&["run", &assigned, "--harness", "omp", "--dry-run"]);
+    let launched = spec["briefing"].as_str().unwrap();
+    assert!(launched.contains("Epic: `alpha`"), "{launched}");
+    assert!(
+        launched.contains("- alpha: Session safety and recovery"),
+        "{launched}"
+    );
+    e.ok(&["epic", "archive", "alpha"]);
+    e.ok(&["epic", "archive", "zebra"]);
+    let archived = e.ok(&["agent", "preview", "implementer", "--issue", &assigned]);
+    let briefing = archived["briefing"].as_str().unwrap();
+    assert!(briefing.contains("Epic: `alpha`"), "{briefing}");
+    assert!(!briefing.contains("- alpha:"), "{briefing}");
+    assert!(!briefing.contains("- zebra:"), "{briefing}");
+    let empty = e.ok(&["agent", "preview", "implementer", "--issue", &unassigned]);
+    assert_eq!(empty["briefing"], baseline["briefing"]);
+}
+
+#[test]
 fn epic_commands_assign_clear_cascade_archive_and_log() {
     let e = Env::new();
     assert_eq!(e.ok(&["epic", "ls"]), json!([]));

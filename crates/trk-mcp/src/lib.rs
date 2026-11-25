@@ -65,7 +65,7 @@ impl TrkServer {
             .map(|path| path.file_stem().unwrap().to_string_lossy().into_owned())
             .collect();
         let store = Store::open(&args.db, args.opts.clone())?;
-        let (issue_json, worktree) = store.read(Some(&args.actor), |c| {
+        let (issue_json, worktree, epics) = store.read(Some(&args.actor), |c| {
             let id = c.resolve_id(&args.issue)?;
             let issue = c.show(
                 &id,
@@ -75,7 +75,7 @@ impl TrkServer {
                 },
             )?;
             let worktree = issue["claim"]["worktree"].as_str().map(String::from);
-            Ok((issue, worktree))
+            Ok((issue, worktree, c.epics(false)?))
         })?;
         let config = trk_agent::routing::RoutingConfig::new(&args.config);
         let routing = config.resolve(
@@ -98,9 +98,28 @@ impl TrkServer {
                 "Work type for the new issue; default {}. Project types: {descriptions}",
                 args.user.issues.default_type
             ));
+            let descriptions = epics
+                .iter()
+                .map(|epic| format!("{}: {}", epic.name, epic.description))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let names = epics
+                .iter()
+                .map(|epic| epic.name.as_str())
+                .collect::<Vec<_>>();
+            let field = &mut tool.input_schema["properties"]["epic"];
+            field["anyOf"] = if epics.is_empty() {
+                json!([{"pattern": "^\\s*$"}])
+            } else {
+                json!([{"enum": names}, {"pattern": "^\\s*$"}])
+            };
+            field["description"] = json!(format!(
+                "Existing active epic name; omit or leave empty for no epic. Agents cannot create, rename, or archive epics. Active epics: {descriptions}"
+            ));
         }
         let input = trk_agent::prompt::PromptInput {
             issue: &issue_json,
+            epics: &epics,
             project_root: &args.project_root,
             config: &args.user,
             issue_type: &routing.issue_type,
@@ -650,6 +669,151 @@ mod tests {
                 .read(None, |c| c.show(created, With::default()))
                 .unwrap();
             assert_eq!(followup["type"], expected_type);
+        }
+    }
+
+    #[test]
+    fn followups_assign_only_existing_active_epics() {
+        for has_epics in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let seed = dir.path().join("seed");
+            write_seed(&seed);
+            let db = dir.path().join("trk.db");
+            let opts = StoreOpts::default();
+            let mut store = Store::install(&db, opts.clone()).unwrap();
+            let issue = store
+                .write(HUMAN, false, |c| {
+                    if has_epics {
+                        c.create_epic("zulu", "Later delivery")?;
+                        c.create_epic("alpha", "First delivery")?;
+                        c.create_epic("retired", "Archived delivery")?;
+                        c.archive_epic("retired")?;
+                    }
+                    c.create(NewIssue {
+                        title: "Parent issue".into(),
+                        epic: has_epics.then(|| "alpha".into()),
+                        ..Default::default()
+                    })
+                })
+                .unwrap();
+            store
+                .write(ACTOR, false, |c| c.claim(&issue, ClaimOpts::default()))
+                .unwrap();
+            let server = TrkServer::new(McpArgs {
+                db,
+                config: ConfigDir::with_user_dir(&seed, None),
+                project_root: dir.path().to_path_buf(),
+                user: UserConfig::default(),
+                opts,
+                issue,
+                actor: ACTOR.into(),
+                agent: "implementer".into(),
+                base: "main".into(),
+            })
+            .unwrap();
+            let followup = server
+                .tools()
+                .iter()
+                .find(|tool| tool.name == "report_followup")
+                .unwrap();
+            let schema = to_tool(followup);
+            let epic = &schema.input_schema["properties"]["epic"];
+            assert_eq!(epic["type"], "string");
+            assert!(
+                !schema.input_schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("epic"))
+            );
+            let expected = if has_epics {
+                json!([{"enum": ["alpha", "zulu"]}, {"pattern": "^\\s*$"}])
+            } else {
+                json!([{"pattern": "^\\s*$"}])
+            };
+            assert_eq!(epic["anyOf"], expected);
+            let description = epic["description"].as_str().unwrap();
+            assert!(description.contains("omit or leave empty"));
+            assert!(!description.contains("Archived delivery"));
+            if has_epics {
+                assert!(description.contains("alpha: First delivery"));
+                assert!(description.contains("zulu: Later delivery"));
+            }
+            let (ok, out) = server.call_sync("get_task", json!({}));
+            assert!(ok, "{out}");
+            assert_eq!(
+                out["epic"],
+                if has_epics {
+                    json!("alpha")
+                } else {
+                    Value::Null
+                }
+            );
+
+            let before = store.read(None, |c| c.epics(true)).unwrap();
+            for name in ["unknown", "retired"] {
+                let (ok, out) = server.call_sync(
+                    "report_followup",
+                    json!({
+                        "title": "Invalid epic assignment",
+                        "description": "Must not create an epic",
+                        "epic": name
+                    }),
+                );
+                assert!(!ok, "{out}");
+                assert_eq!(out["error"]["code"], "invalid_field");
+                assert_eq!(
+                    out["error"]["allowed"],
+                    if has_epics {
+                        json!(["alpha", "zulu"])
+                    } else {
+                        json!([])
+                    }
+                );
+                let hint = out["error"]["hint"].as_str().unwrap();
+                assert!(hint.contains("allowed") && hint.contains("omit"), "{out}");
+                assert_eq!(store.read(None, |c| c.epics(true)).unwrap(), before);
+            }
+            assert!(
+                server
+                    .tools()
+                    .iter()
+                    .all(|tool| !tool.name.contains("epic"))
+            );
+            for name in ["create_epic", "rename_epic", "archive_epic"] {
+                let (ok, out) = server.call_sync(
+                    name,
+                    json!({"name": "alpha", "new": "renamed", "description": "Changed"}),
+                );
+                assert!(!ok, "{out}");
+                assert_eq!(out["code"], "not_found");
+                assert_eq!(store.read(None, |c| c.epics(true)).unwrap(), before);
+            }
+            let assignments = if has_epics {
+                vec![None, Some(""), Some(" \n\t"), Some("zulu")]
+            } else {
+                vec![None, Some(""), Some(" \n\t")]
+            };
+            for assignment in assignments {
+                let mut args = json!({
+                    "title": "Follow-up issue",
+                    "description": "Work discovered during this session"
+                });
+                if let Some(name) = assignment {
+                    args["epic"] = json!(name);
+                }
+                let (ok, out) = server.call_sync("report_followup", args);
+                assert!(ok, "{out}");
+                let created = out["result"]["created"].as_str().unwrap();
+                let followup = store
+                    .read(None, |c| c.show(created, With::default()))
+                    .unwrap();
+                assert_eq!(
+                    followup["epic"],
+                    assignment
+                        .filter(|name| !name.trim().is_empty())
+                        .map_or(Value::Null, |name| json!(name))
+                );
+            }
         }
     }
 

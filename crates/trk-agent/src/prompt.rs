@@ -18,6 +18,8 @@ use crate::tools::ToolDef;
 pub struct PromptInput<'a> {
     /// The issue object (`show --json` shape, with deps and derived).
     pub issue: &'a Value,
+    /// Active curated epics available for follow-ups.
+    pub epics: &'a [trk_core::model::Epic],
     pub project_root: &'a Path,
     pub config: &'a UserConfig,
     /// Metadata from the resolved type, independent of an agent override.
@@ -37,6 +39,7 @@ impl PromptInput<'_> {
     fn context(&self, instructions: Option<&str>) -> Value {
         json!({
             "issue": self.issue,
+            "epics": self.epics,
             "project": {
                 "name": self.project_root.file_name().unwrap_or_default().to_string_lossy(),
                 "root": self.project_root,
@@ -192,6 +195,7 @@ pub fn agent_template_sources(
         cfg,
         &PromptInput {
             issue: &issue,
+            epics: &[],
             project_root: cfg.path.parent().unwrap_or(&cfg.path),
             config: user,
             issue_type: &user.issues.default_type,
@@ -222,6 +226,7 @@ pub fn type_prompts(
         cfg,
         &PromptInput {
             issue: &issue,
+            epics: &[],
             project_root: cfg.path.parent().unwrap_or(&cfg.path),
             config: user,
             issue_type: &routing.issue_type,

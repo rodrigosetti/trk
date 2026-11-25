@@ -154,6 +154,7 @@ fn templates_cross_layers_for_includes_imports_and_inheritance_and_report_source
     let issue = trk_agent::check::sample_issue(&config);
     let input = PromptInput {
         issue: &issue,
+        epics: &[],
         project_root: dir.path(),
         config: &config,
         issue_type: "change",
@@ -402,6 +403,7 @@ fn provenance_matches_the_harness_instruction_folding_context() {
     let issue = trk_agent::check::sample_issue(&config);
     let input = PromptInput {
         issue: &issue,
+        epics: &[],
         project_root: dir.path(),
         config: &config,
         issue_type: "change",

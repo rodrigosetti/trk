@@ -23,7 +23,7 @@ If you have trk MCP tools (`get_task`, `hand_back`, `wait`) or `TRK_ACTOR` start
 - Pass `--json` on every command and read the envelope: `{"ok": true, "data": …}` or `{"ok": false, "error": {"code", "message", "hint"}}`. On an error, do what `hint` says and retry. Do not guess around it.
 - Never rely on the interactive editor: give the title and description on the command line. Long text goes through stdin: `-d @-`.
 - Normally you act as the user, with their default actor. Do not pass `--as` unless they ask. Never change identity to evade permissions; CLI `resume` requires the human's authorization, not an agent impersonating them.
-- CLI state changes only through `claim`, `unclaim`, `close`, `wait`, human-authorized `resume`, `reopen` and `trk check`. The same waiting agent can also use MCP chat resume for a no-check wait when enabled. `edit` changes title, description, priority and type.
+- CLI state changes only through `claim`, `unclaim`, `close`, `wait`, human-authorized `resume`, `reopen` and `trk check`. The same waiting agent can also use MCP chat resume for a no-check wait when enabled. `edit` changes title, description, priority, type and epic membership.
 - Do not use `--force`, `--steal` or close someone else's claim unless the user asks.
 - Issue ids look like `orch-4kq`; a unique suffix such as `4kq` also works.
 
@@ -93,6 +93,32 @@ trk create "Investigate lease behavior" --json --type research --blocks orch-9xa
 Change a type with `trk edit <ID> --type research --json`; query with `trk list 'type=ops' --json`. Types do not change lifecycle rules.
 
 Create and type edits accept only names defined in the project's `.trk/types/*.toml`. Unknown types return `invalid_field` with allowed names in `allowed` and a hint pointing to `.trk/types/`; do not guess a type. The editor and MCP `report_followup` enforce the same rule; the MCP schema lists the project types and their descriptions. Removing a definition does not prevent listing, showing or editing other fields of existing issues. `trk agent check` reports a configured `default_type` without a matching definition.
+
+## Epics
+
+Epics are optional, curated themes, not an automatic grouping for every issue.
+Before creating an issue, run `trk epic ls --json` and read the active names and
+descriptions. Assign `--epic NAME` only when an existing epic genuinely fits;
+omit it when none fits. Never invent an epic to file an issue. Epic creation is
+rare: use `trk epic new` only when the user explicitly requests a new epic.
+
+```bash
+trk epic ls --json                         # active epics, descriptions and issue counts
+trk create "Add claim leases" --epic reliability --json -d "..."
+trk edit <ID> --epic reliability --json     # assign an existing active epic
+trk edit <ID> --clear-epic --json           # remove membership
+trk epic ls --all --json                   # also show archived epics
+trk epic new reliability -d "Service reliability work" --json  # only on user request
+trk epic rename reliability resilience --json
+trk epic archive resilience --json         # keep existing members; reject new assignments
+```
+
+Unknown or archived assignments return `invalid_field`, active names in
+`error.allowed`, and a hint to choose an existing epic or omit it. `trk show`
+and MCP `get_task` expose membership. MCP `report_followup` accepts an optional
+`epic` and advertises active names and descriptions; there are no epic-management
+MCP tools. Session briefings include membership and the active epic menu, also
+available as `issue.epic` and `epics` in prompt template context.
 
 ## Work an issue yourself
 

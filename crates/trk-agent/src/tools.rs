@@ -121,6 +121,11 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
                     false,
                 ),
                 (
+                    "epic",
+                    text("Existing active epic name; omit or leave empty for no epic. Agents cannot create, rename, or archive epics."),
+                    false,
+                ),
+                (
                     "blocks_this",
                     json!({"type": "boolean", "description": "true if this issue cannot finish until the new one is closed. Hand back after filing it."}),
                     false,

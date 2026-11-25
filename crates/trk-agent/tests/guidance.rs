@@ -54,6 +54,7 @@ guidance = '''{{ type.name }} / {{ type.description }} / {{ issue.title }} / {{ 
         let tools = trk_agent::agent_tools(&resolved.agent, &config);
         let input = PromptInput {
             issue: &issue,
+            epics: &[],
             project_root: dir.path(),
             config: &config,
             issue_type: &route.issue_type,

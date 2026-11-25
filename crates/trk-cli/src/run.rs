@@ -272,8 +272,10 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     // 5. Render the launch spec and write the files the harness reads.
     let cwd_s = cwd.to_string_lossy().to_string();
     let (spec, spec_json) = (|| -> Result<_> {
+        let epics = store.read(Some(&actor), |c| c.epics(false))?;
         let input = trk_agent::prompt::PromptInput {
             issue: &issue_now,
+            epics: &epics,
             project_root: &env.root,
             config: &env.user,
             issue_type: &routing.issue_type,

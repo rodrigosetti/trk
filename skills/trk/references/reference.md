@@ -74,7 +74,7 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk show <ID>... [--with notes,events,deps,claims]` | Full issues with derived state |
 | `trk create [TITLE] [-d TEXT] [-p P0..P3] [--type T] [--epic NAME] [--blocked-by ID]... [--blocks ID]... [--dry-run]` | Create; type defaults to `[issues] default_type` (initially `change`); epic must already be active |
 | `trk edit <ID> [-t TITLE] [-d TEXT] [-p P0..P3] [--type T] [--epic NAME or --clear-epic] [--dry-run]` | Change authored fields; a set type must exist in `.trk/types/` |
-| `trk epic new <name> [-d TEXT]` | Explicitly create a curated epic; any actor |
+| `trk epic new <name> [-d TEXT]` | Explicitly create a curated epic; only on user request |
 | `trk epic ls [--all]` | Active epics with descriptions and total issue counts; include archived with `--all` |
 | `trk epic rename <old> <new>` | Rename and cascade existing issue references |
 | `trk epic archive <name>` | Reject assignments and hide by default; retain existing members |
@@ -112,6 +112,14 @@ mutations return one epic object and `ls` an array, with `name`, `description`,
 `trk show` displays membership; `trk log` without an ID includes `epic_create`,
 `epic_rename` and `epic_archive` with null `issue_id`. Membership changes, including
 initial assignment, are per-issue `set` events.
+
+Choose an existing active epic by its description only when it genuinely fits;
+otherwise omit `--epic` (or MCP `report_followup.epic`). Creating epics is rare:
+use `trk epic new` only on the user's explicit request, never automatically while
+filing work. MCP exposes no epic-management tools. Its `report_followup.epic`
+schema lists active names and descriptions and uses the same assignment validation;
+`get_task` includes current membership. Briefings show membership and an active
+epic menu; template context exposes `issue.epic` and the active `epics` array.
 
 Both built-in presets install implementer/researcher/operator agents and `change`
 (default), `bug`, `research`, and `ops` types. Change and bug use implementer

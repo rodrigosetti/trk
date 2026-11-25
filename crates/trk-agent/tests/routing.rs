@@ -46,6 +46,7 @@ fn a_type_selects_its_agent_and_prompts_from_the_project_config() {
     let issue = trk_agent::check::sample_issue(&trk_core::config::UserConfig::default());
     let input = trk_agent::prompt::PromptInput {
         issue: &issue,
+        epics: &[],
         project_root: dir.path(),
         config: &trk_core::config::UserConfig::default(),
         issue_type: &route.issue_type,
