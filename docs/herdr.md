@@ -25,10 +25,12 @@ Click a key to use its natural direction; click the active key again to reverse 
 The highlighted key's arrow shows ascending (↑) or descending (↓) order.
 Priority ascending is the default, retaining priority then oldest-first order.
 Ties always use priority, oldest creation time, then ID, even when reversing a key.
-The five state groups—**Needs you**, **In flight**, **Waiting**, **Ready**, and **Blocked**—
-stay at the top level. **Group: Off / Epic** on the Sort row (or `e`) toggles epic
-subgroups inside every state group; grouping is off by default. Each dim epic sub-header
-shows its name and count in that state. Rows beneath it receive 12px extra left indentation,
+The five state groups—**NEEDS YOU**, **IN FLIGHT**, **WAITING**, **READY**, and **BLOCKED**—
+stay at the top level with larger semibold headings. **Group: Off / Epic** on the Sort row
+(or `e`) toggles epic subgroups inside every state group; grouping is off by default.
+Epic sub-headers use smaller semibold names; both heading levels use theme foreground
+for contrast in dark and light modes, with smaller counts beside them.
+Each epic sub-header shows its name and count in that state. Rows beneath it receive 12px extra left indentation,
 including rows under **No epic**. ID/type columns stay aligned across epic subgroups;
 their shared widths reserve the indentation so titles still wrap within narrow panes.
 Rows retain the selected sort and fixed tie-breaks; buckets rank by their top row's

@@ -444,6 +444,8 @@ test("epic disclosures fold independently in every state, including No epic, wit
   }))) };
   view.folded.clear();
   let tree = view.render();
+  assert.deepEqual(listEntries(tree).filter((n) => n.id.startsWith("group-")).map((n) => n.text),
+    ["NEEDS YOU", "IN FLIGHT", "WAITING", "READY", "BLOCKED"].map((label) => [label, "5"]));
   const all = [...view.order];
   for (const group of groups) {
     for (const epic of ["Alpha", "Zulu", "Beta", null]) {

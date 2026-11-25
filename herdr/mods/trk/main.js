@@ -25,7 +25,7 @@ const GROUPS = [
   { id: "running", label: "In flight", color: "working" },
   { id: "waiting", label: "Waiting", color: "done" },
   { id: "ready", label: "Ready", color: "foreground" },
-  { id: "blocked", label: "Blocked", color: "dim" },
+  { id: "blocked", label: "Blocked", color: "muted" },
 ];
 const PRIORITIES = ["P0", "P1", "P2", "P3"];
 const SORT_KEYS = {
@@ -822,25 +822,25 @@ export default class Trk extends View {
 
     const rows = groups.flatMap((g) => {
       const open = !this.folded.has(g.id);
-      const head = h_flex().id(`group-${g.id}`).h(28).pt(6).px(8).gap(6).flex_none().items_center().text_size(11).font_medium().cursor_pointer()
+      const head = h_flex().id(`group-${g.id}`).min_h(30).pt(6).px(8).gap(6).flex_none().items_center().text_size(13).font_semibold().cursor_pointer()
         .hover((s) => s.text_color(t.foreground))
         .on_click((_e, cx) => { open ? this.folded.add(g.id) : this.folded.delete(g.id); cx.notify(); })
-        .child(div().text_color(t[g.color] ?? t.dim).child(g.label))
-        .child(div().text_color(t.dim).child(String(g.members.length)))
+        .child(div().min_w(0).whitespace_normal().text_color(t.foreground).child(g.label.toUpperCase()))
+        .child(div().flex_none().text_size(11.5).font_medium().text_color(t[g.color] ?? t.muted).child(String(g.members.length)))
         .child(div().flex_1())
-        .when(!open, (el) => el.child(div().text_color(t.dim).child("›")));
+        .when(!open, (el) => el.child(div().text_color(t.muted).child("›")));
       if (!open) return [head];
       return [head, ...g.buckets.flatMap((bucket) => {
         const id = `epic-${g.id}-${JSON.stringify(bucket.epic)}`;
         const subhead = bucket.epic !== undefined
-          ? [h_flex().id(id).min_h(22).px(12).gap(6).flex_none().items_center().text_size(10.5).text_color(t.dim)
+          ? [h_flex().id(id).min_h(22).px(12).gap(6).flex_none().items_center().text_size(12).font_semibold().text_color(t.foreground)
             .child(div().id(`fold-${id}`).size(20).flex_none().flex().items_center().justify_center().rounded(4)
               .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
               .tooltip(`${bucket.folded ? "Expand" : "Collapse"} ${bucket.epic ?? "No epic"}`)
               .on_click((_e, cx) => { cx.stop_propagation(); this.toggleEpic(bucket.key, cx); })
               .child(bucket.folded ? "▸" : "▾"))
             .child(div().min_w(0).whitespace_normal().child(bucket.epic ?? "No epic"))
-            .child(div().flex_none().child(String(bucket.members.length)))]
+            .child(div().flex_none().text_size(11).font_medium().text_color(t.muted).child(String(bucket.members.length)))]
           : [];
         const indent = subhead.length ? EPIC_ROW_INDENT : 0;
         return [...subhead, ...(bucket.folded ? [] : bucket.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now, columns, indent), this.detailView(t, i, now)] : [this.row(t, i, now, columns, indent)])))];
