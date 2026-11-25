@@ -788,6 +788,18 @@ impl Ctx<'_> {
         if !matches!(issue.state, State::Waiting | State::Closed) {
             return Err(self.invalid_state(&issue, "only waiting or closed issues can be reopened"));
         }
+        let reserved: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM gc_reservation WHERE issue_id = ?1)",
+            [&id],
+            |r| r.get(0),
+        )?;
+        if reserved {
+            return Err(self
+                .invalid_state(&issue, "garbage collection is running for this issue")
+                .with_hint(format!(
+                    "retry `trk reopen {id}` after garbage collection finishes"
+                )));
+        }
         if let Some(n) = note.filter(|n| !n.trim().is_empty()) {
             self.note(&id, n, None, false)?;
         }
@@ -1052,6 +1064,62 @@ impl Ctx<'_> {
         self.conn
             .execute("DELETE FROM check_lock WHERE id = 1 AND pid = ?1", [pid])?;
         Ok(())
+    }
+
+    /// Reserve a still-closed lifecycle while the queue owner removes resources.
+    /// Callers must check age and completion eligibility before reserving.
+    pub fn gc_reserve(&self, id: &str, revision: i64, pid: i64) -> Result<bool> {
+        let eligible: bool = self.conn.query_row(
+            "SELECT EXISTS (
+               SELECT 1 FROM issue i JOIN check_lock l ON l.id = 1
+               WHERE i.id = ?1 AND l.pid = ?2 AND i.state = 'closed'
+                 AND i.waiting_check IS NULL AND i.waiting_reason IS NULL
+                 AND NOT EXISTS (SELECT 1 FROM claim c
+                                 WHERE c.issue_id = i.id AND c.released_at IS NULL)
+             )",
+            params![id, pid],
+            |r| r.get(0),
+        )?;
+        if !eligible || self.issue_revision(id)? != revision {
+            return Ok(false);
+        }
+        let reserved = self.conn.execute(
+            "INSERT OR IGNORE INTO gc_reservation (issue_id, lock_id) VALUES (?1, 1)",
+            [id],
+        )? == 1;
+        if reserved {
+            // Explicit GC may re-inspect completed issues. A failed or crashed
+            // retry must not leave the old completion hiding remaining work.
+            self.conn.execute(
+                "UPDATE issue SET gc_collected_at = NULL WHERE id = ?1",
+                [id],
+            )?;
+        }
+        Ok(reserved)
+    }
+
+    /// Finish only the reservation still owned by this queue runner.
+    pub fn gc_finish(&self, id: &str, pid: i64, collected: bool) -> Result<bool> {
+        let owned: bool = self.conn.query_row(
+            "SELECT EXISTS (
+               SELECT 1 FROM gc_reservation r JOIN check_lock l ON l.id = r.lock_id
+               WHERE r.issue_id = ?1 AND l.pid = ?2
+             )",
+            params![id, pid],
+            |r| r.get(0),
+        )?;
+        if !owned {
+            return Ok(false);
+        }
+        if collected {
+            self.conn.execute(
+                "UPDATE issue SET gc_collected_at = ?1 WHERE id = ?2",
+                params![self.ts(), id],
+            )?;
+        }
+        self.conn
+            .execute("DELETE FROM gc_reservation WHERE issue_id = ?1", [id])?;
+        Ok(true)
     }
 
     /// Record one run of an issue's check. The command and lifecycle revision

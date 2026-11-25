@@ -202,11 +202,12 @@ fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<(
     }
 }
 
-fn migrations() -> [M<'static>; 3] {
+fn migrations() -> [M<'static>; 4] {
     [
         M::up(include_str!("schema_v1.sql")),
         M::up(include_str!("resume_chat.sql")).foreign_key_check(),
         M::up(include_str!("epics.sql")).foreign_key_check(),
+        M::up(include_str!("gc.sql")).foreign_key_check(),
     ]
 }
 
@@ -686,6 +687,42 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn gc_migration_keeps_existing_closed_issues_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let mut conn = Connection::open(&path).unwrap();
+        let old = migrations();
+        Migrations::from_slice(&old[..3])
+            .to_latest(&mut conn)
+            .unwrap();
+        seed_legacy_database(&conn);
+        conn.execute(
+            "UPDATE issue SET state = 'closed', close_reason = 'done',
+             closed_at = '2026-11-20T10:00:00Z' WHERE id = 'trk-old'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let store = Store::open(&path, StoreOpts::default()).unwrap();
+        let pending: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM issue
+             WHERE state = 'closed' AND gc_collected_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 1);
+        let reservations: i64 = store
+            .conn
+            .query_row("SELECT count(*) FROM gc_reservation", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(reservations, 0);
+        assert_eq!(store.read(None, |c| c.events("trk-old")).unwrap().len(), 2);
     }
 
     #[test]
