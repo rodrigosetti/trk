@@ -28,9 +28,12 @@ Ties always use priority, oldest creation time, then ID, even when reversing a k
 The five state groups—**Needs you**, **In flight**, **Waiting**, **Ready**, and **Blocked**—
 stay at the top level. **Group: Off / Epic** on the Sort row (or `e`) toggles epic
 subgroups inside every state group; grouping is off by default. Each dim epic sub-header
-shows its name and count in that state. Rows retain the selected sort and fixed tie-breaks;
-buckets rank by their top row's selected sort value, then epic name. **No epic** is always
-last. An entirely unassigned state group stays flat, without a **No epic** header.
+shows its name and count in that state. Rows beneath it receive 12px extra left indentation,
+including rows under **No epic**. ID/type columns stay aligned across epic subgroups;
+their shared widths reserve the indentation so titles still wrap within narrow panes.
+Rows retain the selected sort and fixed tie-breaks; buckets rank by their top row's
+selected sort value, then epic name. **No epic** is always last.
+An entirely unassigned state group stays flat, without a **No epic** header or extra indentation.
 Only state groups fold; epic sub-headers do not. With grouping off, rows show a dim epic tag.
 A blocked row's `by` hint includes each blocker's epic when different from its own
 (including **No epic** for an unassigned blocker).
