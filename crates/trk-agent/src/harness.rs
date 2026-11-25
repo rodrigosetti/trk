@@ -284,13 +284,17 @@ fn expand_env(s: &str) -> String {
     out
 }
 
+/// Expand placeholders in the template only; inserted values remain literal.
 pub fn subst(s: &str, vars: &BTreeMap<&str, String>) -> String {
-    let mut out = s.to_string();
-    for (k, v) in vars {
-        let pat = format!("{{{k}}}");
-        if out.contains(&pat) {
-            out = out.replace(&pat, v);
-        }
+    let mut out = String::with_capacity(s.len());
+    for part in s.split_inclusive('}') {
+        let substitution = part
+            .strip_suffix('}')
+            .and_then(|part| part.rsplit_once('{'))
+            .and_then(|(literal, key)| vars.get(key).map(|value| (literal, value.as_str())));
+        let (literal, value) = substitution.unwrap_or(("", part));
+        out.push_str(literal);
+        out.push_str(value);
     }
     out
 }
@@ -511,5 +515,31 @@ mod tests {
         let mut v = BTreeMap::new();
         v.insert("name", "trk-x".to_string());
         assert_eq!(subst("--name={name} {other}", &v), "--name=trk-x {other}");
+    }
+
+    #[test]
+    fn substitution_does_not_expand_inserted_values() {
+        let keys = ["cwd", "name", "shell_command", "text", "title"];
+        let value = "{name} {text} {title} {cwd} {shell_command} '\"; $(echo literal)\n雪";
+        for key in keys {
+            let mut vars = BTreeMap::from(keys.map(|key| (key, format!("expanded-{key}"))));
+            vars.insert(key, value.to_owned());
+            assert_eq!(
+                subst(&format!("before {{{key}}} after"), &vars),
+                format!("before {value} after")
+            );
+        }
+    }
+
+    #[test]
+    fn substitution_preserves_literal_braces_and_unknown_placeholders() {
+        let vars = BTreeMap::from([("name", "雪".to_owned()), ("empty", String::new())]);
+        assert_eq!(
+            subst(
+                "é {other} {name}{empty}{name} {{name}} { unfinished {name",
+                &vars
+            ),
+            "é {other} 雪雪 {雪} { unfinished {name"
+        );
     }
 }
