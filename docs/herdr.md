@@ -25,9 +25,18 @@ Click a key to use its natural direction; click the active key again to reverse 
 The highlighted key's arrow shows ascending (↑) or descending (↓) order.
 Priority ascending is the default, retaining priority then oldest-first order.
 Ties always use priority, oldest creation time, then ID, even when reversing a key.
-Groups and folding stay unchanged; keyboard navigation follows the displayed order
-without changing the selected issue. Sort state is in memory per panel, not saved;
-the sidebar launcher has no sort row.
+The five state groups—**Needs you**, **In flight**, **Waiting**, **Ready**, and **Blocked**—
+stay at the top level. **Group: Off / Epic** on the Sort row (or `e`) toggles epic
+subgroups inside every state group; grouping is off by default. Each dim epic sub-header
+shows its name and count in that state. Rows retain the selected sort and fixed tie-breaks;
+buckets rank by their top row's selected sort value, then epic name. **No epic** is always
+last. An entirely unassigned state group stays flat, without a **No epic** header.
+Only state groups fold; epic sub-headers do not. With grouping off, rows show a dim epic tag.
+A blocked row's `by` hint includes each blocker's epic when different from its own
+(including **No epic** for an unassigned blocker).
+Keyboard navigation follows the displayed issue order, skipping both header levels.
+Changing sort or toggling grouping keeps the selected issue and its details.
+Sort and grouping state are in memory per panel, not saved; the sidebar launcher is unchanged.
 
 That is the whole setup. Herdr mods are machine-wide and a space shows one once a pane or tab
 there holds it, so `open` does both steps: it installs or refreshes the mod when needed, then
@@ -70,7 +79,7 @@ trk herdr uninstall              # remove the mod and layouts unless you edited 
 - With the panel focused: `j`/`k` move, `Enter` opens, `a` goes to the session, `p` peeks,
   `s` sends, `m`/`M` note (to the agent), `v` resumes, `x` closes, `c` creates, `l` opens the
   issue's first link. With no prompt open, `o` cycles sort keys in their natural direction,
-  and `O` reverses the active key. Link chips on a row and in the details open in the browser on click.
+  and `O` reverses the active key; `e` toggles epic grouping. Link chips on a row and in the details open in the browser on click.
 - `trk.new` and `trk.refresh` are mod commands for `keys.json`, for example
   `"global": { "ctrl-shift-i": "trk.new" }`. They reach a shown copy of the panel.
 - By hand: `herdr-app do tab.new --mod trk --props '{"folder": "/path/to/project"}'`. Without
@@ -78,8 +87,9 @@ trk herdr uninstall              # remove the mod and layouts unless you edited 
   Set the initial sort with `"sort": "updated"` (newest first) or `"sort": "type"` (A–Z).
   Valid keys are `priority`, `updated`, `created`, and `type`; prefix `-` to reverse
   that key's natural direction (for example, `"sort": "-updated"` is oldest first).
-  Invalid values fall back to Priority ascending. For example:
-  `herdr-app do tab.new --mod trk --props '{"sort": "updated"}'`.
-  Run the panel's location and sorting regressions with
+  Invalid sort values fall back to Priority ascending. Set `"group": "epic"` to start
+  with epic grouping on; omitted or other values start flat. For example:
+  `herdr-app do tab.new --mod trk --props '{"sort": "updated", "group": "epic"}'`.
+  Run the panel's location, sorting, and grouping regressions with
   `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
 

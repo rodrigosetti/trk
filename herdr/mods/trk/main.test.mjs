@@ -229,7 +229,7 @@ function sortIssues() {
   ].map(([id, priority, created, updated, type]) => ({
     id, priority, type, title: id, group: "ready", state: "open", attention: [],
     created_at: `2026-11-0${created}T00:00:00Z`, updated_at: `2026-11-0${updated}T00:00:00Z`,
-    links: [], blocked_by: [], session: { terminal: `t-${id}` },
+    links: [], blocked_by: [], blocks: [], session: { terminal: `t-${id}` },
   }));
 }
 
@@ -304,11 +304,11 @@ test("sort row buttons and keyboard cycle, reverse and respect prompts and modif
   view.data = { issues: sortIssues() };
   let tree = view.render();
   assert.equal(tree.nodes[1].elementId, "sort", "the sort row sits directly below the header");
-  assert.deepEqual(content(tree.nodes[1]), ["Sort", "Priority ↑", "Updated", "Created", "Type"]);
+  assert.equal(content(findElement(tree, "sort-priority")).join(""), "Priority ↑");
   findElement(tree, "sort-updated").click({}, sortContext);
   tree = view.render();
   assert.deepEqual(view.order, ["c", "d", "b", "a"]);
-  assert.deepEqual(content(tree.nodes[1]), ["Sort", "Priority", "Updated ↓", "Created", "Type"]);
+  assert.equal(content(findElement(tree, "sort-updated")).join(""), "Updated ↓");
   findElement(tree, "sort-updated").click({}, sortContext);
   view.render();
   assert.deepEqual(view.order, ["a", "b", "d", "c"]);
@@ -372,4 +372,179 @@ test("sort stays within groups and drives navigation and agent order without los
 test("launcher variant omits the sort row", async () => {
   const { view } = await dashboard({ ...spaceState(), props: { launcher: true } });
   assert.equal(findElement(view.render(), "sort"), undefined);
+});
+
+function epicIssues() {
+  const issues = sortIssues();
+  for (const [index, epic] of ["Alpha", "Zulu", "Alpha", "Beta"].entries()) issues[index].epic = epic;
+  return [...issues, {
+    ...issues[1], id: "unassigned", epic: null, type: "aaa",
+    created_at: "2026-10-31T00:00:00Z", updated_at: "2026-11-09T00:00:00Z",
+    session: { terminal: "t-unassigned" },
+  }];
+}
+
+function listEntries(tree) {
+  return findElement(tree, "trk-list").nodes
+    .filter((n) => /^(group-|epic-|row-)/.test(n.elementId))
+    .map((n) => ({ id: n.elementId, text: content(n) }));
+}
+
+for (const [key, expected, reversed] of [
+  ["priority", ["b", "c", "a", "d", "unassigned"], ["d", "c", "a", "b", "unassigned"]],
+  ["updated", ["c", "a", "d", "b", "unassigned"], ["a", "c", "b", "d", "unassigned"]],
+  ["created", ["c", "a", "d", "b", "unassigned"], ["b", "a", "c", "d", "unassigned"]],
+  ["type", ["b", "d", "c", "a", "unassigned"], ["a", "c", "d", "b", "unassigned"]],
+]) {
+  test(`epic buckets rank by their top ${key} row in both directions, with No epic last`, async () => {
+    for (const reverse of [false, true]) {
+      const state = { ...spaceState(), props: { group: "epic", sort: `${reverse ? "-" : ""}${key}`, focus: "agent" } };
+      const { view } = await dashboard(state);
+      const issues = epicIssues();
+      view.data = { issues };
+      const tree = view.render();
+      const order = reverse ? reversed : expected;
+      assert.deepEqual(view.order, order);
+      assert.deepEqual(state.agentOrder, order.map((id) => `t-${id}`));
+      const entries = listEntries(tree);
+      assert.deepEqual(entries.filter((n) => n.id.startsWith("row-")).map((n) => n.id), order.map((id) => `row-${id}`));
+      const epics = [...new Set(order.map((id) => issues.find((i) => i.id === id).epic))];
+      assert.deepEqual(entries.filter((n) => n.id.startsWith("epic-")).map((n) => n.text),
+        epics.map((epic) => [epic ?? "No epic", epic === "Alpha" ? "2" : "1"]));
+      assert.deepEqual(issues.map((i) => i.id), ["a", "b", "c", "d", "unassigned"], "leave snapshot order intact");
+    }
+  });
+
+  test(`${key} bucket ties use epic name while row ties retain the fixed tie-break`, async () => {
+    const { view } = await dashboard({ ...spaceState(), props: { group: "epic", sort: key } });
+    const base = sortIssues()[0];
+    const issues = [
+      { ...base, id: "zulu", epic: "Zulu", priority: "P0", created_at: "2026-10-01T00:00:00Z" },
+      { ...base, id: "alpha-z", epic: "Alpha" },
+      { ...base, id: "alpha-a", epic: "Alpha" },
+    ];
+    if (key === "priority") issues.forEach((i) => { i.priority = "P1"; });
+    if (key === "created") issues.forEach((i) => { i.created_at = base.created_at; });
+    view.data = { issues };
+    for (const reverse of [false, true]) {
+      if (reverse) view.sortBy(key, sortContext);
+      view.render();
+      assert.deepEqual(view.order, ["alpha-a", "alpha-z", "zulu"]);
+    }
+  });
+}
+
+test("all five states share epic subheaders and counts, but only state headers fold", async () => {
+  const { view } = await dashboard({ ...spaceState(), props: { group: "epic" } });
+  const groups = ["attention", "running", "waiting", "ready", "blocked"];
+  const issues = groups.flatMap((group) => epicIssues().slice(0, 3).map((i) => ({
+    ...i, id: `${group}-${i.id}`, group,
+    state: group === "running" ? "claimed" : group === "waiting" ? "waiting" : "open",
+    attention: group === "attention" ? ["review"] : [],
+  })));
+  view.data = { issues };
+  view.folded.clear();
+  let tree = view.render();
+  assert.deepEqual(listEntries(tree).filter((n) => n.id.startsWith("group-")).map((n) => n.text),
+    ["Needs you", "In flight", "Waiting", "Ready", "Blocked"].map((label) => [label, "3"]));
+  assert.deepEqual(listEntries(tree).filter((n) => n.id.startsWith("epic-")).map((n) => n.text),
+    groups.flatMap(() => [["Zulu", "1"], ["Alpha", "2"]]));
+  for (const group of groups) {
+    const header = listEntries(tree).find((n) => n.id.startsWith(`epic-${group}-`));
+    assert.equal(Object.hasOwn(findElement(tree, header.id), "click"), false);
+    findElement(tree, `group-${group}`).click({}, sortContext);
+    tree = view.render();
+    assert.equal(listEntries(tree).some((n) => n.id.startsWith(`epic-${group}-`) || n.id.startsWith(`row-${group}-`)), false);
+    assert.equal(view.order.some((id) => id.startsWith(`${group}-`)), false);
+    findElement(tree, `group-${group}`).click({}, sortContext);
+    tree = view.render();
+  }
+});
+
+test("all-unassigned states stay flat, while a single assigned epic still gets a header", async () => {
+  const { view } = await dashboard({ ...spaceState(), props: { group: "epic" } });
+  view.folded.clear();
+  view.data = { issues: ["attention", "running", "waiting", "ready", "blocked"].flatMap((group) =>
+    sortIssues().slice(0, 2).map((i, index) => ({
+      ...i, id: `${group}-${i.id}`, group, epic: index ? null : undefined,
+      attention: group === "attention" ? ["review"] : [],
+    }))) };
+  let tree = view.render();
+  assert.deepEqual(listEntries(tree).filter((n) => n.id.startsWith("epic-")), []);
+  assert.equal(content(tree).includes("No epic"), false);
+  view.data.issues = [{ ...sortIssues()[0], epic: "Only epic" }];
+  tree = view.render();
+  assert.deepEqual(listEntries(tree).filter((n) => n.id.startsWith("epic-")).map((n) => n.text), [["Only epic", "1"]]);
+});
+
+test("flat mode shows epic tags and blocked hints identify only cross-epic blockers", async () => {
+  const { view } = await dashboard(spaceState());
+  const issues = epicIssues();
+  const blocked = {
+    ...issues[0], group: "blocked", blocked_by: [
+      { id: "same", state: "open", epic: "Alpha" },
+      { id: "other", state: "claimed", epic: "Beta" },
+      { id: "none", state: "open", epic: null },
+      { id: "closed", state: "closed", epic: "Gamma" },
+    ],
+  };
+  view.data = { issues: [blocked, issues[4]] };
+  view.folded.clear();
+  let tree = view.render();
+  assert.deepEqual(content(findElement(tree, "epic-row-a")), ["Alpha"]);
+  assert.equal(findElement(tree, "epic-row-unassigned"), undefined);
+  assert.ok(content(findElement(tree, "row-a")).includes("by same, other (Beta), none (No epic)"));
+  view.toggleGrouping(sortContext);
+  tree = view.render();
+  assert.equal(findElement(tree, "epic-row-a"), undefined);
+  assert.ok(content(findElement(tree, "row-a")).includes("by same, other (Beta), none (No epic)"));
+  blocked.epic = null;
+  tree = view.render();
+  assert.ok(content(findElement(tree, "row-a")).includes("by same (Alpha), other (Beta), none"));
+});
+
+test("group toggle and sort preserve selection and details, and navigation skips all headers", async () => {
+  const { view } = await dashboard(spaceState());
+  view.data = { issues: epicIssues() };
+  view.size = { width: 1000 };
+  view.selected = "a";
+  view.open = true;
+  const detail = { id: "a" };
+  view.detail = detail;
+  let tree = view.render();
+  assert.deepEqual(view.order, ["unassigned", "b", "c", "a", "d"]);
+  assert.deepEqual(content(findElement(tree, "group-epic")), ["Group: Off"]);
+  findElement(tree, "group-epic").click({}, sortContext);
+  tree = view.render();
+  assert.deepEqual(view.order, ["b", "c", "a", "d", "unassigned"]);
+  assert.deepEqual(content(findElement(tree, "group-epic")), ["Group: Epic"]);
+  assert.equal(view.selected, "a");
+  assert.equal(view.detail, detail);
+  assert.equal(view.open, true);
+  findElement(tree, "sort-updated").click({}, sortContext);
+  tree = view.render();
+  assert.deepEqual(view.order, ["c", "a", "d", "b", "unassigned"]);
+  assert.equal(view.selected, "a");
+  assert.equal(view.detail, detail);
+  assert.ok(findElement(tree, "detail-a"));
+  view.key({ key_char: "e" }, sortContext);
+  view.render();
+  assert.deepEqual(view.order, ["unassigned", "c", "d", "b", "a"]);
+  assert.equal(view.selected, "a");
+  assert.equal(view.detail, detail);
+  view.key({ key_char: "e" }, sortContext);
+  view.render();
+  view.hideDetail(sortContext);
+  for (const [key_char, selected] of [["j", "d"], ["j", "b"], ["j", "unassigned"], ["k", "b"], ["g", "c"], ["G", "unassigned"]]) {
+    view.key({ key_char }, sortContext);
+    assert.equal(view.selected, selected);
+  }
+  for (const modifiers of [{ control: true }, { platform: true }, { alt: true }]) view.key({ key_char: "e", modifiers }, sortContext);
+  view.prompt = { kind: "create" };
+  view.key({ key_char: "e" }, sortContext);
+  assert.equal(view.group, "epic");
+  const { view: another } = await dashboard(spaceState());
+  another.data = view.data;
+  another.render();
+  assert.deepEqual(another.order, ["unassigned", "b", "c", "a", "d"]);
 });

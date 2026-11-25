@@ -2,13 +2,14 @@
 // you, live sessions and waiting checks. The data is `trk dashboard --json`
 // (the snapshot the terminal dashboard draws); every action runs `trk` itself.
 //
-// Props: { folder?: string, select?: string, focus?: "agent", launcher?: boolean, sort?: string }
+// Props: { folder?: string, select?: string, focus?: "agent", launcher?: boolean, sort?: string, group?: "epic" }
 //   folder  show this project instead of the shown space's.
 //   select  the issue to start on, with its detail open.
 //   focus   "agent": selecting an issue shows its session in the layout's
 //           agent block (`{ "agent": "focused" }`), as in layouts/trk.json.
 //   launcher  only the sidebar button; opens or focuses this space's trk panel.
 //   sort  priority (default), updated, created or type; "-" reverses the natural direction.
+//   group  "epic": bucket issues by epic inside each state group; flat by default.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Input, TextView } from "gpui-base";
@@ -52,6 +53,24 @@ function issueComparator({ key, desc }) {
     || compare(a.priority, b.priority)
     || compare(Date.parse(a.created_at), Date.parse(b.created_at))
     || compare(a.id, b.id);
+}
+
+/** Members already use the full row sort; bucket ranks use only the selected key. */
+function epicBuckets(members, { key, desc }) {
+  if (!members.some((i) => i.epic)) return [{ members }];
+  const byEpic = new Map();
+  for (const issue of members) {
+    const epic = issue.epic ?? null;
+    if (!byEpic.has(epic)) byEpic.set(epic, { epic, members: [] });
+    byEpic.get(epic).members.push(issue);
+  }
+  const { value } = SORT_KEYS[key];
+  return [...byEpic.values()].sort((a, b) => {
+    if (a.epic === null) return 1;
+    if (b.epic === null) return -1;
+    return (desc ? -1 : 1) * compare(value(a.members[0]), value(b.members[0]))
+      || compare(a.epic, b.epic);
+  });
 }
 
 const TYPE_TONES = new Map([
@@ -121,6 +140,7 @@ export default class Trk extends View {
     this.open = false;
     this.folded = new Set(["blocked"]);
     this.sort = initialSort(props()?.sort);
+    this.group = props()?.group === "epic" ? "epic" : null;
     this.busy = null;
     this.status = null;
     this.confirm = null;
@@ -435,6 +455,11 @@ export default class Trk extends View {
     cx.notify();
   }
 
+  toggleGrouping(cx) {
+    this.group = this.group === "epic" ? null : "epic";
+    cx.notify();
+  }
+
   runnable(issue) {
     return issue.state === "open" && issue.blocked_by.every((b) => b.state === "closed");
   }
@@ -463,6 +488,7 @@ export default class Trk extends View {
       cx.notify();
     }
     else if (k === "O") this.sortBy(this.sort.key, cx);
+    else if (k === "e") this.toggleGrouping(cx);
     else if (!issue) return;
     else if (k === "a") { this.go(issue); cx.notify(); }
     else if (k === "p" && issue.session?.terminal) run("terminal.peek", { terminal: issue.session.terminal });
@@ -546,7 +572,11 @@ export default class Trk extends View {
       const text = !w?.check ? "decision" : w.due ? "check due" : w.next_check_at ? `check ${ago(w.next_check_at, now)}` : "check";
       return div().flex_none().text_size(10.5).text_color(w?.due ? t.done : t.dim).child(text);
     }
-    if (issue.group === "blocked") return div().flex_none().max_w(120).truncate().text_size(10.5).text_color(t.dim).child(`by ${issue.blocked_by.filter((b) => b.state !== "closed").map((b) => b.id).join(", ")}`);
+    if (issue.group === "blocked") {
+      const text = `by ${issue.blocked_by.filter((b) => b.state !== "closed").map((b) =>
+        `${b.id}${(b.epic ?? null) !== (issue.epic ?? null) ? ` (${b.epic ?? "No epic"})` : ""}`).join(", ")}`;
+      return div().flex_none().max_w(240).truncate().text_size(10.5).text_color(t.dim).tooltip(text).child(text);
+    }
     return div().flex_none().text_size(10.5).text_color(t.dim).child(ago(issue.updated_at, now));
   }
 
@@ -554,6 +584,7 @@ export default class Trk extends View {
     const on = issue.id === this.selected;
     const urgent = issue.priority === "P0" ? t.blocked : issue.priority === "P1" ? t.done : t.dim;
     const status = this.badge(t, issue, now);
+    const epic = this.group !== "epic" && issue.epic;
     return h_flex().id(`row-${issue.id}`).w_full().min_w(0).min_h(28).px(8).py(5).gap(7).flex_none().items_start().rounded(7)
       .when(on, (el) => el.bg(t.selected)).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => this.select(issue.id, cx))
@@ -564,9 +595,10 @@ export default class Trk extends View {
         .child(h_flex().min_w(0).gap(4).items_start()
           .when(!status, (el) => el.child(svg("mods/trk/spinner.svg").size(12).mt(3).flex_none().text_color(t.working).spin(900)))
           .child(div().flex_1().min_w(0).whitespace_normal().line_height("18px").text_color(on ? t.foreground : issue.group === "blocked" ? t.muted : t.foreground).child(issue.title)))
-        .when(Boolean(status || issue.links?.length), (el) => el.child(h_flex().min_w(0).flex_wrap().gap(4).items_center()
+        .when(Boolean(status || epic || issue.links?.length), (el) => el.child(h_flex().min_w(0).flex_wrap().gap(4).items_center()
           .when(Boolean(issue.links?.length), (el) => el.child(this.link(t, issue, 0, "row").max_w_full()))
           .when((issue.links?.length ?? 0) > 1, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(`+${issue.links.length - 1}`)))
+          .when(Boolean(epic), (el) => el.child(div().id(`epic-row-${issue.id}`).min_w(0).max_w_full().px(5).rounded(4).bg(t.raised).text_size(10.5).text_color(t.dim).whitespace_normal().child(epic)))
           .when(Boolean(status), (el) => el.child(status.max_w_full())))));
   }
 
@@ -680,7 +712,7 @@ export default class Trk extends View {
   }
 
   sortRow(t) {
-    return h_flex().id("sort").h(28).flex_none().px(8).gap(2).items_center().text_size(10.5).text_color(t.dim)
+    return h_flex().id("sort").min_h(28).py(4).flex_wrap().flex_none().px(8).gap(2).items_center().text_size(10.5).text_color(t.dim)
       .child(div().flex_none().mr(2).child("Sort"))
       .children(SORT_ORDER.map((key) => {
         const active = key === this.sort.key;
@@ -690,7 +722,13 @@ export default class Trk extends View {
           .tooltip("Click to sort; click again to reverse (o: next key, O: reverse)")
           .on_click((_e, cx) => { cx.stop_propagation(); this.sortBy(key, cx); })
           .child(`${SORT_KEYS[key].label}${active ? this.sort.desc ? " ↓" : " ↑" : ""}`);
-      }));
+      }))
+      .child(h_flex().id("group-epic").h(20).ml(6).px(4).flex_none().items_center().rounded(4)
+        .when(this.group === "epic", (el) => el.bg(t.selected).text_color(t.accent).font_semibold())
+        .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip("Toggle grouping by epic (e)")
+        .on_click((_e, cx) => { cx.stop_propagation(); this.toggleGrouping(cx); })
+        .child(`Group: ${this.group === "epic" ? "Epic" : "Off"}`));
   }
 
   openDashboard() {
@@ -744,9 +782,13 @@ export default class Trk extends View {
 
     const issues = this.data.issues;
     const comparator = issueComparator(this.sort);
-    const groups = GROUPS.map((g) => ({ ...g, members: issues.filter((i) => this.groupOf(i) === g.id).sort(comparator) })).filter((g) => g.members.length);
-    this.order = groups.flatMap((g) => (this.folded.has(g.id) ? [] : g.members.map((i) => i.id)));
-    if (props()?.focus === "agent") setAgentOrder(groups.flatMap((g) => g.members).map((i) => i.session?.terminal).filter(Boolean));
+    const groups = GROUPS.map((g) => {
+      const members = issues.filter((i) => this.groupOf(i) === g.id).sort(comparator);
+      const buckets = this.group === "epic" ? epicBuckets(members, this.sort) : [{ members }];
+      return { ...g, members, buckets };
+    }).filter((g) => g.members.length);
+    this.order = groups.flatMap((g) => this.folded.has(g.id) ? [] : g.buckets.flatMap((b) => b.members.map((i) => i.id)));
+    if (props()?.focus === "agent") setAgentOrder(groups.flatMap((g) => g.buckets.flatMap((b) => b.members)).map((i) => i.session?.terminal).filter(Boolean));
     const selected = issues.find((i) => i.id === this.selected);
     const inline = !this.wide && this.open;
     // Share boundaries across every section. Measure the list, not the dashboard:
@@ -765,7 +807,14 @@ export default class Trk extends View {
         .child(div().flex_1())
         .when(!open, (el) => el.child(div().text_color(t.dim).child("›")));
       if (!open) return [head];
-      return [head, ...g.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now, columns), this.detailView(t, i, now)] : [this.row(t, i, now, columns)]))];
+      return [head, ...g.buckets.flatMap((bucket) => {
+        const subhead = bucket.epic !== undefined
+          ? [h_flex().id(`epic-${g.id}-${JSON.stringify(bucket.epic)}`).min_h(22).px(12).gap(6).flex_none().items_center().text_size(10.5).text_color(t.dim)
+            .child(div().min_w(0).whitespace_normal().child(bucket.epic ?? "No epic"))
+            .child(div().flex_none().child(String(bucket.members.length)))]
+          : [];
+        return [...subhead, ...bucket.members.flatMap((i) => (inline && i.id === this.selected ? [this.row(t, i, now, columns), this.detailView(t, i, now)] : [this.row(t, i, now, columns)]))];
+      })];
     });
 
     const list = v_flex().id("trk-list").w_full().flex_1().min_w(0).min_h(0).px(6).pb(8).gap(1).overflow_y_scrollbar()
