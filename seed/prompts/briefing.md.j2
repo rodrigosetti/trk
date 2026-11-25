@@ -1,7 +1,15 @@
 # {{ issue.id }}: {{ issue.title }}
 
 You are the {{ agent.name }} agent working on {{ issue.id }} (type {{ issue.type }}, priority {{ issue.priority }}).
-{% if worktree %}Your working directory is `{{ worktree }}`.{% endif %}
+{% if worktree %}Your working directory is `{{ worktree }}`.{% endif %}{% if issue.epic %}
+Epic: `{{ issue.epic }}`.{% endif %}{% if epics %}
+
+## Epics
+{% for epic in epics %}
+- {{ epic.name }}: {{ epic.description|replace("\r", " ")|replace("\n", " ") }}{% endfor %}
+
+Assign a follow-up to an existing epic only when it clearly fits; otherwise leave it unset. Do not create epics.
+{% endif %}
 
 ## Description
 

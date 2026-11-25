@@ -16,7 +16,7 @@ pub fn sample_issue(user: &UserConfig) -> Value {
     json!({
         "id": "proj-abc", "title": "Sample",
         "description": "Sample description", "state": "claimed", "priority": "P2",
-        "type": user.issues.default_type, "close_reason": null, "waiting": null, "claim": null,
+        "type": user.issues.default_type, "epic": null, "close_reason": null, "waiting": null, "claim": null,
         "deps": {"blocked_by": [], "blocks": []},
         "derived": {"ready": false, "blocked_by": [], "due": false, "unblocks_higher_priority": []},
         "notes": [],
@@ -168,6 +168,7 @@ pub fn check_agents(cfg: &ConfigDir, user: &UserConfig) -> Vec<Diagnostic> {
         let issue = sample_issue(user);
         let input = PromptInput {
             issue: &issue,
+            epics: &[],
             project_root: std::path::Path::new("/tmp/project"),
             config: user,
             issue_type: &user.issues.default_type,

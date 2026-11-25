@@ -1747,20 +1747,19 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             Ok(Out::Text(text, data))
         }
         AgentCmd::Preview { agent, issue } => {
+            let store = env.store()?;
+            let epics = store.read(env.actor.as_deref(), |c| c.epics(false))?;
             let issue_json = match &issue {
-                Some(id) => {
-                    let store = env.store()?;
-                    store.read(env.actor.as_deref(), |c| {
-                        c.show(
-                            id,
-                            With {
-                                deps: true,
-                                notes: true,
-                                ..Default::default()
-                            },
-                        )
-                    })?
-                }
+                Some(id) => store.read(env.actor.as_deref(), |c| {
+                    c.show(
+                        id,
+                        With {
+                            deps: true,
+                            notes: true,
+                            ..Default::default()
+                        },
+                    )
+                })?,
                 None => trk_agent::check::sample_issue(&env.user),
             };
             let cfg = trk_agent::routing::RoutingConfig::new(&env.config);
@@ -1773,6 +1772,7 @@ fn agent_cmd(env: &Env, cmd: AgentCmd) -> Result<Out> {
             let tools = trk_agent::agent_tools(&a, &env.user);
             let input = trk_agent::prompt::PromptInput {
                 issue: &issue_json,
+                epics: &epics,
                 project_root: &env.root,
                 config: &env.user,
                 issue_type: &routing.issue_type,

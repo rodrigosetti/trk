@@ -191,6 +191,7 @@ fn landing_selection_only_changes_implementer_instructions() {
                 let tools = agent_tools(&agent, &config);
                 let input = trk_agent::prompt::PromptInput {
                     issue: &issue,
+                    epics: &[],
                     project_root: std::path::Path::new("/project"),
                     config: &config,
                     issue_type: "change",
@@ -264,6 +265,7 @@ fn the_briefing_carries_description_notes_and_blockers() {
     });
     let input = trk_agent::prompt::PromptInput {
         issue: &issue,
+        epics: &[],
         project_root: std::path::Path::new("/project"),
         config: &user_config(),
         issue_type: "change",
@@ -310,6 +312,7 @@ fn seed_waiting_rules_reflect_effective_check_settings() {
         let tools = agent_tools(&agent, &config);
         let input = trk_agent::prompt::PromptInput {
             issue: &issue,
+            epics: &[],
             project_root: std::path::Path::new("/project"),
             config: &config,
             issue_type: "change",

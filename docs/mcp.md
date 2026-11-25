@@ -21,10 +21,10 @@ An omitted optional argument uses the default described below.
 
 | Tool | Required arguments | Optional arguments | Effect |
 | --- | --- | --- | --- |
-| `get_task` | None (`{}`) | None | Read the issue, notes, dependencies and resolved routing. |
+| `get_task` | None (`{}`) | None | Read the issue, including epic membership, notes, dependencies and resolved routing. |
 | `add_note` | `body`: string, markdown | None | Append a note to the issue's memory. |
 | `link` | `url`: string, absolute HTTP(S) URL | `label`: string, at most 40 characters | Attach a link; using the same URL updates its label. Omitting the label leaves the URL as its display text, including when replacing an existing label. |
-| `report_followup` | `title`: string; `description`: string | `priority`: `P0`, `P1`, `P2` or `P3` (default `P2`); `type`: configured issue type (default `[issues] default_type`); `blocks_this`: boolean (default `false`) | Create a follow-up and append its ID and title as a note on this issue. If `blocks_this` is true, the new issue blocks this one; hand back if you cannot proceed. |
+| `report_followup` | `title`: string; `description`: string | `priority`: `P0`, `P1`, `P2` or `P3` (default `P2`); `type`: configured issue type (default `[issues] default_type`); `epic`: existing active epic name; `blocks_this`: boolean (default `false`) | Create a follow-up and append its ID and title as a note on this issue. If `blocks_this` is true, the new issue blocks this one; hand back if you cannot proceed. |
 | `hand_back` | `note`: string, explaining what remains and why | None | Release the claim and return the issue to `open`. |
 | `close` | `reason`: `done` or `abandoned`; `note`: string, the outcome | None | Close the issue and release the claim. |
 | `wait` | `reason`: string, what must happen next | `check`: string, a shell command; `interval`: duration string such as `2m`, `1h` or `1d` (default `[check] interval`) | Enter `waiting` and release the claim. Without a check, wait for a human decision. |
@@ -34,6 +34,15 @@ The server populates `report_followup.type`'s schema enum and description from t
 project's installed type definitions. Discover the current schemas with MCP
 `tools/list`; do not assume every project uses the seed types.
 `trk agent preview <agent> --issue <ID>` also shows the session's tools.
+
+`report_followup.epic` is optional. Its schema lists only active, non-archived
+epic names and includes their descriptions. Choose an existing epic only when
+its theme fits the follow-up; omit `epic` when none fits, including when the
+project has no active epics. Unknown or archived assignments return `invalid_field`
+with active names in `error.allowed` and a hint to choose one or omit the field.
+Assignment never creates an epic. There are no epic creation, rename or archive
+MCP tools: epic creation is rare and belongs to explicit user-requested curation,
+not automatic follow-up filing.
 
 Without a check, `wait` returns a message containing the issue-specific command
 `trk resume <ID> -m "<your decision>"`. The human can close the issue if nothing
@@ -111,7 +120,7 @@ MCP tool result's `isError` flag: the payload is **not** the CLI's versioned
 
 | Tool | Successful JSON payload |
 | --- | --- |
-| `get_task` | The full issue object, including `deps`, `notes` and `routing`; see [issue JSON](json.md#issue-objects). |
+| `get_task` | The full issue object, including `epic` membership (name or null), `deps`, `notes` and `routing`; see [issue JSON](json.md#issue-objects). |
 | `add_note` | `{"ok":true,"result":{"note":42},"task":{...}}`; `note` is the appended note's sequence number. |
 | `link` | `{"ok":true,"result":{"linked":"https://example.com/pr/12","changed":true},"task":{...}}`; `changed` is false if nothing changed. |
 | `report_followup` | `{"ok":true,"result":{"created":"orch-9xa","blocks_this":false},"task":{...}}`. |

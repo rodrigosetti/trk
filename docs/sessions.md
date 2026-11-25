@@ -70,6 +70,12 @@ issue with eight tools: `get_task`, `add_note`, `link`, `report_followup`, `hand
 `wait` and `resume`.
 It renews the claim's lease while it runs. The briefing carries the issue's description and every
 note, which is how an issue that came back from a failed check explains itself.
+The built-in briefing also shows the issue's epic membership and a menu of active
+epic names and descriptions. Prompt templates receive `issue.epic` (name or null)
+and `epics` (the active epic objects), including when rendered through
+`trk agent preview` or `trk run --dry-run`. Follow-ups may select an existing epic
+only when its description fits; omit the assignment otherwise. The MCP schema
+advertises the active choices, but exposes no epic-management tools.
 
 Leaving an issue waiting releases the claim, not the terminal. While the issue stays
 waiting, the actor of its latest claim released with reason `waiting` can still call
