@@ -36,6 +36,7 @@ function emptyContainers(node) {
 async function dashboard(state) {
   const commands = [];
   const executions = [];
+  const notifications = [];
   const modules = {
     "gpui-kit": { View: class {}, div: () => new Element("div"), svg: () => new Element("spinner") },
     "gpui-base": {
@@ -60,10 +61,11 @@ async function dashboard(state) {
       },
       exec: async (command, args, options) => {
         executions.push({ command, args, options });
+        if (state.exec) return state.exec(command, args, options);
         return state.output ?? { code: 0, stdout: JSON.stringify({ ok: true, data: {} }), stderr: "" };
       },
       agents: () => [], terminals: () => [], theme: () => ({}), settings: () => ({}),
-      notify() {}, checking: () => true, shared: (key) => state.shared?.get(key),
+      notify: (message) => notifications.push(message), checking: () => true, shared: (key) => state.shared?.get(key),
       setShared: (key, value) => state.shared?.set(key, value), setBadge() {}, setAgentOrder: (order) => { state.agentOrder = order; },
       nextCommand() {}, watchFolder() {}, layout() {},
     },
@@ -78,7 +80,7 @@ async function dashboard(state) {
   await mod.evaluate();
   const view = new mod.namespace.default();
   view.init({}, { focus_handle: () => ({ focus() { state.hasFocus = true; }, is_focused: () => state.hasFocus ?? false }) });
-  return { view, commands, executions };
+  return { view, commands, executions, notifications };
 }
 
 function spaceState() {
@@ -200,6 +202,110 @@ function findElement(node, id) {
   if (typeof node === "string") return null;
   return node.elementId === id ? node : node.nodes.map((child) => findElement(child, id)).find(Boolean);
 }
+
+test("Run confirmation survives refresh and dispatches once after a stale action completes", async () => {
+  const state = { ...spaceState(), props: { fixedTab: true }, shared: new Map() };
+  const { view, executions, notifications } = await dashboard(state);
+  const pending = [];
+  const cx = { ...sortContext, spawn: (run) => { pending.push(run(cx)); } };
+  const pin = { space: "current", cwd: "/current-project", on: null, epoch: 1 };
+  const enter = (location) => {
+    state.shared.set("trk-tabs.project", location);
+    const loc = view.location();
+    view.context = { ...loc, key: JSON.stringify(loc), root: location.cwd };
+    view.enter(location.cwd);
+  };
+  enter(pin);
+  let finish;
+  state.exec = () => new Promise((resolve) => { finish = resolve; });
+  view.act(cx, "check old", ["check", "old"]);
+  enter({ ...pin, cwd: "/other-project", epoch: 2 });
+  finish({ code: 5, stderr: "", stdout: JSON.stringify({
+    ok: false, error: { message: "check failed", hint: "Inspect its output" },
+  }) });
+  await pending.shift();
+  assert.equal(view.busy, null, "an old project's completion must release the panel's command gate");
+  assert.equal(view.status, null, "stale results must not replace the new project's status");
+  assert.deepEqual(notifications.map((n) => [n.title, n.body, n.level]),
+    [["check old: failed", "check failed\nInspect its output", "error"]],
+    "an error after navigation must still reach the person without replacing the new project's footer");
+
+  const issues = sortIssues();
+  view.data = { issues };
+  view.selected = "b";
+  view.open = true;
+  view.size = { width: 1000 };
+  const clickRun = () => findElement(view.render(), "run-b").click({}, cx);
+  clickRun();
+  assert.deepEqual(content(findElement(view.render(), "run-b")), ["Run?"]);
+  assert.equal(executions.length, 1, "arming must not dispatch");
+
+  // Exercise the real snapshot/detail refresh, not just a repaint.
+  state.exec = async (_command, args) => ({
+    code: 0, stderr: "", stdout: JSON.stringify({
+      ok: true, schema_version: 4,
+      data: args.includes("dashboard") ? { issues: [...issues].reverse() } : { id: "b" },
+    }),
+  });
+  view.load(cx);
+  await pending.shift();
+  assert.deepEqual(content(findElement(view.render(), "run-b")), ["Run?"]);
+  state.exec = () => new Promise((resolve) => { finish = resolve; });
+  clickRun();
+  clickRun();
+  clickRun();
+  const runs = executions.filter((e) => e.args.includes("run"));
+  assert.equal(runs.length, 1);
+  assert.deepEqual(runs[0].args, ["--json", "--dir", "/other-project/.trk", "run", "b"]);
+  assert.equal(runs[0].options.timeout, 120000);
+  assert.equal(view.confirm, null, "pending commands must not arm another launch");
+
+  // Hiding/reopening the fixed tab changes its epoch, even in the same project.
+  enter({ ...pin, cwd: "/other-project", epoch: 3 });
+  finish({ code: 0, stderr: "", stdout: JSON.stringify({ ok: true, data: {} }) });
+  await pending.shift();
+  assert.equal(view.busy, null);
+  state.exec = async (_command, args) => ({
+    code: args.includes("run") ? 5 : 0, stderr: "", stdout: JSON.stringify(
+      args.includes("run")
+        ? { ok: false, error: { message: "b is claimed, not ready", hint: "Refresh before retrying" } }
+        : { ok: true, schema_version: 4, data: args.includes("dashboard") ? { issues } : { id: "b" } }),
+  });
+  clickRun();
+  clickRun();
+  await pending.shift();
+  await pending.shift();
+  assert.equal(view.status.level, "error");
+  assert.ok(content(view.render()).includes("run b: b is claimed, not ready\nRefresh before retrying"));
+});
+
+test("Run confirmation cancels with selection or details and respects refreshed eligibility", async () => {
+  const { view, executions } = await dashboard(spaceState());
+  view.data = { issues: sortIssues() };
+  view.selected = "b";
+  view.open = true;
+  view.detail = { id: "b" };
+  const clickRun = (id) => findElement(view.render(), `run-${id}`).click({}, sortContext);
+  clickRun("b");
+  view.select("c", sortContext, false);
+  view.select("b", sortContext, false);
+  view.open = true;
+  clickRun("b");
+  assert.deepEqual(content(findElement(view.render(), "run-b")), ["Run?"]);
+  view.hideDetail(sortContext);
+  view.open = true;
+  clickRun("b");
+  assert.equal(executions.length, 0, "reopening details needs fresh confirmation");
+  for (const state of ["claimed", "waiting", "closed"]) {
+    view.data.issues[1].state = state;
+    assert.equal(findElement(view.render(), "run-b"), undefined);
+  }
+  view.data.issues[1].state = "open";
+  view.data.issues[1].blocked_by = [{ id: "blocker", state: "open", title: "blocker" }];
+  assert.equal(findElement(view.render(), "run-b"), undefined);
+  view.data.issues[1].blocked_by[0].state = "closed";
+  assert.ok(findElement(view.render(), "run-b"));
+});
 
 function sortIssues() {
   return [

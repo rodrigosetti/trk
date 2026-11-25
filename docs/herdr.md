@@ -108,7 +108,13 @@ trk herdr uninstall              # remove mods and unedited layout; preserve per
   badge counts them across the projects shown.
 - Select an issue for its description, notes and timeline, and to go to or peek at its session,
   run it, send text, resume, check now, add notes, change priority, unclaim, reopen or close.
-  Destructive buttons ask for a second click. Edit opens `trk edit` in a pane below.
+  Run and destructive buttons ask for a second click on the same button. Confirmation
+  survives dashboard refreshes and has no timed expiry; changing selection, hiding details,
+  or opening a prompt cancels it. Pending commands show in the status footer and cannot
+  arm another confirmation. Completion releases the command gate even after switching
+  projects or hiding/reopening the fixed dashboard tab. CLI failures and hints appear in
+  the status footer, or in an error toast if the dashboard has since changed context.
+  Edit opens `trk edit` in a pane below.
   At widths of 720px or more, the list and details start at an equal 50/50 split;
   drag the divider to resize them. Each scrolls independently. Herdr keeps the split
   across repaints, issue selection, and hiding/reopening details in that window.
@@ -131,6 +137,6 @@ trk herdr uninstall              # remove mods and unedited layout; preserve per
   Invalid sort values fall back to Priority ascending. Set `"group": "epic"` to start
   with epic grouping on; omitted or other values start flat. For example:
   `herdr-app do tab.new --mod trk --props '{"sort": "updated", "group": "epic"}'`.
-  Run the dashboard's location, sorting, and grouping regressions with
+  Run the dashboard's location, sorting, grouping, and action-confirmation regressions with
   `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
 

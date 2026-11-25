@@ -400,9 +400,12 @@ export default class Trk extends View {
         if (this.context === context) this.say(`${label}: done`);
       } catch (e) {
         if (this.context === context) this.say(`${label}: ${e.message}`, "error");
+        else notify({ title: `${label}: failed`, body: e.message, level: "error" });
       }
-      if (this.context !== context) return;
+      // The layout reuses this view across projects and fixed-tab selection epochs.
+      // Completion must release the command gate even when its result is stale.
       this.busy = null;
+      if (this.context !== context) { cx.notify(); return; }
       if (args[0] === "create" && done?.data?.id) { this.selected = done.data.id; this.open = true; this.detail = null; }
       cx.notify();
       this.load(cx, true);
@@ -411,6 +414,7 @@ export default class Trk extends View {
 
   /** A second click on the same button within the same selection confirms. */
   confirmed(key, cx) {
+    if (this.busy) return false;
     if (this.confirm === key) return true;
     this.confirm = key;
     cx.notify();
