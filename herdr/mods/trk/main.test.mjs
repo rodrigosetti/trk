@@ -63,8 +63,8 @@ async function dashboard(state) {
         return state.output ?? { code: 0, stdout: JSON.stringify({ ok: true, data: {} }), stderr: "" };
       },
       agents: () => [], terminals: () => [], theme: () => ({}), settings: () => ({}),
-      notify() {}, checking: () => true, shared() {},
-      setShared() {}, setBadge() {}, setAgentOrder: (order) => { state.agentOrder = order; },
+      notify() {}, checking: () => true, shared: (key) => state.shared?.get(key),
+      setShared: (key, value) => state.shared?.set(key, value), setBadge() {}, setAgentOrder: (order) => { state.agentOrder = order; },
       nextCommand() {}, watchFolder() {}, layout() {},
     },
   };
@@ -77,7 +77,7 @@ async function dashboard(state) {
   });
   await mod.evaluate();
   const view = new mod.namespace.default();
-  view.init({}, { focus_handle: () => ({ focus() {} }) });
+  view.init({}, { focus_handle: () => ({ focus() { state.hasFocus = true; }, is_focused: () => state.hasFocus ?? false }) });
   return { view, commands, executions };
 }
 
@@ -96,25 +96,6 @@ function spaceState() {
     focused: { pane: "first-pane" },
   };
 }
-
-test("sidebar dashboard keeps the space's live project when its mod tab takes focus", async () => {
-  const state = spaceState();
-  const { view, commands, executions } = await dashboard(state);
-  view.openDashboard();
-  assert.deepEqual(commands, [{ name: "tab.new", args: { name: "trk dashboard", space: "current", mod: "trk" } }]);
-  await view.trk(["dashboard"]);
-  assert.equal(executions[0].options.cwd, "/current-project");
-
-  // Reopening selects the existing panel; focus on another project must not leak in.
-  state.focused = { pane: "other-pane" };
-  view.openDashboard();
-  assert.deepEqual(commands.slice(1), [
-    { name: "tab.select", args: { id: "dashboard" } },
-    { name: "pane.focus", args: { pane: "dashboard-pane" } },
-  ]);
-  await view.trk(["dashboard"]);
-  assert.equal(executions[1].options.cwd, "/current-project");
-});
 
 test("unpinned dashboard follows space switches and remote live directories", async () => {
   const state = spaceState();
@@ -369,11 +350,6 @@ test("sort stays within groups and drives navigation and agent order without los
   assert.deepEqual(another.order, ["b", "c", "a", "d"], "panels must not share sort state");
 });
 
-test("launcher variant omits the sort row", async () => {
-  const { view } = await dashboard({ ...spaceState(), props: { launcher: true } });
-  assert.equal(findElement(view.render(), "sort"), undefined);
-});
-
 function epicIssues() {
   const issues = sortIssues();
   for (const [index, epic] of ["Alpha", "Zulu", "Alpha", "Beta"].entries()) issues[index].epic = epic;
@@ -547,4 +523,58 @@ test("group toggle and sort preserve selection and details, and navigation skips
   another.data = view.data;
   another.render();
   assert.deepEqual(another.order, ["unassigned", "b", "c", "a", "d"]);
+});
+
+test("fixed dashboard pins its database and remote machine, and refuses stale actions after a space switch", async () => {
+  const state = spaceState();
+  state.props = { fixedTab: true };
+  state.shared = new Map([["trk-tabs.project", { space: "current", cwd: "/srv/pinned project", on: "vps", epoch: 1 }]]);
+  const { view, executions } = await dashboard(state);
+  const loc = view.location();
+  view.context = { ...loc, key: JSON.stringify(loc) };
+  await view.trk(["dashboard"]);
+  assert.deepEqual(executions[0].args, ["--json", "--dir", "/srv/pinned project/.trk", "dashboard"]);
+  assert.equal(executions[0].options.cwd, "/srv/pinned project");
+  assert.equal(executions[0].options.on, "vps");
+  state.spaces[1].active = false;
+  state.spaces[0].active = true;
+  await assert.rejects(view.trk(["close", "old-issue"]), /no longer selected/);
+  assert.equal(executions.length, 1, "a stale action must never execute against the old or a discovered project");
+  view.data = { issues: [{ id: "old-issue" }] };
+  view.detail = { id: "old-issue" };
+  view.render();
+  assert.equal(view.data, null);
+  assert.equal(view.detail, null);
+});
+
+test("native focus returning to the same hidden pane reveals ordinary work, but dashboard prompts keep selection", async () => {
+  const state = spaceState();
+  state.props = { fixedTab: true };
+  state.shared = new Map([["trk-tabs.project", { space: "current", cwd: "/pinned", on: null, epoch: 7 }]]);
+  const { view } = await dashboard(state);
+  const loc = view.location();
+  view.context = { ...loc, key: JSON.stringify(loc) };
+  view.takeFocus();
+  state.hasFocus = false;
+  view.inputFocused = true;
+  view.follow({});
+  assert.equal(state.shared.get("trk-tabs.reveal"), undefined);
+  view.inputFocused = false;
+  view.takeFocus();
+  state.hasFocus = false;
+  // No intervening render/model change: this also covers focus immediately after selecting it.
+  view.follow({});
+  assert.deepEqual(state.shared.get("trk-tabs.reveal"), { space: "current", epoch: 7 });
+});
+
+test("same-named roots on different machines never retain another project's pending action", async () => {
+  const { view } = await dashboard(spaceState());
+  view.context = { on: null };
+  view.enter("/srv/project");
+  view.selected = "local-1";
+  view.prompt = { kind: "close", id: "local-1" };
+  view.context = { on: "remote" };
+  view.enter("/srv/project");
+  assert.equal(view.selected, null);
+  assert.equal(view.prompt, null);
 });

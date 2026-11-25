@@ -2,20 +2,19 @@
 // you, live sessions and waiting checks. The data is `trk dashboard --json`
 // (the snapshot the terminal dashboard draws); every action runs `trk` itself.
 //
-// Props: { folder?: string, select?: string, focus?: "agent", launcher?: boolean, sort?: string, group?: "epic" }
+// Props: { folder?: string, select?: string, focus?: "agent", fixedTab?: boolean, sort?: string, group?: "epic" }
 //   folder  show this project instead of the shown space's.
 //   select  the issue to start on, with its detail open.
-//   focus   "agent": selecting an issue shows its session in the layout's
-//           agent block (`{ "agent": "focused" }`), as in layouts/trk.json.
-//   launcher  only the sidebar button; opens or focuses this space's trk panel.
+//   focus   "agent": selecting an issue shows its session in an agent block.
 //   sort  priority (default), updated, created or type; "-" reverses the natural direction.
 //   group  "epic": bucket issues by epic inside each state group; flat by default.
+//   fixedTab  layout-owned dashboard; project/machine come from trk-tabs, never discovery.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Input, TextView } from "gpui-base";
 import {
   exec, spaces, panes, agents, terminals, theme, settings, props, run, notify, checking,
-  shared, setShared, setBadge, setAgentOrder, nextCommand, watchFolder, layout,
+  shared, setShared, setBadge, setAgentOrder, nextCommand, watchFolder,
 } from "herdr";
 
 /** The envelope version of `trk --json` this mod was written against. */
@@ -132,7 +131,6 @@ function eventText(e) {
 
 export default class Trk extends View {
   init(_props, cx) {
-    if (props()?.launcher) return;
     this.data = null;
     this.error = null;
     this.detail = null;
@@ -155,6 +153,9 @@ export default class Trk extends View {
     this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: "" });
     this.input.on("submit", (_e, cx) => this.submit(cx));
+    this.inputFocused = false;
+    this.input.on("focus", () => { this.inputFocused = true; });
+    this.input.on("blur", () => { this.inputFocused = false; });
     if (checking()) return;
     this.want = this.location();
     this.follow(cx);
@@ -164,7 +165,7 @@ export default class Trk extends View {
     cx.spawn(async (cx) => {
       for (;;) {
         const command = await nextCommand();
-        if (command === "focus") this.handle.focus();
+        if (command === "focus") this.takeFocus();
         else if (command === "new") this.ask({ kind: "create" });
         else if (command === "refresh") this.load(cx);
         cx.notify();
@@ -173,7 +174,6 @@ export default class Trk extends View {
   }
 
   async close() {
-    if (props()?.launcher) return;
     const root = this.context?.root;
     this.context = null;
     this.publish(root, 0);
@@ -183,6 +183,13 @@ export default class Trk extends View {
 
   /** The given folder, else the shown space's first live terminal (as in Herdr's panels). */
   location() {
+    if (props()?.fixedTab) {
+      const pin = shared("trk-tabs.project");
+      const space = spaces().find((s) => s.active);
+      return pin?.space === space?.id && pin?.cwd
+        ? { ...pin, fixed: true }
+        : { cwd: null, on: null, space: space?.id ?? null, fixed: true };
+    }
     const space = spaces().find((s) => s.active);
     const folder = props()?.folder;
     if (folder) return { cwd: folder, on: null };
@@ -199,9 +206,12 @@ export default class Trk extends View {
 
   async trk(args, timeout = 30000) {
     const { cwd, on } = this.context ?? this.location();
+    const pin = props()?.fixedTab ? this.location() : null;
+    if (pin && (!pin.cwd || JSON.stringify(pin) !== this.context?.key)) throw new Error("This dashboard's project is no longer selected.");
     let r;
     try {
-      r = await exec("trk", ["--json", ...args], { cwd: cwd || undefined, on, timeout });
+      const project = pin ? ["--dir", `${cwd}/.trk`] : [];
+      r = await exec("trk", ["--json", ...project, ...args], { cwd: cwd || undefined, on, timeout });
     } catch (e) {
       throw new Error(`cannot run trk: ${e?.message ?? e}`);
     }
@@ -213,10 +223,28 @@ export default class Trk extends View {
     throw new Error(err?.hint ? `${message}\n${err.hint}` : message);
   }
 
+  takeFocus() {
+    const loc = this.location();
+    if (loc.fixed && !loc.cwd) return;
+    this.handle.focus();
+    if (loc.fixed) {
+      this.focusEpoch = loc.epoch;
+      this.fixedFocused = true;
+    }
+  }
+
   /** Follows the shown space. What is on screen stays until the new place answers. */
   follow(cx) {
-    const loc = this.want;
+    const loc = props()?.fixedTab ? this.location() : this.want;
     const key = JSON.stringify(loc);
+    if (loc?.fixed && loc.cwd) {
+      if (this.focusEpoch !== loc.epoch) this.takeFocus();
+      else if (this.fixedFocused && !this.handle.is_focused() && !this.inputFocused) {
+        // Same-pane native focus need not change model facts or cause a render.
+        setShared("trk-tabs.reveal", { space: loc.space, epoch: loc.epoch });
+      }
+      this.fixedFocused = this.handle.is_focused() || this.inputFocused;
+    }
     if (!loc || this.context?.key === key) return;
     this.context = { key, ...loc, root: null };
     this.load(cx, true);
@@ -224,7 +252,9 @@ export default class Trk extends View {
 
   /** A different project starts over; another folder of the same one keeps the selection. */
   enter(root) {
-    if (this.root === root) return;
+    const project = JSON.stringify([this.context?.on ?? null, root]);
+    if (this.project === project) return;
+    this.project = project;
     this.publish(this.root, 0);
     this.root = root;
     this.detail = null;
@@ -731,36 +761,17 @@ export default class Trk extends View {
         .child(`Group: ${this.group === "epic" ? "Epic" : "Off"}`));
   }
 
-  openDashboard() {
-    const space = spaces().find((s) => s.active);
-    if (!space) return;
-    const tabs = new Set(space.tabs.map((tab) => tab.id));
-    const panel = panes().find((p) => p.mod === "trk" && tabs.has(p.tab));
-    if (panel) {
-      run("tab.select", { id: panel.tab });
-      run("pane.focus", { pane: panel.pane });
-    } else {
-      run("tab.new", { name: "trk dashboard", space: space.id, mod: "trk" });
-    }
-  }
-
-  launcher(t) {
-    const collapsed = (layout()?.children?.find((n) => n.id === "sidebar")?.size?.px ?? 268) < 160;
-    return v_flex().size_full().bg(t.chrome).px(8).pt(4).text_size(13)
-      .when(collapsed, (el) => el.px(0).items_center())
-      .child(h_flex().id("trk-dashboard").h(28).px(8).gap(9).items_center().rounded(8)
-        .when(collapsed, (el) => el.w(32).px(0).justify_center())
-        .tooltip("Open trk dashboard").text_color(t.muted)
-        .hover((s) => s.bg(t.hover).text_color(t.foreground)).cursor_pointer()
-        .on_click(() => this.openDashboard())
-        .child(svg("mods/trk/dashboard.svg").size(14))
-        .when(!collapsed, (el) => el.child("trk dashboard")));
-  }
-
   render() {
     const t = theme();
-    if (props()?.launcher) return this.launcher(t);
     this.want = this.location();
+    if (props()?.fixedTab) {
+      // Never paint the previous project's data while a space switch is loading.
+      if (JSON.stringify(this.want) !== this.context?.key) {
+        this.data = null;
+        this.detail = null;
+        this.error = null;
+      }
+    }
     this.agentsBy = new Map(agents().map((a) => [a.address, a]));
     this.panesBy = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p]));
     this.liveTerminals = new Set(terminals().filter((x) => x.state === "live").map((x) => x.address));
@@ -769,7 +780,7 @@ export default class Trk extends View {
     const root = v_flex().id("trk").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
       .size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(12.8);
-    const name = (this.context?.root ?? this.context?.cwd ?? "").split("/").filter(Boolean).pop() ?? "";
+    const name = (props()?.fixedTab ? this.want.cwd ?? "" : this.context?.root ?? this.context?.cwd ?? "").split("/").filter(Boolean).pop() ?? "";
     root.child(this.header(t, name)).child(this.sortRow(t));
 
     if (!this.data) {

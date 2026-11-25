@@ -1,19 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="320" height="200" viewBox="0 0 320 200" fill="none">
-  <rect width="320" height="200" rx="8" fill="#131619"/>
-  <rect x="0" y="0" width="118" height="200" fill="#17191c"/>
-  <rect x="118" y="0" width="1" height="200" fill="#25282c"/>
-  <rect x="10" y="12" width="26" height="6" rx="3" fill="#e8e9eb"/>
-  <rect x="10" y="32" width="40" height="4" rx="2" fill="#e5484d"/>
-  <rect x="10" y="44" width="98" height="10" rx="3" fill="#202225"/>
-  <rect x="10" y="66" width="34" height="4" rx="2" fill="#3b82f6"/>
-  <rect x="10" y="78" width="98" height="10" rx="3" fill="#202225"/>
-  <rect x="10" y="92" width="98" height="10" rx="3" fill="#202225"/>
-  <rect x="10" y="114" width="30" height="4" rx="2" fill="#8b8f95"/>
-  <rect x="10" y="126" width="98" height="10" rx="3" fill="#202225"/>
-  <rect x="10" y="140" width="98" height="10" rx="3" fill="#202225"/>
-  <rect x="132" y="16" width="120" height="4" rx="2" fill="#a9adb3"/>
-  <rect x="132" y="28" width="164" height="4" rx="2" fill="#8b8f95"/>
-  <rect x="132" y="40" width="96" height="4" rx="2" fill="#8b8f95"/>
-  <rect x="132" y="52" width="140" height="4" rx="2" fill="#8b8f95"/>
-  <rect x="132" y="176" width="8" height="10" fill="#e8e9eb"/>
+  <rect x="1" y="1" width="318" height="198" rx="8" stroke="currentColor"/>
+  <path d="M70 1v198M70 32h249M70 181h249" stroke="currentColor" opacity=".3"/>
+  <rect x="77" y="8" width="83" height="18" rx="4" stroke="currentColor"/>
+  <text x="84" y="20" fill="currentColor" font-family="sans-serif" font-size="10">trk dashboard</text>
+  <text x="174" y="20" fill="currentColor" font-family="sans-serif" font-size="10" opacity=".6">Terminal  +</text>
+  <text x="10" y="24" fill="currentColor" font-family="sans-serif" font-size="10">Spaces</text>
+  <path d="M12 39h42M12 53h36M12 67h40M12 113h40M12 127h34M12 141h40" stroke="currentColor" opacity=".3" stroke-width="4"/>
+  <text x="83" y="55" fill="currentColor" font-family="sans-serif" font-size="12">Project</text>
+  <path d="M83 72h90M83 94h210M83 111h210M83 139h210M83 156h210" stroke="currentColor" opacity=".25" stroke-width="8"/>
 </svg>

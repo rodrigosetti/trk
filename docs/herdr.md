@@ -36,7 +36,7 @@ A blocked row's `by` hint includes each blocker's epic when different from its o
 (including **No epic** for an unassigned blocker).
 Keyboard navigation follows the displayed issue order, skipping both header levels.
 Changing sort or toggling grouping keeps the selected issue and its details.
-Sort and grouping state are in memory per panel, not saved; the sidebar launcher is unchanged.
+Sort and grouping state are in memory per panel, not saved.
 
 That is the whole setup. Herdr mods are machine-wide and a space shows one once a pane or tab
 there holds it, so `open` does both steps: it installs or refreshes the mod when needed, then
@@ -46,22 +46,51 @@ restarts, until you close it in Herdr. Opening again goes to the panel that is t
 where you never open it are untouched.
 
 ```sh
-trk herdr install [--layout]     # only the mod; --layout adds the sidebar and split layouts
-trk herdr uninstall              # remove the mod and layouts unless you edited them
+trk herdr install                # install both mods and the single trk layout; does not activate it
+herdr-app do layout.switch --name trk
+herdr-app do layout.switch --name main  # revert to stock Herdr
+trk herdr uninstall              # remove mods and unedited layout; preserve personal overrides
 ```
 
-- For a **trk dashboard** button above Settings in Herdr's sidebar:
-  run `trk herdr install --layout`, then `herdr-app do layout.switch --name main-trk`.
-  The button opens the dashboard for the shown space, or focuses its existing trk panel.
-  Unpinned panels follow that space's first terminal with a live folder, in tab order—not
-  keyboard focus or the space's original creation folder. With no live folder, they use
-  the space folder.
-  A collapsed sidebar shows just the icon. `main-trk` is a personal copy of Herdr's layout;
-  the shipped `main` layout is untouched. Switch back with `herdr-app do layout.switch --name main`.
-- `./install.sh` and `trk install` refresh an installed mod, so it never lags the binary; neither
-  installs it. The mod folder is trk's and is rewritten; the layouts are yours once written.
-- The `trk` layout (`herdr-app do layout.switch --name trk`) shows issues on the left and the
-  selected issue's live session on the right. It follows the shown space's project.
+- The **trk** layout adds a fixed first dashboard tab to each space whose project has its own
+  `.trk` database and is not a linked Git worktree. This virtual entry has no close control
+  or drag behavior; the layout's close shortcuts ignore it. Other spaces retain ordinary tabs.
+  The project follows the space's first live terminal folder in tab order, falling back to its
+  creation folder, never keyboard focus. Git metadata and physical paths distinguish linked
+  worktrees from primary checkouts; only the resolved root's real `.trk/trk.db` qualifies.
+  Non-Git folders must have their own database, not an ancestor's.
+  Selection is remembered per space while the layout is active; discovering a database never
+  selects its dashboard. Existing dashboard tabs, terminals, names, ordering and splits stay put.
+  The dashboard pins `--dir <root>/.trk` and the space's machine; remote probes never fall back
+  to local paths. Unsupported shells or unreachable machines fail closed with ordinary tabs.
+  Probes are asynchronous, cached, invalidated by project changes/local filesystem events,
+  and rechecked at most once a minute when idle (also the remote fallback).
+- Plain `trk herdr install` installs this layout and its `trk-tabs` companion. Activation is
+  separate: `herdr-app do layout.switch --name trk`; revert with
+  `herdr-app do layout.switch --name main`. Stock `main` and unrelated layouts are untouched.
+- Installation replaces the former split-view `trk` and sidebar-button `main-trk` variants.
+  Previous layout files and their saved layout state are backed up under
+  `~/.config/herdr-app/backups/trk-layouts/`, outside the selectable layouts directory.
+  A previously selected `main-trk` migrates to `trk` through the running app; when the app
+  is closed, only its persisted selection is migrated. Other layout selections are unchanged.
+- Keyboard wrappers are derived from your existing global and `layout:trk` actions and written
+  **only** to `layout:trk` in `keys.json`, never global overrides. Custom unrelated bindings
+  and other sections survive. No guessed platform defaults are installed when keys are absent.
+  Tab navigation includes the fixed first tab; closing it is ignored. Opening/navigation actions
+  return to native tabs as appropriate. Uninstall removes matching generated wrappers, restoring
+  native layout actions when needed, and preserves personal overrides.
+  On macOS this preserves Cmd+1…9, Ctrl+Tab / Ctrl+Shift+Tab, Cmd+Shift+[ / ], Cmd+W and
+  Cmd+Shift+W in this layout, routing them through the virtual-tab dispatcher. Other platforms
+  retain their existing equivalents. More-specific personal terminal/mod bindings still win.
+  **Native menus and direct built-in commands bypass these wrappers:** closing a tab/pane there
+  can end the underlying terminal even while the virtual dashboard is shown. Herdr has no
+  command-veto API; this layout does not change those native command semantics.
+  Switch back to `main` before uninstalling.
+- `./install.sh` and `trk install` refresh installed mods and migrate their layout; neither
+  installs into a Herdr setup without trk. Both mod folders are machine-owned, while symlinked
+  development copies are left alone. Legacy edited layouts are backed up before replacement;
+  edits to the current `trk` layout survive later installs and refreshes. A machine snapshot
+  under `backups/trk-layouts/installed.json` distinguishes installed files from personal edits.
 - Issues are grouped as in the dashboard. A session whose agent Herdr reports as blocked moves to
   **Needs you**; a working one shows a spinner. New needs-you issues post a toast, and the Dock
   badge counts them across the projects shown.
@@ -90,6 +119,6 @@ trk herdr uninstall              # remove the mod and layouts unless you edited 
   Invalid sort values fall back to Priority ascending. Set `"group": "epic"` to start
   with epic grouping on; omitted or other values start flat. For example:
   `herdr-app do tab.new --mod trk --props '{"sort": "updated", "group": "epic"}'`.
-  Run the panel's location, sorting, and grouping regressions with
+  Run the dashboard's location, sorting, and grouping regressions with
   `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
 

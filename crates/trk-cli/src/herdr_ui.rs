@@ -7,8 +7,8 @@
 //! (`trk herdr open`); Herdr keeps that pane with its tab, so the panel
 //! stays in the space until it is closed.
 //!
-//! The mod folder (`mods/trk/`) is trk's and is rewritten on install. The
-//! layouts are opt-in and the person's once written.
+//! Both mod folders (`mods/trk/`, `mods/trk-tabs/`) are machine-owned.
+//! The single trk layout is installed separately from activation; upgrades back up old copies.
 
 use std::path::{Path, PathBuf};
 
@@ -35,15 +35,304 @@ const MOD_FILES: &[(&str, &str)] = &[
     ),
 ];
 
+const TABS_FILES: &[(&str, &str)] = &[
+    (
+        "main.js",
+        include_str!("../../../herdr/mods/trk-tabs/main.js"),
+    ),
+    (
+        "mod.json",
+        include_str!("../../../herdr/mods/trk-tabs/mod.json"),
+    ),
+    (
+        "project.js",
+        include_str!("../../../herdr/mods/trk-tabs/project.js"),
+    ),
+];
+
 /// The layout's files, relative to `layouts/`; the layout itself first.
 const LAYOUT_FILES: &[(&str, &str)] = &[
     ("trk.json", include_str!("../../../herdr/layouts/trk.json")),
     ("trk.svg", include_str!("../../../herdr/layouts/trk.svg")),
-    (
-        "main-trk.json",
-        include_str!("../../../herdr/layouts/main-trk.json"),
-    ),
 ];
+
+const MODS: &[(&str, &[(&str, &str)])] = &[("trk", MOD_FILES), ("trk-tabs", TABS_FILES)];
+
+const KEY_SECTION: &str = "layout:trk";
+const DISPATCH: &str = "trk-tabs.dispatch:";
+
+fn native_action(action: &Value) -> Option<Value> {
+    let (command, args) = if let Some(action) = action.as_str() {
+        let (command, argument) = action.split_once(':').unwrap_or((action, ""));
+        let mut args = Map::new();
+        if !argument.is_empty() {
+            let name = match command {
+                "tab.select" | "agent.select" => "index",
+                "pane.split" | "pane.go" => "direction",
+                _ => return None,
+            };
+            let value = if name == "index" {
+                json!(argument.parse::<u64>().ok()?)
+            } else {
+                json!(argument)
+            };
+            args.insert(name.into(), value);
+        }
+        (command, Value::Object(args))
+    } else {
+        (
+            action.get("command")?.as_str()?,
+            action.get("args").cloned().unwrap_or(json!({})),
+        )
+    };
+    if !matches!(
+        command,
+        "tab.next"
+            | "tab.prev"
+            | "tab.select"
+            | "tab.close"
+            | "pane.close"
+            | "space.close"
+            | "tab.new"
+            | "pane.split"
+            | "terminal.open"
+            | "agent.next"
+            | "agent.prev"
+            | "agent.select"
+            | "pane.go"
+            | "tab.rename"
+    ) {
+        return None;
+    }
+    if command == "tab.select" && !args.get("index").is_some_and(Value::is_u64) {
+        return None;
+    }
+    Some(json!({"command": command, "args": args}))
+}
+
+fn read_keys(app: &Path) -> Result<Value> {
+    let path = app.join("keys.json");
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    serde_json::from_str(&std::fs::read_to_string(path)?)
+        .map_err(|e| bad_args(format!("invalid Herdr keys.json: {e}")))
+}
+
+fn write_keys(app: &Path, keys: &Value) -> Result<()> {
+    std::fs::write(
+        app.join("keys.json"),
+        format!("{}\n", serde_json::to_string_pretty(keys).unwrap()),
+    )?;
+    Ok(())
+}
+
+fn install_keys(app: &Path) -> Result<()> {
+    let mut keys = read_keys(app)?;
+    let before = keys.clone();
+    let root = keys
+        .as_object_mut()
+        .ok_or_else(|| bad_args("Herdr keys.json must be an object"))?;
+    let mut effective = root
+        .get("global")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(local) = root.get(KEY_SECTION).and_then(Value::as_object) {
+        effective.extend(local.clone());
+    }
+    let local = root
+        .entry(KEY_SECTION)
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| bad_args("Herdr layout:trk bindings must be an object"))?;
+    for (key, action) in effective {
+        if let Some(native) = native_action(&action) {
+            local.insert(key, json!(format!("{DISPATCH}{native}")));
+        }
+    }
+    if keys != before {
+        write_keys(app, &keys)?;
+    }
+    Ok(())
+}
+
+fn uninstall_keys(app: &Path) -> Result<()> {
+    if !app.join("keys.json").exists() {
+        return Ok(());
+    }
+    let mut keys = read_keys(app)?;
+    let global = keys
+        .get("global")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(local) = keys.get_mut(KEY_SECTION).and_then(Value::as_object_mut) {
+        let replacements: Vec<_> = local
+            .iter()
+            .filter_map(|(key, action)| {
+                let encoded = action.as_str()?.strip_prefix(DISPATCH)?;
+                let native: Value = serde_json::from_str(encoded).ok()?;
+                if native_action(&native).as_ref() != Some(&native)
+                    || format!("{DISPATCH}{native}") != action.as_str()?
+                {
+                    return None;
+                }
+                Some((key.clone(), native))
+            })
+            .collect();
+        for (key, native) in replacements {
+            if global.get(&key).and_then(native_action).as_ref() == Some(&native) {
+                local.remove(&key);
+            } else {
+                local.insert(key, native);
+            }
+        }
+    }
+    if keys
+        .get(KEY_SECTION)
+        .and_then(Value::as_object)
+        .is_some_and(Map::is_empty)
+    {
+        keys.as_object_mut().unwrap().remove(KEY_SECTION);
+    }
+    write_keys(app, &keys)
+}
+
+fn migrate_selection(
+    app: &Path,
+    mut run: impl FnMut(&[&str]) -> std::io::Result<std::process::Output>,
+) -> Result<()> {
+    let legacy = |name: &str| matches!(name, "main-trk" | "main-trk-tabs");
+    if let Ok(status) = run(&["status"]) {
+        if status.status.success() {
+            let status: Value = serde_json::from_slice(&status.stdout)
+                .map_err(|e| bad_args(format!("invalid Herdr status: {e}")))?;
+            if status["layout"].as_str().is_some_and(legacy) {
+                let switched = run(&["do", "layout.switch", "--name", "trk"])?;
+                if !switched.status.success() {
+                    return Err(herdr(format!(
+                        "cannot migrate active Herdr layout: {}",
+                        String::from_utf8_lossy(&switched.stderr)
+                    )));
+                }
+            }
+            // The running app owns shared.json; never rewrite its snapshot.
+            return Ok(());
+        }
+    }
+    let shared_path = app.join("shared.json");
+    if shared_path.exists() {
+        let mut shared: Value = serde_json::from_str(&std::fs::read_to_string(&shared_path)?)
+            .map_err(|e| bad_args(format!("invalid Herdr shared.json: {e}")))?;
+        if shared["layout"].as_str().is_some_and(legacy) {
+            shared["layout"] = json!("trk");
+            let temporary = tempfile::NamedTempFile::new_in(app)?;
+            std::fs::write(
+                temporary.path(),
+                serde_json::to_vec_pretty(&shared).unwrap(),
+            )?;
+            temporary.persist(&shared_path).map_err(|e| e.error)?;
+        }
+    }
+    Ok(())
+}
+
+fn contains_tabs(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            object.get("mod").and_then(Value::as_str) == Some("trk-tabs")
+                || object.values().any(contains_tabs)
+        }
+        Value::Array(values) => values.iter().any(contains_tabs),
+        _ => false,
+    }
+}
+
+fn install_layout(app: &Path) -> Result<()> {
+    std::fs::create_dir_all(app.join("layouts"))?;
+    let manifest_path = app.join("backups/trk-layouts/installed.json");
+    let previous: Value = std::fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(json!({}));
+    let current_layout = std::fs::read_to_string(app.join("layouts/trk.json")).ok();
+    let new_layout = current_layout.as_ref().is_some_and(|text| {
+        serde_json::from_str(text)
+            .ok()
+            .as_ref()
+            .is_some_and(contains_tabs)
+    });
+    let mut preserved = Vec::new();
+    // Retire legacy selectable layouts, retaining personal copies outside layouts/.
+    for rel in [
+        "trk.json",
+        "trk.svg",
+        "main-trk.json",
+        "main-trk.svg",
+        "main-trk-tabs.json",
+        "main-trk-tabs.svg",
+    ] {
+        let path = app.join("layouts").join(rel);
+        if !path.exists() && !path.is_symlink() {
+            continue;
+        }
+        if rel.starts_with("trk.")
+            && (previous
+                .get(rel)
+                .and_then(Value::as_str)
+                .is_some_and(|installed| !same(&path, installed))
+                || (previous.get(rel).is_none() && new_layout))
+        {
+            preserved.push(rel);
+            continue;
+        }
+        if LAYOUT_FILES
+            .iter()
+            .any(|(name, content)| *name == rel && same(&path, content))
+        {
+            continue;
+        }
+        let backup_dir = app.join("backups/trk-layouts");
+        std::fs::create_dir_all(&backup_dir)?;
+        let mut backup = backup_dir.join(rel);
+        let mut version = 1;
+        while backup.exists() || backup.is_symlink() {
+            backup = backup_dir.join(format!("{rel}.{version}"));
+            version += 1;
+        }
+        std::fs::rename(path, backup)?;
+        let state = app.join("layouts/.state").join(rel);
+        if state.exists() || state.is_symlink() {
+            let mut state_backup = backup_dir.join(format!("{rel}.state"));
+            let mut version = 1;
+            while state_backup.exists() || state_backup.is_symlink() {
+                state_backup = backup_dir.join(format!("{rel}.state.{version}"));
+                version += 1;
+            }
+            std::fs::rename(state, state_backup)?;
+        }
+    }
+    for (rel, content) in LAYOUT_FILES {
+        let path = app.join("layouts").join(rel);
+        if !preserved.contains(rel) && !same(&path, content) {
+            std::fs::write(path, content)?;
+        }
+    }
+    install_keys(app)?;
+    std::fs::create_dir_all(manifest_path.parent().unwrap())?;
+    let manifest: Map<String, Value> = LAYOUT_FILES
+        .iter()
+        .map(|(rel, content)| ((*rel).into(), json!(content)))
+        .collect();
+    std::fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap())?;
+    migrate_selection(app, |args| {
+        std::process::Command::new("herdr-app")
+            .args(args)
+            .env("HERDR_APP_HOME", app)
+            .output()
+    })
+}
 
 /// The panels `trk herdr open` made, by space, in the project's `.trk/`.
 const PANELS_FILE: &str = "herdr.json";
@@ -70,51 +359,64 @@ fn no_herdr(app: &Path) -> Error {
 /// "absent" (no Herdr), "missing", "current", "outdated", or "linked" (a
 /// symlink, e.g. a development copy).
 pub fn state(app: &Path) -> &'static str {
-    let dir = app.join("mods").join(MOD);
     if !app.join("mods").is_dir() {
-        "absent"
-    } else if dir.is_symlink() {
-        "linked"
-    } else if !dir.join("main.js").exists() {
-        "missing"
-    } else if MOD_FILES.iter().all(|(rel, c)| same(&dir.join(rel), c)) {
-        "current"
-    } else {
+        return "absent";
+    }
+    if !app.join("mods/trk/main.js").exists() && !app.join("mods/trk").is_symlink() {
+        return "missing";
+    }
+    if MODS.iter().any(|(name, files)| {
+        let dir = app.join("mods").join(name);
+        !dir.is_symlink()
+            && !files
+                .iter()
+                .all(|(rel, content)| same(&dir.join(rel), content))
+    }) {
         "outdated"
+    } else if MODS
+        .iter()
+        .any(|(name, _)| app.join("mods").join(name).is_symlink())
+    {
+        "linked"
+    } else {
+        "current"
     }
 }
 
 /// Write the mod's files; what happened, in a line.
 fn write_mod(app: &Path) -> Result<String> {
-    let dir = app.join("mods").join(MOD);
     let before = state(app);
-    if before == "linked" {
-        return Ok(format!(
-            "{} is a symlink (a development copy?); left alone",
+    let mut lines = Vec::new();
+    for (name, files) in MODS {
+        let dir = app.join("mods").join(name);
+        if dir.is_symlink() {
+            lines.push(format!(
+                "{} is a symlink (a development copy?); left alone",
+                dir.display()
+            ));
+            continue;
+        }
+        std::fs::create_dir_all(&dir)?;
+        for (rel, content) in *files {
+            let path = dir.join(rel);
+            if !same(&path, content) {
+                std::fs::write(path, content)?;
+            }
+        }
+        lines.push(format!(
+            "mod {} at {}",
+            if before == "current" {
+                "already current"
+            } else {
+                "updated"
+            },
             dir.display()
         ));
     }
-    std::fs::create_dir_all(&dir)?;
-    // Only what changed: Herdr reloads the mod on every save, and keeps
-    // files of its own in the folder.
-    for (rel, content) in MOD_FILES {
-        let p = dir.join(rel);
-        if !same(&p, content) {
-            std::fs::write(&p, content)?;
-        }
-    }
-    Ok(match before {
-        "current" => format!("mod already current at {}", dir.display()),
-        "missing" => format!("mod installed at {}", dir.display()),
-        _ => format!("mod updated at {}", dir.display()),
-    })
+    Ok(lines.join("\n          "))
 }
 
 pub struct InstallOpts {
-    /// Also write the split-view and sidebar-launcher layouts.
-    pub layout: bool,
-    /// Overwrite a layout that differs.
-    pub force: bool,
     /// Do nothing unless the mod is installed already.
     pub if_installed: bool,
 }
@@ -133,27 +435,10 @@ pub fn install(app: &Path, opts: InstallOpts) -> Result<Out> {
     }
     let mut lines = vec![write_mod(app)?];
     let layout = app.join("layouts/trk.json");
-    let mut layout_state = "skipped";
-    if opts.layout {
-        std::fs::create_dir_all(app.join("layouts"))?;
-        layout_state = "written";
-        for (rel, content) in LAYOUT_FILES {
-            let path = app.join("layouts").join(rel);
-            if path.exists() && !opts.force && !same(&path, content) {
-                lines.push(format!(
-                    "layout kept at {} (differs from this trk's; --force to overwrite)",
-                    path.display()
-                ));
-                layout_state = "kept";
-            } else {
-                std::fs::write(&path, content)?;
-            }
-        }
-        lines.push(
-            "layouts available: herdr-app do layout.switch --name main-trk (sidebar button), or --name trk (split view)"
-                .into(),
-        );
-    }
+    install_layout(app)?;
+    let layout_state = "written";
+    lines.push("layout installed (not activated): herdr-app do layout.switch --name trk; revert: herdr-app do layout.switch --name main".into());
+    lines.push("keys: only layout:trk bindings changed; edited legacy layouts backed up under backups/trk-layouts/".into());
     let mut text = format!("herdr     {}", lines.join("\n          "));
     if !opts.if_installed {
         text.push_str(&format!(
@@ -175,29 +460,33 @@ pub fn refresh(app: &Path) -> Result<Option<(String, Value)>> {
     let line = match before {
         "absent" => return Ok(None),
         "missing" => "Herdr found: `trk herdr open` shows the dashboard as a panel there".into(),
-        _ => write_mod(app)?,
+        _ => {
+            let line = write_mod(app)?;
+            install_layout(app)?;
+            line
+        }
     };
     Ok(Some((line, json!({"mod_state": state(app)}))))
 }
 
 /// `trk herdr uninstall`.
 pub fn uninstall(app: &Path, force: bool) -> Result<Out> {
-    let dir = app.join("mods").join(MOD);
     let mut lines = vec![];
-    let removed = if dir.is_symlink() {
-        lines.push(format!(
-            "{} is a symlink (a development copy?); left alone",
-            dir.display()
-        ));
-        false
-    } else if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
-        lines.push(format!("mod removed from {}", dir.display()));
-        true
-    } else {
-        lines.push("mod was not installed".into());
-        false
-    };
+    let mut removed = false;
+    for (name, _) in MODS {
+        let dir = app.join("mods").join(name);
+        if dir.is_symlink() {
+            lines.push(format!(
+                "{} is a symlink (a development copy?); left alone",
+                dir.display()
+            ));
+        } else if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+            lines.push(format!("mod removed from {}", dir.display()));
+            removed = true;
+        }
+    }
+    uninstall_keys(app)?;
     let mut layout_state = "absent";
     for (rel, content) in LAYOUT_FILES {
         let path = app.join("layouts").join(rel);
@@ -413,12 +702,8 @@ pub fn open(env: &Env, app: &Path, place: Place, space: Option<&str>) -> Result<
 mod tests {
     use super::*;
 
-    fn opts(layout: bool, force: bool, if_installed: bool) -> InstallOpts {
-        InstallOpts {
-            layout,
-            force,
-            if_installed,
-        }
+    fn opts(if_installed: bool) -> InstallOpts {
+        InstallOpts { if_installed }
     }
 
     fn data(out: Out) -> Value {
@@ -434,83 +719,197 @@ mod tests {
         tmp
     }
 
+    #[cfg(unix)]
     #[test]
-    fn nothing_is_written_without_herdr() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(state(tmp.path()), "absent");
-        assert!(install(tmp.path(), opts(true, false, false)).is_err());
-        assert!(refresh(tmp.path()).unwrap().is_none());
-        let v = data(install(tmp.path(), opts(false, false, true)).unwrap());
-        assert_eq!(v["changed"], false);
-        assert!(!tmp.path().join("mods").exists());
+    fn selection_migration_uses_live_commands_without_rewriting_shared() {
+        use std::os::unix::process::ExitStatusExt;
+        let tmp = herdr_home();
+        let path = tmp.path().join("shared.json");
+        let persisted = r#"{"layout":"main-trk","unrelated":42}"#;
+        std::fs::write(&path, persisted).unwrap();
+        for layout in ["main", "main-trk", "main-trk-tabs"] {
+            let mut calls = Vec::new();
+            migrate_selection(tmp.path(), |args| {
+                calls.push(args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>());
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(0),
+                    stdout: serde_json::to_vec(&json!({"layout":layout})).unwrap(),
+                    stderr: Vec::new(),
+                })
+            })
+            .unwrap();
+            assert_eq!(calls.len(), if layout == "main" { 1 } else { 2 });
+            if calls.len() == 2 {
+                assert_eq!(calls[1], ["do", "layout.switch", "--name", "trk"]);
+            }
+            assert!(same(&path, persisted));
+        }
+        migrate_selection(tmp.path(), |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::NotConnected))
+        })
+        .unwrap();
+        let shared: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(shared, json!({"layout":"trk","unrelated":42}));
     }
 
     #[test]
-    fn the_mod_is_installed_on_request_and_only_refreshed_otherwise() {
+    fn refresh_preserves_personal_edits_to_the_current_layout() {
+        let tmp = herdr_home();
+        install(tmp.path(), opts(false)).unwrap();
+        let layout = tmp.path().join("layouts/trk.json");
+        let mut personal: Value =
+            serde_json::from_str(&std::fs::read_to_string(&layout).unwrap()).unwrap();
+        personal["personal"] = json!(true);
+        let text = serde_json::to_string(&personal).unwrap();
+        std::fs::write(&layout, &text).unwrap();
+        refresh(tmp.path()).unwrap();
+        install(tmp.path(), opts(false)).unwrap();
+        assert!(same(&layout, &text));
+        assert!(!tmp.path().join("backups/trk-layouts/trk.json").exists());
+    }
+
+    #[test]
+    fn absent_herdr_is_never_created_and_uninstall_preserves_edited_layout() {
+        let absent = tempfile::tempdir().unwrap();
+        assert!(install(absent.path(), opts(false)).is_err());
+        assert!(refresh(absent.path()).unwrap().is_none());
+        assert_eq!(
+            data(install(absent.path(), opts(true)).unwrap())["changed"],
+            false
+        );
+        assert!(!absent.path().join("mods").exists());
+
+        let tmp = herdr_home();
+        install(tmp.path(), opts(false)).unwrap();
+        std::fs::write(tmp.path().join("layouts/trk.json"), "{\"mine\":true}").unwrap();
+        uninstall(tmp.path(), false).unwrap();
+        assert!(same(
+            &tmp.path().join("layouts/trk.json"),
+            "{\"mine\":true}"
+        ));
+        uninstall(tmp.path(), true).unwrap();
+        assert!(!tmp.path().join("layouts/trk.json").exists());
+    }
+
+    #[test]
+    fn install_refresh_and_uninstall_manage_both_mods_and_one_layout() {
         let tmp = herdr_home();
         let app = tmp.path();
-
-        // `trk install` and `--if-installed` leave a Herdr without the mod alone.
-        let (hint, _) = refresh(app).unwrap().unwrap();
-        assert!(hint.contains("trk herdr open"), "{hint}");
-        data(install(app, opts(false, false, true)).unwrap());
+        refresh(app).unwrap();
+        assert!(!app.join("mods/trk-tabs").exists());
+        install(app, opts(true)).unwrap();
         assert_eq!(state(app), "missing");
-
-        let v = data(install(app, opts(false, false, false)).unwrap());
-        assert_eq!(v["mod_state"], "current");
-        assert_eq!(v["layout_state"], "skipped");
-        assert!(!app.join("layouts/trk.json").exists());
-
-        // Herdr's own files in the mod folder survive a refresh.
-        std::fs::write(app.join("mods/trk/jsconfig.json"), "{}").unwrap();
-        std::fs::write(app.join("mods/trk/main.js"), "stale").unwrap();
-        assert_eq!(state(app), "outdated");
-        let (line, _) = refresh(app).unwrap().unwrap();
-        assert!(line.contains("updated"), "{line}");
+        install(app, opts(false)).unwrap();
         assert_eq!(state(app), "current");
-        assert!(app.join("mods/trk/jsconfig.json").exists());
-    }
-
-    #[test]
-    fn the_layout_is_opt_in_and_an_edited_one_is_kept() {
-        let tmp = herdr_home();
-        let app = tmp.path();
-        let layout = app.join("layouts/trk.json");
-
-        let v = data(install(app, opts(true, false, false)).unwrap());
-        assert_eq!(v["layout_state"], "written");
-        std::fs::write(&layout, "{\"mine\": true}").unwrap();
-        let v = data(install(app, opts(true, false, false)).unwrap());
-        assert_eq!(v["layout_state"], "kept");
-        assert!(same(&layout, "{\"mine\": true}"));
-
-        // Uninstall keeps the edited layout too, unless forced.
-        let v = data(uninstall(app, false).unwrap());
-        assert_eq!(v["removed"], true);
-        assert_eq!(v["layout_state"], "kept");
+        for (name, files) in MODS {
+            for (rel, content) in *files {
+                assert!(same(&app.join("mods").join(name).join(rel), content));
+            }
+        }
+        assert!(app.join("layouts/trk.json").exists());
+        assert!(!app.join("layouts/main-trk.json").exists());
+        std::fs::write(app.join("mods/trk-tabs/project.js"), "old").unwrap();
+        std::fs::write(app.join("mods/trk-tabs/personal"), "mine").unwrap();
+        assert_eq!(state(app), "outdated");
+        refresh(app).unwrap();
+        assert_eq!(state(app), "current");
+        assert!(same(&app.join("mods/trk-tabs/personal"), "mine"));
+        uninstall(app, false).unwrap();
         assert!(!app.join("mods/trk").exists());
-        let v = data(uninstall(app, true).unwrap());
-        assert_eq!(v["removed"], false);
-        assert_eq!(v["layout_state"], "removed");
-        assert!(!layout.exists() && !app.join("layouts/trk.svg").exists());
+        assert!(!app.join("mods/trk-tabs").exists());
+        assert!(!app.join("layouts/trk.json").exists());
     }
 
     #[test]
-    fn an_edited_sidebar_layout_survives_install_and_uninstall() {
+    fn upgrade_backs_up_personal_layouts_and_migrates_active_legacy_layout() {
         let tmp = herdr_home();
         let app = tmp.path();
-        let sidebar = app.join("layouts/main-trk.json");
-        data(install(app, opts(true, false, false)).unwrap());
-        assert!(sidebar.exists());
-        std::fs::write(&sidebar, "{\"mine\": true}").unwrap();
-        let v = data(install(app, opts(true, false, false)).unwrap());
-        assert_eq!(v["layout_state"], "kept");
-        assert!(same(&sidebar, "{\"mine\": true}"));
-        let v = data(uninstall(app, false).unwrap());
-        assert_eq!(v["layout_state"], "kept");
-        assert!(same(&sidebar, "{\"mine\": true}"));
-        data(uninstall(app, true).unwrap());
-        assert!(!sidebar.exists());
+        std::fs::create_dir_all(app.join("layouts/.state")).unwrap();
+        for rel in [
+            "trk.json",
+            "main-trk.json",
+            ".state/trk.json",
+            ".state/main-trk.json",
+        ] {
+            std::fs::write(app.join("layouts").join(rel), "{\"personal\":true}").unwrap();
+        }
+        std::fs::write(app.join("layouts/main.json"), "stock").unwrap();
+        std::fs::write(app.join("layouts/personal.json"), "personal").unwrap();
+        std::fs::write(
+            app.join("shared.json"),
+            r#"{"layout":"main-trk","other":7}"#,
+        )
+        .unwrap();
+        install(app, opts(false)).unwrap();
+        assert!(same(
+            &app.join("backups/trk-layouts/trk.json"),
+            "{\"personal\":true}"
+        ));
+        assert!(same(
+            &app.join("backups/trk-layouts/main-trk.json"),
+            "{\"personal\":true}"
+        ));
+        assert!(app.join("backups/trk-layouts/trk.json.state").exists());
+        assert!(!app.join("layouts/.state/trk.json").exists());
+        assert!(!app.join("layouts/main-trk.json").exists());
+        assert!(same(&app.join("layouts/main.json"), "stock"));
+        assert!(same(&app.join("layouts/personal.json"), "personal"));
+        let shared: Value =
+            serde_json::from_str(&std::fs::read_to_string(app.join("shared.json")).unwrap())
+                .unwrap();
+        assert_eq!(shared, json!({"layout":"trk","other":7}));
+        install(app, opts(false)).unwrap();
+        assert!(!app.join("backups/trk-layouts/trk.json.1").exists());
+    }
+
+    #[test]
+    fn layout_bindings_wrap_effective_actions_and_uninstall_preserves_overrides() {
+        let tmp = herdr_home();
+        let app = tmp.path();
+        let original = json!({
+            "global": {"next":"tab.next", "select":"tab.select:2", "split":"pane.split:right", "close":"tab.close"},
+            "layout:other": {"next":"personal.command"},
+            "layout:trk": {"next":"personal.next", "local":{"command":"pane.go","args":{"direction":"left","extra":true}}}
+        });
+        write_keys(app, &original).unwrap();
+        install(app, opts(false)).unwrap();
+        let keys = read_keys(app).unwrap();
+        assert_eq!(keys["global"], original["global"]);
+        assert_eq!(keys["layout:other"], original["layout:other"]);
+        assert_eq!(keys[KEY_SECTION]["next"], "personal.next");
+        let dispatch: Value = serde_json::from_str(
+            keys[KEY_SECTION]["select"]
+                .as_str()
+                .unwrap()
+                .strip_prefix(DISPATCH)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(dispatch, json!({"command":"tab.select","args":{"index":2}}));
+        let mut edited = keys;
+        edited[KEY_SECTION]["close"] = json!("personal.close");
+        write_keys(app, &edited).unwrap();
+        uninstall(app, false).unwrap();
+        let keys = read_keys(app).unwrap();
+        assert_eq!(keys[KEY_SECTION]["close"], "personal.close");
+        assert_eq!(keys[KEY_SECTION]["next"], "personal.next");
+        assert!(keys[KEY_SECTION].get("select").is_none());
+        assert_eq!(keys[KEY_SECTION]["local"], original[KEY_SECTION]["local"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_mods_are_never_overwritten_or_removed() {
+        let tmp = herdr_home();
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("main.js"), "development").unwrap();
+        std::os::unix::fs::symlink(source.path(), tmp.path().join("mods/trk-tabs")).unwrap();
+        install(tmp.path(), opts(false)).unwrap();
+        assert_eq!(state(tmp.path()), "linked");
+        refresh(tmp.path()).unwrap();
+        uninstall(tmp.path(), false).unwrap();
+        assert!(tmp.path().join("mods/trk-tabs").is_symlink());
+        assert!(same(&source.path().join("main.js"), "development"));
     }
 
     fn ui() -> Value {

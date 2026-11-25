@@ -386,10 +386,10 @@ enum Cmd {
     },
     /// The dashboard as a panel in the Herdr app
     #[command(
-        after_help = "The mod is installed once per machine; a Herdr space shows it once a pane or tab\n\
-        there holds it. `trk herdr open` does both: it installs or refreshes the mod when needed,\n\
-        then opens the panel for this project in the space this terminal is in. The panel stays\n\
-        in that space until you close it in Herdr."
+        after_help = "`trk herdr install` installs both mods and the trk layout without activating it.\n\
+        Activate: herdr-app do layout.switch --name trk; revert: --name main.\n\
+        The trk layout adds a fixed first dashboard tab to tracked primary/non-Git spaces.\n\
+        `trk herdr open` instead opens an ordinary, closable project panel as a tab or split."
     )]
     Herdr {
         #[command(subcommand)]
@@ -437,14 +437,8 @@ enum DepCmd {
 
 #[derive(Subcommand)]
 enum HerdrCmd {
-    /// Install or refresh the mod in ~/.config/herdr-app (once per machine)
+    /// Install or refresh both mods and the trk layout (activate with layout.switch --name trk)
     Install {
-        /// Also write layouts: main-trk (sidebar dashboard button) and trk (split view)
-        #[arg(long)]
-        layout: bool,
-        /// Overwrite a layout you have edited
-        #[arg(long)]
-        force: bool,
         /// Only refresh a mod that is installed already (what install.sh runs)
         #[arg(long)]
         if_installed: bool,
@@ -458,7 +452,7 @@ enum HerdrCmd {
         #[arg(long)]
         space: Option<String>,
     },
-    /// Remove the mod and its layouts unless you edited them
+    /// Remove both mods and the unedited trk layout; preserve personal overrides
     Uninstall {
         /// Remove an edited layout too
         #[arg(long)]
@@ -614,20 +608,11 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer) -> Result
     // The mod is machine-wide: installing and removing it need no project.
     let cmd = match cmd {
         Cmd::Herdr {
-            cmd:
-                HerdrCmd::Install {
-                    layout,
-                    force,
-                    if_installed,
-                },
+            cmd: HerdrCmd::Install { if_installed },
         } => {
             return herdr_ui::install(
                 &herdr_ui::app_home(),
-                herdr_ui::InstallOpts {
-                    layout,
-                    force,
-                    if_installed,
-                },
+                herdr_ui::InstallOpts { if_installed },
             );
         }
         Cmd::Herdr {
