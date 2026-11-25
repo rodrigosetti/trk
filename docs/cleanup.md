@@ -18,12 +18,14 @@ Terminals without a recorded launcher profile are normally skipped, including du
 `trk check --watch` sweeps; their independently owned Git resources remain eligible.
 GC invokes the profile's optional `close` operation; Herdr finds the exact recorded
 terminal and closes its containing space, protecting your current space and other issues' active or
-waiting sessions. Legacy claims recording the primary checkout as their working directory
-do not establish ownership of a disposable worktree or branch; their sessions remain
-eligible, and they do not block cleanup of actual issue worktrees recorded by other claims.
-Already-missing worktree paths are reported as absent, even outside today's configured
-directory. Existing worktrees are removed only below the configured worktree directory,
-never the primary checkout or current worktree. Git worktree removal is not forced;
+waiting sessions. Historical claims whose working directory canonically resolves to the
+local primary checkout (including symlink aliases) do not establish ownership of a
+disposable worktree or issue-ID branch; their sessions remain eligible, and they do not
+block cleanup of actual issue worktrees recorded by other claims.
+Already-missing worktree paths are reported as absent before deletion-boundary checks,
+even outside today's configured directory. Existing worktrees are removed only below
+the configured worktree directory, never the primary checkout or current worktree.
+Git worktree removal is not forced;
 branch deletion uses `git branch -d` in the primary checkout, only for the issue-ID branch
 and only after all recorded issue worktrees are removed or absent. Dirty or locked
 worktrees, unmerged branches, existing outside-directory worktrees and other unsafe or

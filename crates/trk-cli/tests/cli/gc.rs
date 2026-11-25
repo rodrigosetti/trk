@@ -461,6 +461,12 @@ fn gc_keeps_worktrees_outside_the_configured_directory() {
     let path = fixture.worktree_at(&id, &outside);
     fixture.claim(&id, Some(&path), "term-target", &fixture.host);
     fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
+    let preview = fixture.run(&["gc", &id, "--dry-run"]);
+    let issue = gc_issue(&preview, &id);
+    gc_status(issue, "worktree", "skipped");
+    gc_status(issue, "branch", "skipped");
+    assert!(path.is_dir());
+    assert!(fixture.branch_exists(&id));
 
     let data = fixture.run(&["gc", &id]);
     let issue = gc_issue(&data, &id);
@@ -657,6 +663,8 @@ fn gc_dry_run_reports_removals_without_changing_resources_or_notes() {
 fn gc_collects_every_historical_local_claim_not_only_the_latest() {
     let fixture = GcEnv::new();
     let id = fixture.e.create(&["Closed issue"]);
+    fixture.claim(&id, Some(&fixture.e.repo()), "term-history", &fixture.host);
+    fixture.e.ok(&["unclaim", &id]);
     let first = fixture.worktree(&id);
     fixture.claim(&id, Some(&first), "term-history", &fixture.host);
     fixture.e.ok(&["unclaim", &id]);
@@ -784,6 +792,142 @@ fn gc_without_recorded_worktrees_keeps_an_unrelated_issue_named_branch() {
         gc_status(issue, "branch", "absent");
         assert!(fixture.branch_exists(&id));
         assert_eq!(fixture.notes(&id), notes);
+    }
+}
+
+#[test]
+fn gc_primary_checkout_claims_do_not_own_git_resources() {
+    let fixture = GcEnv::new();
+    let id = fixture
+        .e
+        .create(&["Historical run in the primary checkout"]);
+    fixture.claim(
+        &id,
+        Some(&fixture.e.repo()),
+        "missing-terminal",
+        &fixture.host,
+    );
+    fixture.e.ok(&["unclaim", &id]);
+    let alias = fixture.e.dir.path().join("primary-alias");
+    std::os::unix::fs::symlink(fixture.e.repo(), &alias).unwrap();
+    fixture.claim(&id, Some(&alias), "missing-terminal", &fixture.host);
+    fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
+    fixture.git_at(&fixture.e.repo(), &["branch", &id]);
+    let notes = fixture.notes(&id);
+    let claims = fixture.e.ok(&["show", &id, "--with", "claims"])["claims"].clone();
+
+    for args in [&["gc", &id, "--dry-run"][..], &["gc", &id][..]] {
+        let data = fixture.run(args);
+        let issue = gc_issue(&data, &id);
+        assert_eq!(issue["worktree"]["status"], "absent", "{issue:#}");
+        gc_status(issue, "branch", "absent");
+        assert!(fixture.e.repo().is_dir());
+        assert!(fixture.branch_exists(&id));
+        assert_eq!(fixture.notes(&id), notes);
+        assert_eq!(
+            fixture.e.ok(&["show", &id, "--with", "claims"])["claims"],
+            claims
+        );
+    }
+
+    // Each check is a fresh executable, with no in-process warning cache.
+    for _ in 0..2 {
+        let output = fixture
+            .cmd()
+            .env("TRK_NOW", "2026-11-20T12:00:00Z")
+            .arg("check")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(!stdout.contains("gc:"), "{stdout}");
+        assert!(fixture.e.repo().is_dir());
+        assert!(fixture.branch_exists(&id));
+        assert_eq!(fixture.notes(&id), notes);
+        assert_eq!(
+            fixture.e.ok(&["show", &id, "--with", "claims"])["claims"],
+            claims
+        );
+    }
+}
+
+#[test]
+fn gc_absent_historical_worktrees_are_not_outside_directory_skips() {
+    for registered in [false, true] {
+        let fixture = GcEnv::new();
+        let id = fixture.e.create(&["Historical worktree already removed"]);
+        fixture.claim(
+            &id,
+            Some(&fixture.e.repo()),
+            "missing-terminal",
+            &fixture.host,
+        );
+        fixture.e.ok(&["unclaim", &id]);
+        let path = fixture.worktree_at(
+            &id,
+            &fixture
+                .e
+                .dir
+                .path()
+                .join("Library/Application Support/trk/worktrees")
+                .join(&id),
+        );
+        fixture.claim(&id, Some(&path), "missing-terminal", &fixture.host);
+        fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
+        if registered {
+            std::fs::remove_dir_all(&path).unwrap();
+        } else {
+            fixture.git_at(
+                &fixture.e.repo(),
+                &["worktree", "remove", path.to_str().unwrap()],
+            );
+        }
+
+        let preview = fixture.run(&["gc", &id, "--dry-run"]);
+        let issue = gc_issue(&preview, &id);
+        gc_status(issue, "worktree", "absent");
+        gc_status(
+            issue,
+            "branch",
+            if registered { "skipped" } else { "removed" },
+        );
+        assert!(fixture.branch_exists(&id));
+        if registered {
+            assert!(
+                issue["branch"]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("retained worktree"),
+                "{issue:#}"
+            );
+        }
+
+        let data = fixture.run(&["gc", &id]);
+        let issue = gc_issue(&data, &id);
+        gc_status(issue, "worktree", "absent");
+        gc_status(
+            issue,
+            "branch",
+            if registered { "skipped" } else { "removed" },
+        );
+        assert_eq!(fixture.branch_exists(&id), registered);
+        assert!(fixture.e.repo().is_dir());
+
+        for _ in 0..2 {
+            let data = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
+            let issue = gc_issue(&data["gc"], &id);
+            gc_status(issue, "worktree", "absent");
+            gc_status(
+                issue,
+                "branch",
+                if registered { "skipped" } else { "absent" },
+            );
+            assert_eq!(fixture.branch_exists(&id), registered);
+        }
+        if registered {
+            let worktrees = fixture.git_at(&fixture.e.repo(), &["worktree", "list", "--porcelain"]);
+            assert!(worktrees.contains(path.to_str().unwrap()), "{worktrees}");
+        }
     }
 }
 
@@ -1078,6 +1222,24 @@ fn check_gc_watch_sweeps_each_pass_and_keeps_skipped_resources_quiet() {
     let (skipped, skipped_path) = fixture.closed("done", "missing-terminal");
     std::fs::write(skipped_path.join("dirty"), "keep this work").unwrap();
     let skipped_notes = fixture.notes(&skipped);
+    let primary = fixture.e.create(&["Historical primary-checkout cwd"]);
+    fixture.claim(
+        &primary,
+        Some(&fixture.e.repo()),
+        "missing-terminal",
+        &fixture.host,
+    );
+    fixture.close_at(&primary, "done", "2026-11-20T10:00:00Z");
+    fixture.git_at(&fixture.e.repo(), &["branch", &primary]);
+    let absent = fixture.e.create(&["Absent outside-root worktree"]);
+    let absent_path = fixture.e.dir.path().join("old-worktrees").join(&absent);
+    fixture.claim(
+        &absent,
+        Some(&absent_path),
+        "missing-terminal",
+        &fixture.host,
+    );
+    fixture.close_at(&absent, "done", "2026-11-20T10:00:00Z");
     let mut unnamed = Vec::new();
     for (terminal, launcher) in [("term-active", None), ("term-decoy", Some(""))] {
         let id = fixture.e.create(&["Historical terminal without a profile"]);
@@ -1104,15 +1266,30 @@ fn check_gc_watch_sweeps_each_pass_and_keeps_skipped_resources_quiet() {
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
-    let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"));
-    command
-        .args(["check", "--all", "--watch", "1s"])
-        .env("PATH", path)
-        .env("TRK_TEST_UI", fixture.e.dir.path())
-        .env_remove("HC_TERMINAL_ID")
-        .stdout(std::fs::File::create(&output_path).unwrap())
-        .stderr(std::fs::File::create(&stderr_path).unwrap());
-    let mut runner = CheckRunner::spawn_command(&fixture.e, command);
+    let watch_command = || {
+        let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"));
+        command
+            .args(["check", "--all", "--watch", "1s"])
+            .env("PATH", &path)
+            .env("TRK_TEST_UI", fixture.e.dir.path())
+            .env_remove("HC_TERMINAL_ID")
+            .stdout(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&output_path)
+                    .unwrap(),
+            )
+            .stderr(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&stderr_path)
+                    .unwrap(),
+            );
+        command
+    };
+    let mut runner = CheckRunner::spawn_command(&fixture.e, watch_command());
     check_wait_until("the first watch pass to collect a closed issue", || {
         !first_path.exists()
     });
@@ -1138,12 +1315,23 @@ fn check_gc_watch_sweeps_each_pass_and_keeps_skipped_resources_quiet() {
     runner.signal("-INT");
     runner.wait();
 
+    // Restarting must not reintroduce warnings for non-resources or absent paths.
+    let before = passes();
+    let mut runner = CheckRunner::spawn_command(&fixture.e, watch_command());
+    check_wait_until("two restarted watch passes", || passes() >= before + 2);
+    runner.signal("-INT");
+    runner.wait();
+
     let output = std::fs::read_to_string(output_path).unwrap();
     assert_eq!(output.matches(&first).count(), 1, "{output}");
     assert_eq!(output.matches(&second).count(), 1, "{output}");
-    assert_eq!(output.matches(&skipped).count(), 1, "{output}");
+    assert_eq!(output.matches(&skipped).count(), 2, "{output}");
+    assert!(!output.contains(&primary), "{output}");
+    assert!(!output.contains(&absent), "{output}");
+    assert!(fixture.branch_exists(&primary));
+    assert!(fixture.e.repo().is_dir());
     for id in unnamed {
-        assert_eq!(output.matches(&id).count(), 1, "{output}");
+        assert_eq!(output.matches(&id).count(), 2, "{output}");
     }
     assert!(!output.contains("will retry"), "{output}");
     let stderr = std::fs::read_to_string(stderr_path).unwrap();
