@@ -2,12 +2,13 @@
 // you, live sessions and waiting checks. The data is `trk dashboard --json`
 // (the snapshot the terminal dashboard draws); every action runs `trk` itself.
 //
-// Props: { folder?: string, select?: string, focus?: "agent", launcher?: boolean }
+// Props: { folder?: string, select?: string, focus?: "agent", launcher?: boolean, sort?: string }
 //   folder  show this project instead of the shown space's.
 //   select  the issue to start on, with its detail open.
 //   focus   "agent": selecting an issue shows its session in the layout's
 //           agent block (`{ "agent": "focused" }`), as in layouts/trk.json.
 //   launcher  only the sidebar button; opens or focuses this space's trk panel.
+//   sort  priority (default), updated, created or type; "-" reverses the natural direction.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Input, TextView } from "gpui-base";
@@ -26,6 +27,33 @@ const GROUPS = [
   { id: "blocked", label: "Blocked", color: "dim" },
 ];
 const PRIORITIES = ["P0", "P1", "P2", "P3"];
+const SORT_KEYS = {
+  priority: { label: "Priority", value: (i) => i.priority, desc: false },
+  updated: { label: "Updated", value: (i) => Date.parse(i.updated_at), desc: true },
+  created: { label: "Created", value: (i) => Date.parse(i.created_at), desc: false },
+  type: { label: "Type", value: (i) => i.type, desc: false },
+};
+const SORT_ORDER = Object.keys(SORT_KEYS);
+
+function initialSort(value) {
+  if (typeof value === "string") {
+    const reverse = value.startsWith("-");
+    const key = reverse ? value.slice(1) : value;
+    if (Object.hasOwn(SORT_KEYS, key)) return { key, desc: reverse !== SORT_KEYS[key].desc };
+  }
+  return { key: "priority", desc: false };
+}
+
+const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+
+function issueComparator({ key, desc }) {
+  const { value } = SORT_KEYS[key];
+  return (a, b) => (desc ? -1 : 1) * compare(value(a), value(b))
+    || compare(a.priority, b.priority)
+    || compare(Date.parse(a.created_at), Date.parse(b.created_at))
+    || compare(a.id, b.id);
+}
+
 const TYPE_TONES = new Map([
   ["change", "working"], ["code-change", "working"], ["bug", "blocked"],
   ["research", "done"], ["ops", "accent"],
@@ -92,6 +120,7 @@ export default class Trk extends View {
     this.selected = null;
     this.open = false;
     this.folded = new Set(["blocked"]);
+    this.sort = initialSort(props()?.sort);
     this.busy = null;
     this.status = null;
     this.confirm = null;
@@ -401,6 +430,11 @@ export default class Trk extends View {
     cx.notify();
   }
 
+  sortBy(key, cx) {
+    this.sort = { key, desc: key === this.sort.key ? !this.sort.desc : SORT_KEYS[key].desc };
+    cx.notify();
+  }
+
   runnable(issue) {
     return issue.state === "open" && issue.blocked_by.every((b) => b.state === "closed");
   }
@@ -423,6 +457,12 @@ export default class Trk extends View {
     else if (e.key === "enter" && issue) this.select(issue.id, cx);
     else if (e.key === "escape") { this.status = null; this.hideDetail(cx); }
     else if (k === "c") { this.ask({ kind: "create" }); cx.notify(); }
+    else if (k === "o") {
+      const key = SORT_ORDER[(SORT_ORDER.indexOf(this.sort.key) + 1) % SORT_ORDER.length];
+      this.sort = { key, desc: SORT_KEYS[key].desc };
+      cx.notify();
+    }
+    else if (k === "O") this.sortBy(this.sort.key, cx);
     else if (!issue) return;
     else if (k === "a") { this.go(issue); cx.notify(); }
     else if (k === "p" && issue.session?.terminal) run("terminal.peek", { terminal: issue.session.terminal });
@@ -639,6 +679,20 @@ export default class Trk extends View {
       .child(this.button(t, "new", "New", (cx) => { this.ask({ kind: "create" }); cx.notify(); }, { tip: "New issue (c)" }));
   }
 
+  sortRow(t) {
+    return h_flex().id("sort").h(28).flex_none().px(8).gap(2).items_center().text_size(10.5).text_color(t.dim)
+      .child(div().flex_none().mr(2).child("Sort"))
+      .children(SORT_ORDER.map((key) => {
+        const active = key === this.sort.key;
+        return h_flex().id(`sort-${key}`).h(20).px(4).flex_none().items_center().rounded(4)
+          .when(active, (el) => el.bg(t.selected).text_color(t.accent).font_semibold())
+          .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip("Click to sort; click again to reverse (o: next key, O: reverse)")
+          .on_click((_e, cx) => { cx.stop_propagation(); this.sortBy(key, cx); })
+          .child(`${SORT_KEYS[key].label}${active ? this.sort.desc ? " ↓" : " ↑" : ""}`);
+      }));
+  }
+
   openDashboard() {
     const space = spaces().find((s) => s.active);
     if (!space) return;
@@ -678,17 +732,19 @@ export default class Trk extends View {
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
       .size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(12.8);
     const name = (this.context?.root ?? this.context?.cwd ?? "").split("/").filter(Boolean).pop() ?? "";
+    root.child(this.header(t, name)).child(this.sortRow(t));
 
     if (!this.data) {
       const text = this.error ?? "Reading…";
       const missing = /no \.trk|not found|trk install/i.test(text);
-      return root.child(this.header(t, name)).child(v_flex().p(14).gap(8)
+      return root.child(v_flex().p(14).gap(8)
         .child(div().text_size(12).text_color(this.error ? t.muted : t.dim).child(text))
         .when(Boolean(this.error) && missing, (el) => el.child(div().text_size(12).text_color(t.dim).child("Run `trk install` in the project's root to start tracking work here."))));
     }
 
     const issues = this.data.issues;
-    const groups = GROUPS.map((g) => ({ ...g, members: issues.filter((i) => this.groupOf(i) === g.id) })).filter((g) => g.members.length);
+    const comparator = issueComparator(this.sort);
+    const groups = GROUPS.map((g) => ({ ...g, members: issues.filter((i) => this.groupOf(i) === g.id).sort(comparator) })).filter((g) => g.members.length);
     this.order = groups.flatMap((g) => (this.folded.has(g.id) ? [] : g.members.map((i) => i.id)));
     if (props()?.focus === "agent") setAgentOrder(groups.flatMap((g) => g.members).map((i) => i.session?.terminal).filter(Boolean));
     const selected = issues.find((i) => i.id === this.selected);
@@ -738,6 +794,6 @@ export default class Trk extends View {
             .child(this.detailView(t, selected, now))))
       : list;
 
-    return root.child(this.header(t, name)).child(body).when(Boolean(footer), (el) => el.child(footer));
+    return root.child(body).when(Boolean(footer), (el) => el.child(footer));
   }
 }

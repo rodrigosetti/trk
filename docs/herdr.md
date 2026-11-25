@@ -19,6 +19,16 @@ Titles wrap in the remaining width. Working-session spinners prefix the title, a
 its first line; links and other statuses stay below, with no empty row for spinner-only issues.
 Column widths adapt to the list pane when resized; long IDs and custom type names wrap instead of being clipped.
 
+The slim **Sort** row below the header orders issues within each group: **Priority**
+(P0 first), **Updated** (newest first), **Created** (oldest first), or **Type** (A–Z).
+Click a key to use its natural direction; click the active key again to reverse it.
+The highlighted key's arrow shows ascending (↑) or descending (↓) order.
+Priority ascending is the default, retaining priority then oldest-first order.
+Ties always use priority, oldest creation time, then ID, even when reversing a key.
+Groups and folding stay unchanged; keyboard navigation follows the displayed order
+without changing the selected issue. Sort state is in memory per panel, not saved;
+the sidebar launcher has no sort row.
+
 That is the whole setup. Herdr mods are machine-wide and a space shows one once a pane or tab
 there holds it, so `open` does both steps: it installs or refreshes the mod when needed, then
 opens the panel in the space this terminal is in (outside Herdr: the space whose folder is the
@@ -59,11 +69,17 @@ trk herdr uninstall              # remove the mod and layouts unless you edited 
   confirms the copy; selection and detail visibility stay unchanged.
 - With the panel focused: `j`/`k` move, `Enter` opens, `a` goes to the session, `p` peeks,
   `s` sends, `m`/`M` note (to the agent), `v` resumes, `x` closes, `c` creates, `l` opens the
-  issue's first link. Link chips on a row and in the details open in the browser on click.
+  issue's first link. With no prompt open, `o` cycles sort keys in their natural direction,
+  and `O` reverses the active key. Link chips on a row and in the details open in the browser on click.
 - `trk.new` and `trk.refresh` are mod commands for `keys.json`, for example
   `"global": { "ctrl-shift-i": "trk.new" }`. They reach a shown copy of the panel.
 - By hand: `herdr-app do tab.new --mod trk --props '{"folder": "/path/to/project"}'`. Without
   `folder` a copy follows the shown space; `"select": "<id>"` opens it on an issue.
-  Run the panel's location regressions with
+  Set the initial sort with `"sort": "updated"` (newest first) or `"sort": "type"` (A–Z).
+  Valid keys are `priority`, `updated`, `created`, and `type`; prefix `-` to reverse
+  that key's natural direction (for example, `"sort": "-updated"` is oldest first).
+  Invalid values fall back to Priority ascending. For example:
+  `herdr-app do tab.new --mod trk --props '{"sort": "updated"}'`.
+  Run the panel's location and sorting regressions with
   `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
 

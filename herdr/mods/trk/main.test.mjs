@@ -19,6 +19,8 @@ class Element {
   child(node) { this.nodes.push(node); return this; }
   children(nodes) { this.nodes.push(...nodes); return this; }
   when(condition, apply) { return condition ? apply(this) : this; }
+  id(value) { this.elementId = value; return this; }
+  on_click(action) { this.click = action; return this; }
 }
 
 function content(node) {
@@ -38,7 +40,8 @@ async function dashboard(state) {
     "gpui-kit": { View: class {}, div: () => new Element("div"), svg: () => new Element("spinner") },
     "gpui-base": {
       v_flex: () => new Element("column"), h_flex: () => new Element("row"),
-      h_resizable() {}, resizable_panel() {}, InputState: {}, Input() {}, TextView: {},
+      h_resizable: () => new Element("split"), resizable_panel: () => new Element("panel"),
+      InputState: { new: () => ({ on() {} }) }, Input() {}, TextView: {},
     },
     herdr: {
       spaces: () => state.spaces,
@@ -60,8 +63,9 @@ async function dashboard(state) {
         return state.output ?? { code: 0, stdout: JSON.stringify({ ok: true, data: {} }), stderr: "" };
       },
       agents: () => [], terminals: () => [], theme: () => ({}), settings: () => ({}),
-      notify() {}, checking() {}, shared() {},
-      setShared() {}, setBadge() {}, setAgentOrder() {}, nextCommand() {}, watchFolder() {}, layout() {},
+      notify() {}, checking: () => true, shared() {},
+      setShared() {}, setBadge() {}, setAgentOrder: (order) => { state.agentOrder = order; },
+      nextCommand() {}, watchFolder() {}, layout() {},
     },
   };
   const mod = new SourceTextModule(source);
@@ -72,7 +76,9 @@ async function dashboard(state) {
     });
   });
   await mod.evaluate();
-  return { view: new mod.namespace.default(), commands, executions };
+  const view = new mod.namespace.default();
+  view.init({}, { focus_handle: () => ({ focus() {} }) });
+  return { view, commands, executions };
 }
 
 function spaceState() {
@@ -207,4 +213,163 @@ test("CLI errors without hints retain their message and fallback diagnostics", a
     state.output = { code: 5, stdout, stderr };
     await assert.rejects(view.trk(["unclaim", "orch-123"]), { message: expected });
   }
+});
+
+function findElement(node, id) {
+  if (typeof node === "string") return null;
+  return node.elementId === id ? node : node.nodes.map((child) => findElement(child, id)).find(Boolean);
+}
+
+function sortIssues() {
+  return [
+    ["a", "P1", 3, 1, "research"],
+    ["b", "P0", 4, 2, "bug"],
+    ["c", "P1", 1, 4, "ops"],
+    ["d", "P2", 2, 3, "change"],
+  ].map(([id, priority, created, updated, type]) => ({
+    id, priority, type, title: id, group: "ready", state: "open", attention: [],
+    created_at: `2026-11-0${created}T00:00:00Z`, updated_at: `2026-11-0${updated}T00:00:00Z`,
+    links: [], blocked_by: [], session: { terminal: `t-${id}` },
+  }));
+}
+
+const sortContext = { notify() {}, stop_propagation() {} };
+
+test("default priority order matches the dashboard's priority then oldest-first order", async () => {
+  const { view } = await dashboard(spaceState());
+  const issues = sortIssues();
+  view.data = { issues };
+  view.render();
+  assert.deepEqual(view.order, ["b", "c", "a", "d"]);
+  assert.deepEqual(view.data.issues.map((i) => i.id), ["a", "b", "c", "d"], "rendering must not reorder the snapshot");
+});
+
+for (const [key, expected, reversed] of [
+  ["priority", ["b", "c", "a", "d"], ["d", "c", "a", "b"]],
+  ["updated", ["c", "d", "b", "a"], ["a", "b", "d", "c"]],
+  ["created", ["c", "d", "a", "b"], ["b", "a", "d", "c"]],
+  ["type", ["b", "d", "c", "a"], ["a", "c", "d", "b"]],
+]) {
+  test(`${key} prop and button use natural direction, then flip only that key`, async () => {
+    for (const reverse of [false, true]) {
+      const state = { ...spaceState(), props: { sort: `${reverse ? "-" : ""}${key}` } };
+      const { view } = await dashboard(state);
+      view.data = { issues: sortIssues() };
+      view.render();
+      assert.deepEqual(view.order, reverse ? reversed : expected);
+      view.sortBy(key, sortContext);
+      view.render();
+      assert.deepEqual(view.order, reverse ? expected : reversed);
+      // Returning from a different key resets to natural, not its last direction.
+      view.sortBy(key === "type" ? "created" : "type", sortContext);
+      view.sortBy(key, sortContext);
+      view.render();
+      assert.deepEqual(view.order, expected);
+    }
+  });
+
+  test(`${key} ties retain ascending priority, creation time and id in both directions`, async () => {
+    const { view } = await dashboard({ ...spaceState(), props: { sort: key } });
+    const issues = [
+      ["z", "P1", 3], ["b", "P1", 2], ["a", "P1", 2], ["urgent", "P0", 4],
+    ].map(([id, priority, day]) => ({
+      ...sortIssues()[0], id, priority, created_at: `2026-11-0${day}T00:00:00Z`,
+    }));
+    // Force equal primary values; the remaining fields exercise the fixed tie-breaks.
+    if (key === "priority") issues.forEach((i) => { i.priority = "P1"; });
+    if (key === "created") issues.forEach((i) => { i.created_at = "2026-11-01T00:00:00Z"; });
+    const expected = key === "priority" ? ["a", "b", "z", "urgent"] : ["urgent", "a", "b", "z"];
+    view.data = { issues };
+    view.render();
+    assert.deepEqual(view.order, expected);
+    view.sortBy(key, sortContext);
+    view.data = { issues: [...issues].reverse() };
+    view.render();
+    assert.deepEqual(view.order, expected);
+  });
+}
+
+test("invalid sort props fall back to priority without throwing", async () => {
+  for (const sort of [undefined, null, "", "-", "Updated", "--type", "unknown", "toString", "__proto__", 1, {}]) {
+    const { view } = await dashboard({ ...spaceState(), props: { sort } });
+    view.data = { issues: sortIssues() };
+    view.render();
+    assert.deepEqual(view.order, ["b", "c", "a", "d"]);
+    assert.deepEqual(view.sort, { key: "priority", desc: false });
+  }
+});
+
+test("sort row buttons and keyboard cycle, reverse and respect prompts and modifiers", async () => {
+  const { view } = await dashboard(spaceState());
+  view.data = { issues: sortIssues() };
+  let tree = view.render();
+  assert.equal(tree.nodes[1].elementId, "sort", "the sort row sits directly below the header");
+  assert.deepEqual(content(tree.nodes[1]), ["Sort", "Priority ↑", "Updated", "Created", "Type"]);
+  findElement(tree, "sort-updated").click({}, sortContext);
+  tree = view.render();
+  assert.deepEqual(view.order, ["c", "d", "b", "a"]);
+  assert.deepEqual(content(tree.nodes[1]), ["Sort", "Priority", "Updated ↓", "Created", "Type"]);
+  findElement(tree, "sort-updated").click({}, sortContext);
+  view.render();
+  assert.deepEqual(view.order, ["a", "b", "d", "c"]);
+
+  // With no selection, the shortcuts still work and wrap in registry order.
+  for (const [key, desc] of [["created", false], ["type", false], ["priority", false], ["updated", true]]) {
+    view.key({ key_char: "o" }, sortContext);
+    assert.deepEqual(view.sort, { key, desc });
+  }
+  view.key({ key_char: "O" }, sortContext);
+  view.render();
+  assert.deepEqual(view.order, ["a", "b", "d", "c"]);
+  for (const modifiers of [{ control: true }, { platform: true }, { alt: true }]) {
+    view.key({ key_char: "o", modifiers }, sortContext);
+    view.key({ key_char: "O", modifiers }, sortContext);
+  }
+  view.prompt = { kind: "create" };
+  view.key({ key_char: "o" }, sortContext);
+  view.key({ key_char: "O" }, sortContext);
+  assert.deepEqual(view.sort, { key: "updated", desc: false });
+});
+
+test("sort stays within groups and drives navigation and agent order without losing selection on refresh", async () => {
+  const state = { ...spaceState(), props: { focus: "agent", sort: "updated" } };
+  const { view } = await dashboard(state);
+  const issues = sortIssues();
+  issues[0].group = "running";
+  issues[3].group = "blocked";
+  const attention = { ...issues[0], id: "attention", attention: ["review"], session: { terminal: "t-attention" } };
+  view.data = { issues: [...issues, attention] };
+  view.selected = "b";
+  view.render();
+  assert.deepEqual(view.order, ["attention", "a", "c", "b"]);
+  assert.deepEqual(state.agentOrder, ["t-attention", "t-a", "t-c", "t-b", "t-d"]);
+  view.sortBy("updated", sortContext);
+  view.render();
+  assert.deepEqual(view.order, ["attention", "a", "b", "c"]);
+  assert.equal(view.selected, "b");
+  for (const [key_char, selected] of [["j", "c"], ["k", "b"], ["g", "attention"], ["G", "c"]]) {
+    view.key({ key_char }, sortContext);
+    assert.equal(view.selected, selected);
+  }
+  view.context = { root: "/current-project", cwd: "/current-project" };
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 4, data: { issues: [...issues, attention].reverse() } }) };
+  let pending;
+  const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
+  view.load(cx);
+  await pending;
+  view.render();
+  assert.equal(view.selected, "c");
+  assert.deepEqual(view.order, ["attention", "a", "b", "c"]);
+  view.folded.delete("blocked");
+  view.render();
+  assert.deepEqual(view.order, ["attention", "a", "b", "c", "d"]);
+  const { view: another } = await dashboard(spaceState());
+  another.data = { issues: sortIssues() };
+  another.render();
+  assert.deepEqual(another.order, ["b", "c", "a", "d"], "panels must not share sort state");
+});
+
+test("launcher variant omits the sort row", async () => {
+  const { view } = await dashboard({ ...spaceState(), props: { launcher: true } });
+  assert.equal(findElement(view.render(), "sort"), undefined);
 });
