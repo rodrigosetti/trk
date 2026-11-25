@@ -68,7 +68,7 @@ impl Ctx<'_> {
     }
 
     fn edge_json(e: &Edge) -> Value {
-        json!({"id": e.id, "title": e.title, "state": e.state, "priority": e.priority})
+        json!({"id": e.id, "title": e.title, "state": e.state, "priority": e.priority, "epic": e.epic})
     }
 
     /// `ready`, `blocked_by`, `due`, blocker progress, and the open issues of

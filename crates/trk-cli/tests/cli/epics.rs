@@ -195,3 +195,100 @@ fn epic_assignment_errors_list_only_active_choices_and_never_create() {
         "agent:omp:epic-curator"
     );
 }
+
+#[test]
+fn list_and_ready_filter_epics_including_unassigned_and_archived() {
+    let e = Env::new();
+    for name in ["auth-rework", "billing", "none", "null"] {
+        e.ok(&["epic", "new", name]);
+    }
+    let auth = e.create(&["Auth", "--epic", "auth-rework"]);
+    let billing = e.create(&["Billing", "--epic", "billing"]);
+    let none = e.create(&["Literal none", "--epic", "none"]);
+    let null = e.create(&["Literal null", "--epic", "null"]);
+    let unassigned = e.create(&["Unassigned"]);
+    e.ok(&["epic", "archive", "auth-rework"]);
+    let ids = |rows: Value| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    for command in ["list", "ready"] {
+        for (query, expected) in [
+            ("epic=auth-rework", vec![auth.clone()]),
+            ("epic=auth-*", vec![auth.clone()]),
+            ("epic~billing", vec![billing.clone()]),
+            ("epic=\"\"", vec![unassigned.clone()]),
+            ("epic=none", vec![none.clone()]),
+            ("epic=null", vec![null.clone()]),
+            (
+                "epic in (auth-rework,\"\")",
+                vec![auth.clone(), unassigned.clone()],
+            ),
+            (
+                "epic!=\"\"",
+                vec![auth.clone(), billing.clone(), none.clone(), null.clone()],
+            ),
+            (
+                "NOT epic=\"\"",
+                vec![auth.clone(), billing.clone(), none.clone(), null.clone()],
+            ),
+        ] {
+            let mut actual = ids(e.ok(&[command, query]));
+            let mut expected = expected;
+            actual.sort();
+            expected.sort();
+            assert_eq!(actual, expected, "{command} {query}");
+        }
+        let rows = e.ok(&[command, "--sort", "id"]);
+        let rows = rows.as_array().unwrap();
+        for (id, epic) in [(&auth, json!("auth-rework")), (&unassigned, Value::Null)] {
+            let row = rows.iter().find(|row| row["id"] == *id).unwrap();
+            assert_eq!(row.get("epic"), Some(&epic));
+        }
+        assert_eq!(
+            e.ok(&[command, "epic=auth-rework", "--fields", "id,epic"]),
+            json!([{"id": auth, "epic": "auth-rework"}])
+        );
+    }
+}
+
+#[test]
+fn list_and_ready_sort_epics_with_unassigned_last_in_both_directions() {
+    let e = Env::new();
+    e.ok(&["epic", "new", "auth-rework"]);
+    e.ok(&["epic", "new", "billing"]);
+    let auth_p1 = e.create(&["Auth P1", "--epic", "auth-rework", "-p", "P1"]);
+    let auth_p2 = e.create(&["Auth P2", "--epic", "auth-rework", "-p", "P2"]);
+    let billing = e.create(&["Billing", "--epic", "billing", "-p", "P3"]);
+    let unassigned = e.create(&["Unassigned", "-p", "P0"]);
+    let mut auth_ids = vec![auth_p1.clone(), auth_p2.clone()];
+    auth_ids.sort();
+    let ids = |rows: Value| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    for command in ["list", "ready"] {
+        let mut ascending = auth_ids.clone();
+        ascending.extend([billing.clone(), unassigned.clone()]);
+        assert_eq!(ids(e.ok(&[command, "--sort", "epic"])), ascending);
+        let mut descending = vec![billing.clone()];
+        descending.extend(auth_ids.clone());
+        descending.push(unassigned.clone());
+        assert_eq!(ids(e.ok(&[command, "--sort", "-epic"])), descending);
+        assert_eq!(
+            ids(e.ok(&[command, "--sort", "epic,-priority"])),
+            vec![
+                auth_p2.clone(),
+                auth_p1.clone(),
+                billing.clone(),
+                unassigned.clone()
+            ]
+        );
+    }
+}

@@ -91,7 +91,7 @@ The normal issue representation contains:
 | `state`, `close_reason` | State is `open`, `claimed`, `waiting` or `closed`; close reason is `done`, `abandoned` or null. |
 | `waiting` | Null unless waiting. Otherwise an object with `reason`, `check`, `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit` and `cwd`; individual values can be null. A human wait has no check. |
 | `claim` | Active claim or null. Contains `actor`, `on_behalf_of`, `claimed_at`, `lease_until`, `worktree`, `host`, `agent`, `terminal`, and optional pinned `launcher`. A waiting session's released claim is not an active claim. |
-| `deps` | When requested, `blocked_by` and `blocks` arrays of `{id, title, state, priority}`. List/ready and ordinary show include dependencies. |
+| `deps` | When requested, `blocked_by` and `blocks` arrays of `{id, title, state, priority, epic}`; `epic` is the other issue's epic name or null. List/ready and ordinary show include dependencies. |
 | `derived` | Computed read-time state: `ready`, `blocked_by` (unclosed blocker IDs), `due`, and `unblocks_higher_priority` (objects with `id` and `priority`). When blockers exist, also `progress: {total, closed}`, including closed blockers in the total. |
 | `created_by`, `created_at`, `updated_at`, `closed_at` | Authorship and timestamps; `closed_at` is null before closure. |
 
@@ -110,6 +110,10 @@ Timestamps are RFC 3339 UTC with second precision, such as
 `2026-11-21T18:02:11Z`; relative times are a pretty-output presentation only.
 Derived fields are not stored. See [sessions](sessions.md) for claim metadata and
 [waiting and checks](waiting-and-checks.md) for waiting state.
+
+`dashboard --json` includes `epic` (name or null) on each issue and on every
+`blocked_by` / `blocks` edge, where it refers to the other issue. The snapshot
+remains ordered by group, priority, then age; core does not bucket by epic.
 
 ## Check results
 

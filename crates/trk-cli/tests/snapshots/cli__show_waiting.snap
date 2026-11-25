@@ -29,7 +29,8 @@ expression: snap
         "id": "<B>",
         "title": "Use leases",
         "state": "open",
-        "priority": "P2"
+        "priority": "P2",
+        "epic": null
       }
     ]
   },

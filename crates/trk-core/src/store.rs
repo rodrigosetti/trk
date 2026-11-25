@@ -426,10 +426,10 @@ impl<'a> Ctx<'a> {
     /// The issues this one blocks (`outgoing`) or is blocked by.
     pub fn edges(&self, issue_id: &str, outgoing: bool) -> Result<Vec<Edge>> {
         let sql = if outgoing {
-            "SELECT o.id, o.title, o.state, o.priority
+            "SELECT o.id, o.title, o.state, o.priority, o.epic
              FROM dep d JOIN issue o ON o.id = d.dst WHERE d.src = ?1 ORDER BY o.id"
         } else {
-            "SELECT o.id, o.title, o.state, o.priority
+            "SELECT o.id, o.title, o.state, o.priority, o.epic
              FROM dep d JOIN issue o ON o.id = d.src WHERE d.dst = ?1 ORDER BY o.id"
         };
         let mut st = self.conn.prepare(sql)?;
@@ -440,6 +440,7 @@ impl<'a> Ctx<'a> {
                     title: r.get(1)?,
                     state: state_col(r, 2)?,
                     priority: r.get(3)?,
+                    epic: r.get(4)?,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;

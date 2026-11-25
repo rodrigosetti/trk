@@ -33,6 +33,8 @@ trk list 'state!=closed' --json
 trk list 'state=waiting' --sort next-check --json
 trk list 'state in (open,claimed) priority in (P0,P1)' --json
 trk list 'claimed-by=me' --json
+trk list 'epic=auth-rework' --json
+trk ready 'epic=""' --json                         # no epic assigned
 trk list 'blocks=orch-m1 state!=closed' --json       # what remains before orch-m1 is ready
 trk list 'closed>-7d reason=done' --json
 trk list 'text~"feature flag"' --json
@@ -40,7 +42,9 @@ trk list 'text~"feature flag"' --json
 
 Options: `--fields id,state,title` picks the JSON keys, `--sort -updated` sorts (a leading `-` is descending), `--limit N`, and `--format jsonl` prints one object per line. `@name` runs a saved view from `.trk/config.toml` (`@mine`, `@agents`, `@open`, `@waiting`).
 
-Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `closed`, `claimed-by`, `lease`, `next-check`. Without `--sort` or a saved view's sort, both `trk list` and `trk ready` order by priority, then creation time, then ID.
+Sort keys: `id`, `state`, `title`, `priority`, `type`, `epic`, `created`, `updated`, `closed`, `claimed-by`, `lease`, `next-check`. Issues without an epic sort last with either `--sort epic` or `--sort -epic`. Without `--sort` or a saved view's sort, both `trk list` and `trk ready` order by priority, then creation time, then ID.
+
+The `epic` filter accepts curated names, including archived epics, and ordinary text matching (`epic=auth-*`, `epic in (auth-rework,billing)`). Use `epic=""` for no epic and `epic!=""` for any assigned epic. List/ready issue JSON includes `epic` as a name or null.
 
 ## The issue object
 
@@ -54,11 +58,13 @@ Sort keys: `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `cl
 | `claim` | the active claim: `actor`, `claimed_at`, `lease_until`, `worktree`, `agent`, `terminal` |
 | `waiting` | while waiting: `reason`, `check`, `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit`, `cwd` |
 | `wake_count` | top-level automatic check-wake restoration count; included only when nonzero and the issue is claimed or waiting; human resume preserves it |
-| `deps` | `blocked_by` and `blocks`, each a list of `{id, title, state, priority}` |
+| `deps` | `blocked_by` and `blocks`, each a list of `{id, title, state, priority, epic}`; epic is the other issue's name or null |
 | `derived` | `ready`, `blocked_by` (open blockers), `due`, `progress` (`{total, closed}` blockers), `unblocks_higher_priority` |
 | `notes`, `events`, `claims` | with `--with notes,events,claims` (notes are included by default) |
 
 Pretty `trk show` displays the same nonzero count as a `wakes` line while claimed or waiting.
+
+`trk dashboard --json` includes `epic` (name or null) on every issue and on both `blocked_by` and `blocks` edges. Edges carry the other issue's epic. Core keeps the dashboard ordered by group, priority, then age; UIs choose their own epic buckets.
 
 ## Commands
 

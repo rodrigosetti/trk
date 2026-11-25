@@ -8,6 +8,8 @@ Quote the query so your shell does not interpret operators, spaces, or globs.
 trk list 'state!=closed'
 trk ready 'priority<=P1'
 trk list 'state in (open,claimed) type=code-change'
+trk list 'epic=auth-rework'
+trk ready 'epic=""'
 trk list 'claimed-by=me'
 trk list 'claimed-by=agent:*'
 trk list 'blocks=orch-m1 state!=closed'
@@ -32,6 +34,7 @@ ready  blocked  due  stale-lease
 | Field | Meaning |
 | --- | --- |
 | `id`, `title`, `state`, `priority`, `type`, `reason` | Issue ID, authored fields, state, or close reason (`done`, `abandoned`) |
+| `epic` | Curated epic name (including archived epics); `epic=""` matches unassigned issues, `epic!=""` matches assigned issues |
 | `claimed-by`, `created-by` | Claimant or creator actor |
 | `created`, `updated`, `closed`, `next-check` | Timestamps |
 | `text` | Full-text search over titles, descriptions, and notes |
@@ -57,12 +60,14 @@ including unique suffixes, rather than matching arbitrary strings.
 
 Both commands default to priority, then oldest creation time, then ID.
 `--sort` accepts comma-separated keys; prefix a key with `-` for descending order.
-Keys are `id`, `state`, `title`, `priority`, `type`, `created`, `updated`, `closed`,
-`claimed-by`, `lease`, and `next-check`. ID breaks remaining ties.
+Keys are `id`, `state`, `title`, `priority`, `type`, `epic`, `created`, `updated`,
+`closed`, `claimed-by`, `lease`, and `next-check`. Issues without an epic sort last
+for both `epic` and `-epic`. ID breaks remaining ties.
 
 ```sh
 trk list 'state=waiting' --sort next-check
 trk list 'state!=closed' --sort priority,-updated --limit 20
+trk list --sort epic,priority --fields id,epic,title --json
 trk ready --fields id,priority,type,title --json
 ```
 
