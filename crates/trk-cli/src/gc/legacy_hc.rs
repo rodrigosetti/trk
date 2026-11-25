@@ -14,6 +14,7 @@ use crate::herdr::{command, json_command};
 pub(super) struct Recovery {
     authorized: bool,
     inventory: Option<std::result::Result<BTreeSet<String>, String>>,
+    pub receipts: Vec<Value>,
 }
 
 impl Recovery {
@@ -21,22 +22,17 @@ impl Recovery {
         Self {
             authorized,
             inventory: None,
+            receipts: Vec::new(),
         }
     }
 }
 
-pub(super) fn recover(
-    env: &Env,
-    c: &mut Ctx<'_>,
-    claim: &Claim,
-    protected: &[String],
-    dry_run: bool,
-    recovery: &mut Recovery,
-) -> Result<Resource> {
-    let terminal = claim.terminal.as_deref().expect("filtered terminal");
-    // Receipts are GC-only provenance, never a rewrite of historical claims or
-    // permission to operate on a different claim/host/terminal after reopening.
-    let recorded: bool = c.conn.query_row(
+/// GC-only provenance bound to the historical claim, never a launcher override.
+pub(super) fn recorded(c: &Ctx<'_>, claim: &Claim) -> Result<bool> {
+    let Some(terminal) = claim.terminal.as_deref() else {
+        return Ok(false);
+    };
+    Ok(c.conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM event WHERE issue_id = ?1 AND op = 'note'
          AND json_extract(payload, '$.gc_session.claim') = ?2
          AND json_extract(payload, '$.gc_session.terminal') = ?3
@@ -44,7 +40,18 @@ pub(super) fn recover(
          AND json_extract(payload, '$.gc_session.backend') = 'hc')",
         (&claim.issue_id, claim.id, terminal, &claim.host),
         |row| row.get(0),
-    )?;
+    )?)
+}
+
+pub(super) fn recover(
+    env: &Env,
+    recorded: bool,
+    claim: &Claim,
+    protected: &[String],
+    dry_run: bool,
+    recovery: &mut Recovery,
+) -> Result<Resource> {
+    let terminal = claim.terminal.as_deref().expect("filtered terminal");
     if !recovery.authorized && !recorded {
         return Ok(Resource::new(
             "skipped",
@@ -74,10 +81,7 @@ pub(super) fn recover(
         addresses.remove(terminal);
     }
     if !dry_run && !recorded && matches!(resource.status, "removed" | "absent") {
-        c.event(
-            Some(&claim.issue_id),
-            "note",
-            json!({
+        recovery.receipts.push(json!({
                 "body": format!("trk gc legacy hc recovery for claim {}: {}.", claim.id, resource.reason),
                 "gc_session": {
                     "claim": claim.id,
@@ -85,8 +89,7 @@ pub(super) fn recover(
                     "host": claim.host,
                     "backend": "hc",
                 },
-            }),
-        )?;
+        }));
     }
     Ok(resource)
 }

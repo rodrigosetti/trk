@@ -123,28 +123,35 @@ fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, V
     let pid = i64::from(std::process::id());
     let host = hostname();
     let mut store = env.store()?;
-    let held = store.write(actor, false, |c| {
-        if let Some((p, h, started, pgid)) = c.check_lock()? {
-            let here = host.is_some() && h == host;
-            if !here || runner_alive(p) || pgid.is_some_and(group_alive) {
-                return Ok(Some(json!({
+    loop {
+        let previous = store.read(None, |c| c.check_lock())?;
+        // Liveness probes may run ps. Never hold the SQLite writer while
+        // waiting for an external command, even during stale-lock recovery.
+        if let Some((p, h, started, pgid)) = &previous {
+            let here = host.is_some() && *h == host;
+            if !here || runner_alive(*p) || pgid.is_some_and(group_alive) {
+                return Ok(Err(json!({
                     "pid": p, "host": h, "started_at": started, "pgid": pgid,
                 })));
             }
         }
-        c.check_lock_take(pid, host.as_deref())?;
-        Ok(None)
-    })?;
-    Ok(match held {
-        Some(h) => Err(h),
-        None => Ok(Lock {
-            env,
-            actor: actor.to_string(),
-            pid,
-            child: None,
-            released: false,
-        }),
-    })
+        let taken = store.write(actor, false, |c| {
+            if c.check_lock()? != previous {
+                return Ok(false);
+            }
+            c.check_lock_take(pid, host.as_deref())?;
+            Ok(true)
+        })?;
+        if taken {
+            return Ok(Ok(Lock {
+                env,
+                actor: actor.to_string(),
+                pid,
+                child: None,
+                released: false,
+            }));
+        }
+    }
 }
 
 /// Human resume serializes restoration and delivery with check subprocesses.
@@ -160,13 +167,12 @@ pub(crate) fn with_queue_lock<T>(env: &Env, f: impl FnOnce() -> Result<T>) -> Re
     Ok(result)
 }
 
-/// GC holds a write transaction during removal, preventing any claim or reopen
-/// between its safety checks and external effects. Real removals also retain
-/// durable queue ownership; a preview rolls back even the lock and lease sweep.
+/// Serialize GC with checks, not with unrelated database writers. Previews
+/// inspect ownership without persisting a lock or keeping a transaction open.
 pub(crate) fn with_gc_lock<T>(
     env: &Env,
     dry_run: bool,
-    f: impl FnOnce(&mut trk_core::store::Ctx<'_>) -> Result<T>,
+    f: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
     let actor = env.actor()?.to_string();
     let busy = |holder| {
@@ -176,23 +182,21 @@ pub(crate) fn with_gc_lock<T>(
     };
     if dry_run {
         let host = hostname();
-        return env.store()?.write(&actor, true, |c| {
-            if let Some((pid, holder_host, started, pgid)) = c.check_lock()?
-                && (host.is_none()
-                    || holder_host != host
-                    || runner_alive(pid)
-                    || pgid.is_some_and(group_alive))
-            {
-                return Err(busy(json!({
-                    "pid": pid, "host": holder_host, "started_at": started, "pgid": pgid,
-                })));
-            }
-            c.check_lock_take(i64::from(std::process::id()), host.as_deref())?;
-            f(c)
-        });
+        let previous = env.store()?.read(None, |c| c.check_lock())?;
+        if let Some((pid, holder_host, started, pgid)) = previous
+            && (host.is_none()
+                || holder_host != host
+                || runner_alive(pid)
+                || pgid.is_some_and(group_alive))
+        {
+            return Err(busy(json!({
+                "pid": pid, "host": holder_host, "started_at": started, "pgid": pgid,
+            })));
+        }
+        return f();
     }
     let mut lock = lock(env, &actor)?.map_err(busy)?;
-    let result = env.store()?.write(&actor, false, f)?;
+    let result = f()?;
     lock.release()?;
     Ok(result)
 }
@@ -388,15 +392,14 @@ struct Pass {
 }
 
 /// A sweep is advisory and separate from recording check outcomes. Real passes
-/// already own the queue lock; previews use GC's rollback-only lock path.
+/// already own the queue lock; previews only inspect queue ownership.
 fn sweep(env: &Env, a: &CheckArgs) -> Option<Value> {
     if a.id.is_some() || a.no_gc || !env.user.check.gc {
         return None;
     }
-    let collect = |c: &mut trk_core::store::Ctx<'_>| {
+    let collect = || {
         crate::gc::collect(
             env,
-            c,
             &[],
             a.dry_run,
             false,
@@ -407,8 +410,7 @@ fn sweep(env: &Env, a: &CheckArgs) -> Option<Value> {
     let result = if a.dry_run {
         with_gc_lock(env, true, collect)
     } else {
-        env.actor()
-            .and_then(|actor| env.store()?.write(actor, false, collect))
+        collect()
     };
     let data = result.unwrap_or_else(
         |error| json!({"dry_run": a.dry_run, "issues": [], "errors": [error.to_string()]}),

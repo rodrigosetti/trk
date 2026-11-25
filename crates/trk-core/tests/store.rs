@@ -1131,6 +1131,131 @@ fn the_check_lock_group_persists_and_replacement_clears_it() {
     assert_eq!((lock.0, lock.1, lock.3), (42, None, None));
 }
 
+fn collected_at(s: &Store, id: &str) -> Option<String> {
+    s.conn()
+        .query_row(
+            "SELECT gc_collected_at FROM issue WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn gc_reservation_guards_only_its_target_and_completion_is_invalidated_by_reopen() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Collected");
+    let other = create(&mut s, "Unrelated");
+    s.write(HUMAN, false, |c| {
+        c.close(&id, "done", None, false)?;
+        c.close(&other, "done", None, false)?;
+        c.check_lock_take(41, None)
+    })
+    .unwrap();
+    let revision = s.read(None, |c| c.issue_revision(&id)).unwrap();
+    assert!(
+        !s.write(HUMAN, false, |c| c.gc_reserve(&id, revision, 42))
+            .unwrap()
+    );
+    assert!(
+        !s.write(HUMAN, false, |c| c.gc_reserve(&id, revision - 1, 41))
+            .unwrap()
+    );
+    assert!(
+        s.write(HUMAN, false, |c| c.gc_reserve(&id, revision, 41))
+            .unwrap()
+    );
+    let error = s.write(HUMAN, false, |c| c.reopen(&id, None)).unwrap_err();
+    assert_eq!(error.code(), Code::InvalidState);
+    assert!(s.conn().execute(
+        "UPDATE issue SET state = 'open', closed_at = NULL, close_reason = NULL WHERE id = ?1",
+        [&id],
+    ).is_err());
+    s.write(HUMAN, false, |c| c.reopen(&other, None)).unwrap();
+    assert!(
+        !s.write(HUMAN, false, |c| c.gc_finish(&id, 42, true))
+            .unwrap()
+    );
+    assert_eq!(collected_at(&s, &id), None);
+    assert!(
+        s.write(HUMAN, false, |c| c.gc_finish(&id, 41, false))
+            .unwrap()
+    );
+    assert_eq!(collected_at(&s, &id), None);
+    assert!(
+        s.write(HUMAN, false, |c| c.gc_reserve(&id, revision, 41))
+            .unwrap()
+    );
+    assert!(
+        s.write(HUMAN, false, |c| c.gc_finish(&id, 41, true))
+            .unwrap()
+    );
+    assert!(collected_at(&s, &id).is_some());
+    assert!(
+        s.write(HUMAN, false, |c| c.gc_reserve(&id, revision, 41))
+            .unwrap()
+    );
+    assert_eq!(collected_at(&s, &id), None);
+    assert!(
+        s.write(HUMAN, false, |c| c.gc_finish(&id, 41, false))
+            .unwrap()
+    );
+    assert_eq!(collected_at(&s, &id), None);
+    assert!(
+        s.write(HUMAN, false, |c| c.gc_reserve(&id, revision, 41))
+            .unwrap()
+    );
+    assert!(
+        s.write(HUMAN, false, |c| c.gc_finish(&id, 41, true))
+            .unwrap()
+    );
+    s.write(HUMAN, false, |c| c.reopen(&id, None)).unwrap();
+    assert_eq!(collected_at(&s, &id), None);
+    s.write(HUMAN, false, |c| c.close(&id, "done", None, false))
+        .unwrap();
+    assert!(
+        !s.write(HUMAN, false, |c| c.gc_reserve(&id, revision, 41))
+            .unwrap()
+    );
+}
+
+#[test]
+fn gc_reservation_survives_restart_and_cascades_on_queue_recovery_and_release() {
+    let (d, mut s) = setup();
+    let id = create(&mut s, "Recoverable");
+    s.write(HUMAN, false, |c| {
+        c.close(&id, "done", None, false)?;
+        c.check_lock_take(41, None)?;
+        assert!(c.gc_reserve(&id, c.issue_revision(&id)?, 41)?);
+        Ok(())
+    })
+    .unwrap();
+    drop(s);
+    let mut s = Store::open(&d.path().join("trk.db"), StoreOpts::default()).unwrap();
+    assert_eq!(
+        s.write(HUMAN, false, |c| c.reopen(&id, None))
+            .unwrap_err()
+            .code(),
+        Code::InvalidState
+    );
+    s.write(HUMAN, false, |c| c.check_lock_release(42)).unwrap();
+    assert_eq!(
+        s.write(HUMAN, false, |c| c.reopen(&id, None))
+            .unwrap_err()
+            .code(),
+        Code::InvalidState
+    );
+    s.write(HUMAN, false, |c| {
+        c.check_lock_take(42, None)?;
+        assert!(!c.gc_finish(&id, 41, true)?);
+        assert!(c.gc_reserve(&id, c.issue_revision(&id)?, 42)?);
+        c.check_lock_release(42)
+    })
+    .unwrap();
+    assert_eq!(collected_at(&s, &id), None);
+    s.write(HUMAN, false, |c| c.reopen(&id, None)).unwrap();
+}
+
 #[test]
 fn blocks_edges_are_acyclic() {
     let (_d, mut s) = setup();

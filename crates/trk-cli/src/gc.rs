@@ -66,6 +66,10 @@ impl Resource {
             space: None,
         }
     }
+
+    fn collected(&self) -> bool {
+        self.status != "skipped" && self.items.iter().all(|item| item["status"] != "skipped")
+    }
 }
 
 #[derive(Serialize)]
@@ -74,6 +78,24 @@ struct IssueResult {
     session: Resource,
     worktree: Resource,
     branch: Resource,
+}
+
+struct Plan {
+    id: String,
+    revision: i64,
+    claims: Vec<(Claim, bool)>,
+    gate: Option<&'static str>,
+}
+
+impl IssueResult {
+    fn skipped(id: String, reason: &str) -> Self {
+        Self {
+            id,
+            session: Resource::new("skipped", reason),
+            worktree: Resource::new("skipped", reason),
+            branch: Resource::new("skipped", reason),
+        }
+    }
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<Output> {
@@ -135,7 +157,7 @@ fn host_matches(claim: &Claim, host: Option<&str>) -> bool {
 fn session(
     env: &Env,
     claim: &Claim,
-    c: &mut Ctx<'_>,
+    recovered: bool,
     host: Option<&str>,
     protected: &[String],
     dry_run: bool,
@@ -149,7 +171,7 @@ fn session(
         ));
     }
     let Some(launcher) = crate::launcher::for_claim(env, claim.launcher.as_deref())? else {
-        return legacy_hc::recover(env, c, claim, protected, dry_run, recovery);
+        return legacy_hc::recover(env, recovered, claim, protected, dry_run, recovery);
     };
     let terminal = claim.terminal.as_deref().expect("filtered terminal");
     if launcher.is_herdr() {
@@ -356,27 +378,21 @@ fn branch(
     ))
 }
 
-/// Collect under the caller's queue lock and write transaction. Automatic
-/// sweeps omit ineligible issues; all resource safety gates remain shared.
+/// Collect under the caller's queue lock. Database planning, per-issue
+/// reservation and result recording are short transactions; effects are not.
 pub(crate) fn collect(
     env: &Env,
-    c: &mut Ctx<'_>,
     ids: &[String],
     dry_run: bool,
     abandoned: bool,
     older_than: Option<&str>,
     sweep: bool,
 ) -> Result<Value> {
-    collect_with_recovery(env, c, ids, dry_run, abandoned, older_than, sweep, false)
+    collect_with_recovery(env, ids, dry_run, abandoned, older_than, sweep, false)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "Share all collection safety gates while keeping legacy recovery opt-in for explicit runs"
-)]
 fn collect_with_recovery(
     env: &Env,
-    c: &mut Ctx<'_>,
     ids: &[String],
     dry_run: bool,
     abandoned: bool,
@@ -385,17 +401,17 @@ fn collect_with_recovery(
     legacy_hc: bool,
 ) -> Result<Value> {
     let age = older_than.map(parse_duration).transpose()?;
-    let host = hostname();
-    let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
-    let root = resolved(&env.worktrees_dir())?;
-    let repo = env.checkout();
-    let mut errors = Vec::new();
-    let mut recovery = legacy_hc::Recovery::new(legacy_hc);
-    let issues = {
+    let actor = env.actor()?;
+    let mut store = env.store()?;
+    let plans = store.write(actor, dry_run, |c| {
         let ids = if ids.is_empty() {
-            let mut stmt = c
-                .conn
-                .prepare("SELECT id FROM issue WHERE state = 'closed' ORDER BY id")?;
+            let query = if sweep {
+                "SELECT id FROM issue WHERE state = 'closed'
+                 AND gc_collected_at IS NULL ORDER BY id"
+            } else {
+                "SELECT id FROM issue WHERE state = 'closed' ORDER BY id"
+            };
+            let mut stmt = c.conn.prepare(query)?;
             stmt.query_map([], |r| r.get::<_, String>(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?
         } else {
@@ -405,44 +421,75 @@ fn collect_with_recovery(
                 .into_iter()
                 .collect()
         };
-        let mut results = Vec::new();
+        ids.into_iter()
+            .map(|id| {
+                let gate = eligibility(c, &id, abandoned, age)?;
+                let claims = if gate.is_none() {
+                    c.claims(&id)?
+                        .into_iter()
+                        .map(|claim| {
+                            let recovered = claim.launcher.as_deref().is_none_or(str::is_empty)
+                                && legacy_hc::recorded(c, &claim)?;
+                            Ok((claim, recovered))
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                } else {
+                    Vec::new()
+                };
+                Ok(Plan {
+                    revision: c.issue_revision(&id)?,
+                    id,
+                    claims,
+                    gate,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+    let mut results = Vec::new();
+    let mut errors = Vec::new();
+    // Avoid resource probes altogether when the sweep has no pending issues.
+    if plans.iter().any(|plan| plan.gate.is_none()) {
+        let host = hostname();
+        let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
+        let root = resolved(&env.worktrees_dir())?;
+        let repo = env.checkout();
+        let pid = i64::from(std::process::id());
+        let mut recovery = legacy_hc::Recovery::new(legacy_hc);
         let mut closed_spaces = BTreeSet::new();
-        for id in ids {
-            let issue = c.issue(&id)?;
-            let gate = if issue.state != State::Closed {
-                Some("issue is not closed")
-            } else if c.active_claim(&id)?.is_some() {
-                Some("issue has an active claim")
-            } else if issue.waiting_reason.is_some() || issue.waiting_check.is_some() {
-                Some("issue has waiting state")
-            } else if issue.close_reason.as_deref() != Some("done")
-                && !(abandoned && issue.close_reason.as_deref() == Some("abandoned"))
-            {
-                Some("issue was abandoned; use --abandoned")
-            } else if age.is_some_and(|age| {
-                issue
-                    .closed_at
-                    .as_deref()
-                    .and_then(parse_ts)
-                    .is_none_or(|at| c.now - at < age)
-            }) {
-                Some("issue closed more recently than --older-than (or closure time is unknown)")
-            } else {
-                None
-            };
+        for plan in plans {
+            let Plan {
+                id,
+                revision,
+                claims,
+                gate,
+            } = plan;
             if let Some(reason) = gate {
                 if !sweep {
-                    results.push(IssueResult {
-                        id,
-                        session: Resource::new("skipped", reason),
-                        worktree: Resource::new("skipped", reason),
-                        branch: Resource::new("skipped", reason),
-                    });
+                    results.push(IssueResult::skipped(id, reason));
                 }
                 continue;
             }
-            let claims = c.claims(&id)?;
-            let protected = protected_terminals(c, &id, host.as_deref())?;
+            // Reopening/reclaiming after the snapshot invalidates the plan,
+            // even if the issue was closed again within the same clock tick.
+            // The reservation fences this issue, not unrelated writers, until
+            // its external effects and result recording have finished.
+            let protected = store.write(actor, dry_run, |c| {
+                if c.issue_revision(&id)? != revision
+                    || eligibility(c, &id, abandoned, age)?.is_some()
+                {
+                    return Ok(None);
+                }
+                if !dry_run && !c.gc_reserve(&id, revision, pid)? {
+                    return Ok(None);
+                }
+                Ok(Some(protected_terminals(c, &id, host.as_deref())?))
+            })?;
+            let Some(protected) = protected else {
+                if !sweep {
+                    results.push(IssueResult::skipped(id, "issue changed since gc planning"));
+                }
+                continue;
+            };
             let mut sessions = Vec::new();
             let mut paths = Vec::new();
             let mut seen_terminals = BTreeSet::new();
@@ -450,7 +497,7 @@ fn collect_with_recovery(
             let mut removed = Vec::new();
             let mut clear = true;
             let mut planned_paths = BTreeSet::new();
-            for claim in &claims {
+            for (claim, recovered) in &claims {
                 if let Some(terminal) = &claim.terminal
                     && seen_terminals.insert((claim.host.as_deref(), terminal))
                 {
@@ -458,7 +505,7 @@ fn collect_with_recovery(
                         session(
                             env,
                             claim,
-                            c,
+                            *recovered,
                             host.as_deref(),
                             &protected,
                             dry_run,
@@ -522,27 +569,82 @@ fn collect_with_recovery(
             if branch.status == "removed" {
                 removed.push(branch.reason.clone());
             }
-            if !dry_run && !removed.is_empty() {
-                c.event(
-                    Some(&id),
-                    "note",
-                    json!({"body": format!("trk gc: {}.", removed.join("; "))}),
-                )?;
-            }
-            results.push(IssueResult {
+            let result = IssueResult {
                 id,
                 session: Resource::summary(sessions, "no recorded terminals"),
                 worktree: Resource::summary(paths, "no recorded worktrees"),
                 branch,
-            });
+            };
+            if !dry_run {
+                store.write(actor, false, |c| {
+                    let current = c.issue_revision(&result.id)? == revision
+                        && eligibility(c, &result.id, abandoned, age)?.is_none();
+                    for payload in recovery.receipts.drain(..) {
+                        c.event(Some(&result.id), "note", payload)?;
+                    }
+                    if !removed.is_empty() {
+                        c.event(
+                            Some(&result.id),
+                            "note",
+                            json!({"body": format!("trk gc: {}.", removed.join("; "))}),
+                        )?;
+                    }
+                    c.gc_finish(
+                        &result.id,
+                        pid,
+                        current
+                            && result.session.collected()
+                            && result.worktree.collected()
+                            && result.branch.collected(),
+                    )?;
+                    Ok(())
+                })?;
+                recovery.receipts.clear();
+            }
+            results.push(result);
         }
-        results
-    };
-    let mut data = json!({"dry_run": dry_run, "issues": issues});
+    } else if !sweep {
+        results.extend(
+            plans
+                .into_iter()
+                .map(|plan| IssueResult::skipped(plan.id, plan.gate.expect("ineligible plan"))),
+        );
+    }
+    let mut data = json!({"dry_run": dry_run, "issues": results});
     if !errors.is_empty() {
         data["errors"] = json!(errors);
     }
     Ok(data)
+}
+
+fn eligibility(
+    c: &Ctx<'_>,
+    id: &str,
+    abandoned: bool,
+    age: Option<jiff::SignedDuration>,
+) -> Result<Option<&'static str>> {
+    let issue = c.issue(id)?;
+    Ok(if issue.state != State::Closed {
+        Some("issue is not closed")
+    } else if c.active_claim(id)?.is_some() {
+        Some("issue has an active claim")
+    } else if issue.waiting_reason.is_some() || issue.waiting_check.is_some() {
+        Some("issue has waiting state")
+    } else if issue.close_reason.as_deref() != Some("done")
+        && !(abandoned && issue.close_reason.as_deref() == Some("abandoned"))
+    {
+        Some("issue was abandoned; use --abandoned")
+    } else if age.is_some_and(|age| {
+        issue
+            .closed_at
+            .as_deref()
+            .and_then(parse_ts)
+            .is_none_or(|at| c.now - at < age)
+    }) {
+        Some("issue closed more recently than --older-than (or closure time is unknown)")
+    } else {
+        None
+    })
 }
 
 pub fn run(
@@ -559,8 +661,8 @@ pub fn run(
             "--legacy-hc requires explicit issue IDs and independently verified hc provenance",
         ));
     }
-    let data = crate::check::with_gc_lock(env, dry_run, |c| {
-        collect_with_recovery(env, c, &ids, dry_run, abandoned, older_than, false, legacy_hc)
+    let data = crate::check::with_gc_lock(env, dry_run, || {
+        collect_with_recovery(env, &ids, dry_run, abandoned, older_than, false, legacy_hc)
     })?;
     if let Some(errors) = data["errors"].as_array() {
         let message = errors

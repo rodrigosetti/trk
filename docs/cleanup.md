@@ -10,8 +10,23 @@ trk gc --older-than 7d --abandoned --json # include abandoned issues closed over
 
 `trk gc [ID...] [--legacy-hc] [--dry-run] [--abandoned] [--older-than DURATION] [--json]` defaults to
 closed-as-done issues; `--abandoned` also includes abandoned issues. It never collects open,
-claimed or waiting issues, and serializes cleanup with the check queue and lifecycle writes.
+claimed or waiting issues, and serializes cleanup with the check queue.
 All historical claims are considered, but only resources on this host are eligible.
+
+GC snapshots candidates in a short database transaction, then revalidates each issue
+before reserving it for removal. Reopened or reclaimed issues invalidate the snapshot
+and are skipped, even if closed again before GC reaches them. While a target's removal
+is in progress, reopening that target is refused with a retry hint. Other issues'
+writes, including claim renewals, remain available: Git and launcher commands run
+outside database transactions. Results and cleanup notes are recorded in a second
+short transaction. Reservations are released with queue ownership, including when a
+later runner recovers a dead owner's lock.
+
+Once every recorded resource is removed or proven absent, GC records completion.
+Automatic `trk check` sweeps skip completed issues without probing their resources
+again. Any skipped resource or failed operation keeps the issue eligible for retry;
+reopening clears completion. Explicit `trk gc ID` still re-inspects completed issues.
+Dry runs do not record completion or reserve issues.
 
 Sessions use each historical claim's pinned launcher, never today's selection order.
 Terminals without a recorded launcher profile are normally skipped, including during
@@ -63,9 +78,10 @@ skipped; recovery never kills a live session.
 A successful real removal or proven absence appends a structured, GC-only note receipt:
 `gc_session: {claim: ID, terminal: ADDRESS, host: HOST, backend: "hc"}`.
 The receipt is bound to that historical claim; its original launcher and all other claim
-data remain unchanged. Later ordinary GC and check sweeps consult the receipt and recheck
-`hc`, allowing an absent session to be reported without repeating the missing-profile
-warning. A receipt is not proof of continued absence or a general launcher override.
+data remain unchanged. Later ordinary GC and pending check sweeps consult the receipt
+and recheck `hc`, allowing an absent session to be reported without repeating the
+missing-profile warning. Completed issues are omitted from automatic sweeps as above.
+A receipt is not proof of continued absence or a general launcher override.
 Failed or skipped recovery writes no receipt, and dry runs neither mutate resources nor
 write notes.
 

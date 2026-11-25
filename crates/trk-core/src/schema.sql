@@ -73,6 +73,7 @@ CREATE TABLE issue (
   closed_at        TEXT,
   wake_count       INTEGER NOT NULL DEFAULT 0 CHECK (wake_count >= 0),
   epic             TEXT REFERENCES epic(name) ON UPDATE CASCADE,
+  gc_collected_at  TEXT,
   CHECK ((state = 'closed') = (close_reason IS NOT NULL)),
   CHECK ((state = 'closed') = (closed_at IS NOT NULL)),
   CHECK (state = 'waiting' OR (waiting_check IS NULL AND waiting_reason IS NULL AND next_check_at IS NULL))
@@ -81,6 +82,8 @@ CREATE INDEX issue_state         ON issue(state);
 CREATE INDEX issue_updated       ON issue(updated_at);
 CREATE INDEX issue_due           ON issue(next_check_at) WHERE state = 'waiting';
 CREATE INDEX issue_epic          ON issue(epic);
+CREATE INDEX issue_gc_pending ON issue(closed_at, id)
+  WHERE state = 'closed' AND gc_collected_at IS NULL;
 
 -- src blocks dst: dst is not ready until src is closed.
 CREATE TABLE dep (
@@ -164,6 +167,22 @@ CREATE TABLE check_lock (
   started_at  TEXT NOT NULL,
   pgid        INTEGER
 );
+
+-- Destructive GC effects hold only this issue-scoped reservation, not a transaction.
+CREATE TABLE gc_reservation (
+  issue_id TEXT PRIMARY KEY REFERENCES issue(id),
+  lock_id  INTEGER NOT NULL CHECK (lock_id = 1)
+           REFERENCES check_lock(id) ON DELETE CASCADE
+);
+
+CREATE TRIGGER issue_gc_reserved BEFORE UPDATE OF state ON issue
+WHEN OLD.state = 'closed' AND NEW.state <> 'closed'
+  AND EXISTS (SELECT 1 FROM gc_reservation WHERE issue_id = OLD.id)
+BEGIN SELECT RAISE(ABORT, 'issue garbage collection is running; retry after it finishes'); END;
+
+CREATE TRIGGER issue_gc_reopen AFTER UPDATE OF state ON issue
+WHEN OLD.state = 'closed' AND NEW.state <> 'closed'
+BEGIN UPDATE issue SET gc_collected_at = NULL WHERE id = NEW.id; END;
 
 -- ============================================================
 -- Full-text search (title, description, notes)

@@ -20,6 +20,7 @@ impl GcEnv {
             r#"#!/bin/sh
 set -eu
 cd "$TRK_TEST_UI"
+printf '%s\n' "$*" >> herdr-calls
 case "$1" in
 ls)
     printf '{"spaces":['
@@ -40,6 +41,15 @@ do)
     [ "$#" = 6 ] && [ "$2" = space.close ] && [ "$3" = --id ] && [ "$5" = --confirmed ] && [ "$6" = true ]
     case "$4" in target|history|active|current|shared|decoy) ;; *) exit 1 ;; esac
     [ ! -f "closed-spaces/$4" ]
+    if [ "${TRK_TEST_GC_CLOSE_SPACE:-}" = "$4" ]; then
+        : > "$TRK_TEST_GC_CLOSE_GATE/ready"
+        attempts=0
+        while [ ! -f "$TRK_TEST_GC_CLOSE_GATE/release" ]; do
+            attempts=$((attempts + 1))
+            [ "$attempts" -lt 1000 ] || exit 1
+            sleep 0.02
+        done
+    fi
     : > "closed-spaces/$4"
     printf '%s\n' "$4" >> closes
     ;;
@@ -186,6 +196,79 @@ esac
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    fn pause_gc(&self, args: &[&str]) -> CheckRunner {
+        let gate = self.e.dir.path().join("gc-gate");
+        std::fs::create_dir(&gate).unwrap();
+        let path = std::env::join_paths(
+            std::iter::once(self.bin.clone())
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"));
+        command
+            .arg("--json")
+            .args(args)
+            .env("PATH", path)
+            .env("TRK_TEST_UI", self.e.dir.path())
+            .env("TRK_TEST_GC_CLOSE_SPACE", "target")
+            .env("TRK_TEST_GC_CLOSE_GATE", &gate)
+            .env_remove("HC_TERMINAL_ID")
+            .stdout(std::fs::File::create(self.e.dir.path().join("gc-output")).unwrap())
+            .stderr(std::fs::File::create(self.e.dir.path().join("gc-stderr")).unwrap());
+        let runner = CheckRunner::spawn_command(&self.e, command);
+        check_wait_until("GC to pause inside launcher close", || {
+            gate.join("ready").exists()
+        });
+        runner
+    }
+
+    fn finish_gc(&self, runner: &mut CheckRunner) -> Value {
+        std::fs::write(self.e.dir.path().join("gc-gate/release"), "").unwrap();
+        let status = runner.wait();
+        let stdout = std::fs::read(self.e.dir.path().join("gc-output")).unwrap();
+        let stderr = std::fs::read_to_string(self.e.dir.path().join("gc-stderr")).unwrap();
+        assert!(
+            status.success(),
+            "stdout={} stderr={stderr}",
+            String::from_utf8_lossy(&stdout)
+        );
+        let value: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(value["ok"], true, "{value:#}");
+        value["data"].clone()
+    }
+
+    fn log_git_calls(&self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let output = StdCommand::new("sh")
+            .args(["-c", "command -v git"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let real_git = String::from_utf8(output.stdout).unwrap();
+        let executable = self.bin.join("git");
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$TRK_TEST_UI/git-calls\"\nexec '{}' \"$@\"\n",
+                real_git.trim().replace('\'', "'\\''")
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn calls(&self, launcher: &str) -> String {
+        std::fs::read_to_string(self.e.dir.path().join(format!("{launcher}-calls")))
+            .unwrap_or_default()
+    }
+
+    fn clear_calls(&self) {
+        for launcher in ["herdr", "git"] {
+            std::fs::write(self.e.dir.path().join(format!("{launcher}-calls")), "").unwrap();
+        }
     }
 
     fn legacy_claim(&self, id: &str, terminal: &str, host: &str, launcher: Option<&str>) {
@@ -915,13 +998,13 @@ fn gc_absent_historical_worktrees_are_not_outside_directory_skips() {
 
         for _ in 0..2 {
             let data = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
-            let issue = gc_issue(&data["gc"], &id);
-            gc_status(issue, "worktree", "absent");
-            gc_status(
-                issue,
-                "branch",
-                if registered { "skipped" } else { "absent" },
-            );
+            if registered {
+                let issue = gc_issue(&data["gc"], &id);
+                gc_status(issue, "worktree", "absent");
+                gc_status(issue, "branch", "skipped");
+            } else {
+                assert!(data.get("gc").is_none(), "{data:#}");
+            }
             assert_eq!(fixture.branch_exists(&id), registered);
         }
         if registered {
@@ -965,9 +1048,7 @@ fn gc_worktreeless_run_never_collects_a_coincidentally_named_branch() {
     }
 
     let sweep = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
-    let issue = gc_issue(&sweep["gc"], &id);
-    assert_eq!(issue["worktree"]["status"], "absent", "{issue:#}");
-    gc_status(issue, "branch", "absent");
+    assert!(sweep.get("gc").is_none(), "{sweep:#}");
     assert!(fixture.branch_exists(&id));
     assert!(fixture.e.repo().is_dir());
     assert_eq!(fixture.notes(&id), notes);
@@ -1588,4 +1669,225 @@ fn gc_legacy_hc_failed_identity_probe_or_removal_never_records_success() {
         assert!(fixture.legacy_receipts(&id).is_empty());
         assert_eq!(fixture.notes(&id), notes);
     }
+}
+
+#[test]
+fn gc_paused_launcher_close_allows_unrelated_writes_but_reserves_its_target() {
+    for automatic in [false, true] {
+        let fixture = GcEnv::new();
+        check_gc_config(&fixture, "gc_grace = \"0\"");
+        let (id, path) = fixture.closed("done", "term-target");
+        let active = fixture.e.create(&["Unrelated active issue"]);
+        fixture.claim(&active, None, "term-active", &fixture.host);
+        let mut writer = fixture.store_at("2026-11-20T10:00:00Z");
+        writer
+            .conn()
+            .busy_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
+        let args = if automatic {
+            vec!["check"]
+        } else {
+            vec!["gc", id.as_str()]
+        };
+        let mut runner = fixture.pause_gc(&args);
+
+        // This BEGIN IMMEDIATE must finish while launcher close is still paused.
+        writer
+            .write("human:alice@example.com", false, |context| {
+                context.note(&active, "written during launcher close", None, false)?;
+                Ok(())
+            })
+            .unwrap();
+        let error = writer
+            .write("human:alice@example.com", false, |context| {
+                context.reopen(&id, None)
+            })
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                trk_core::error::Error::Coded(coded)
+                    if coded.code == trk_core::error::Code::InvalidState
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("garbage collection"), "{error}");
+        writer
+            .write("human:alice@example.com", false, |context| {
+                context.note(&active, "written after rejected reopen", None, false)?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(fixture.e.ok(&["show", &id])["state"], "closed");
+        assert!(fixture.closed_spaces().is_empty());
+        assert!(path.is_dir());
+
+        fixture.finish_gc(&mut runner);
+        assert!(!path.exists());
+        assert!(!fixture.branch_exists(&id));
+        assert_eq!(fixture.closed_spaces(), ["target"]);
+        let notes = fixture.notes(&active);
+        assert!(
+            notes
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|note| note["body"] == "written during launcher close")
+        );
+        assert!(
+            notes
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|note| note["body"] == "written after rejected reopen")
+        );
+        assert_eq!(fixture.e.ok(&["reopen", &id])["state"], "open");
+    }
+}
+
+#[test]
+fn gc_revalidates_later_planned_issues_before_removing_their_resources() {
+    for automatic in [false, true] {
+        for reclaim in [false, true] {
+            let fixture = GcEnv::new();
+            check_gc_config(&fixture, "gc_grace = \"0\"");
+            let mut ids = [
+                fixture.e.create(&["First planned target"]),
+                fixture.e.create(&["Later planned target"]),
+            ];
+            ids.sort();
+            let first = &ids[0];
+            let second = &ids[1];
+            let first_path = fixture.worktree(first);
+            let second_path = fixture.worktree(second);
+            fixture.claim(first, Some(&first_path), "term-target", &fixture.host);
+            fixture.claim(second, Some(&second_path), "term-history", &fixture.host);
+            fixture.close_at(first, "done", "2026-11-20T10:00:00Z");
+            fixture.close_at(second, "done", "2026-11-20T10:00:00Z");
+            let mut writer = fixture.store_at("2026-11-20T10:00:00Z");
+            writer
+                .conn()
+                .busy_timeout(std::time::Duration::from_millis(100))
+                .unwrap();
+            let args = if automatic {
+                vec!["check"]
+            } else {
+                vec!["gc", first.as_str(), second.as_str()]
+            };
+            let mut runner = fixture.pause_gc(&args);
+
+            writer
+                .write("human:alice@example.com", false, |context| {
+                    context.reopen(second, None)?;
+                    if reclaim {
+                        context.claim(
+                            second,
+                            trk_core::ops::ClaimOpts {
+                                worktree: Some(second_path.to_string_lossy().into_owned()),
+                                terminal: Some("term-history".into()),
+                                host: Some(fixture.host.clone()),
+                                launcher: Some("herdr".into()),
+                                ..Default::default()
+                            },
+                        )?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+
+            fixture.finish_gc(&mut runner);
+            assert!(!first_path.exists());
+            assert!(!fixture.branch_exists(first));
+            assert!(second_path.is_dir());
+            assert!(fixture.branch_exists(second));
+            assert_eq!(fixture.closed_spaces(), ["target"]);
+            assert!(!fixture.e.dir.path().join("closed-spaces/history").exists());
+            assert_eq!(
+                fixture.e.ok(&["show", second])["state"],
+                if reclaim { "claimed" } else { "open" }
+            );
+        }
+    }
+}
+
+#[test]
+fn check_gc_collected_targets_skip_resource_probes_until_reopened_and_closed() {
+    let fixture = GcEnv::new();
+    check_gc_config(&fixture, "gc_grace = \"0\"");
+    let (id, path) = fixture.closed("done", "term-target");
+    fixture.log_git_calls();
+    let first = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
+    for resource in ["session", "worktree", "branch"] {
+        gc_status(gc_issue(&first["gc"], &id), resource, "removed");
+    }
+    assert!(!path.exists());
+    assert!(!fixture.calls("herdr").is_empty());
+    assert!(fixture.calls("git").contains(&id));
+    let notes = fixture.notes(&id);
+    fixture.clear_calls();
+    let without_gc = check_gc_at(&fixture, "2026-11-20T12:00:01Z", &["check", "--no-gc"]);
+    assert!(without_gc.get("gc").is_none(), "{without_gc:#}");
+    // Environment discovery lists worktrees even without GC. A collected
+    // sweep must add no probes beyond that same command's discovery calls.
+    let discovery_git_calls = fixture.calls("git");
+    assert_eq!(fixture.calls("herdr"), "");
+    fixture.clear_calls();
+
+    let second = check_gc_at(&fixture, "2026-11-20T12:00:01Z", &["check"]);
+    assert!(second.get("gc").is_none(), "{second:#}");
+    assert_eq!(fixture.calls("herdr"), "");
+    let git_calls = fixture.calls("git");
+    assert!(!git_calls.contains(&id), "{git_calls}");
+    assert_eq!(git_calls, discovery_git_calls);
+    assert_eq!(fixture.notes(&id), notes);
+
+    fixture.e.ok(&["reopen", &id]);
+    fixture.close_at(&id, "done", "2026-11-20T12:00:02Z");
+    fixture.clear_calls();
+    let reopened = check_gc_at(&fixture, "2026-11-20T12:00:03Z", &["check"]);
+    for resource in ["session", "worktree", "branch"] {
+        gc_status(gc_issue(&reopened["gc"], &id), resource, "absent");
+    }
+    assert!(!fixture.calls("herdr").is_empty());
+    assert!(fixture.calls("git").contains(&id));
+}
+
+#[test]
+fn check_gc_mixed_removed_and_skipped_items_remain_eligible_for_collection() {
+    let fixture = GcEnv::new();
+    check_gc_config(&fixture, "gc_grace = \"0\"");
+    let id = fixture.e.create(&["Mixed historical sessions"]);
+    fixture.claim(&id, None, "term-history", "foreign.invalid");
+    fixture.e.ok(&["unclaim", &id]);
+    let path = fixture.worktree(&id);
+    fixture.claim(&id, Some(&path), "term-target", &fixture.host);
+    fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
+
+    let first = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
+    let issue = gc_issue(&first["gc"], &id);
+    for resource in ["session", "worktree", "branch"] {
+        gc_status(issue, resource, "removed");
+    }
+    let sessions = issue["session"]["items"].as_array().unwrap();
+    assert!(sessions.iter().any(|item| item["status"] == "removed"));
+    assert!(sessions.iter().any(|item| item["status"] == "skipped"));
+    assert!(!path.exists());
+    assert!(!fixture.branch_exists(&id));
+    assert_eq!(fixture.closed_spaces(), ["target"]);
+
+    let second = check_gc_at(&fixture, "2026-11-20T12:00:01Z", &["check"]);
+    gc_status(gc_issue(&second["gc"], &id), "session", "skipped");
+    fixture
+        .store_at("2026-11-20T12:00:02Z")
+        .conn()
+        .execute(
+            "UPDATE claim SET host = ?1 WHERE issue_id = ?2 AND host = 'foreign.invalid'",
+            (fixture.host.as_str(), id.as_str()),
+        )
+        .unwrap();
+    let third = check_gc_at(&fixture, "2026-11-20T12:00:03Z", &["check"]);
+    gc_status(gc_issue(&third["gc"], &id), "session", "removed");
+    assert_eq!(fixture.closed_spaces(), ["target", "history"]);
+    let fourth = check_gc_at(&fixture, "2026-11-20T12:00:04Z", &["check"]);
+    assert!(fourth.get("gc").is_none(), "{fourth:#}");
 }
