@@ -19,6 +19,22 @@ you can with `trk link orch-4kq https://… -l "PR #12"`; `trk unlink` removes i
 and shows them: the first link appears on the issue's row in the dashboard, where `l` opens it
 in the browser, and the details list them all. In Herdr the links are clickable.
 
+The terminal dashboard keeps **Needs you**, **In flight**, **Waiting**, **Ready**, and
+**Blocked** as its top-level groups. Press **`E`** (uppercase; `e` edits) to toggle
+epic grouping inside every state group. Grouping starts off for each dashboard session;
+flat rows show dim epic tags, truncated or dropped before the title, link, or status
+loses space on narrow terminals.
+
+With grouping on, dim epic sub-headers show each epic's name and issue count in that
+state group. Issues retain the fixed priority (P0 first), oldest creation time, then
+ID order; there is no selectable sort in the TUI. Buckets rank by their top issue's
+priority, then creation time, with epic-name ties. **No epic** is always last.
+An entirely unassigned state group stays flat, without a **No epic** sub-header.
+Epic sub-headers are not foldable or selectable: `j`/`k` and `g`/`G` navigate issues
+in displayed order. Toggling grouping keeps the selected issue and its details.
+The `blocked by` hint names a blocker's epic when different from the blocked issue's,
+including **No epic** for an unassigned blocker. `?` and the footer show the toggle.
+
 In the dashboard, select a waiting / needs-you issue and press `v` to **Resume** the
 original session, including when it has no check. Enter a nonempty continuation message
 (for example, `SSH unlocked; continue`) and press Enter; Esc cancels without changes.
