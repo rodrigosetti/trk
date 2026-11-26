@@ -205,6 +205,7 @@ fn restart_while_watch_is_idle_preserves_emitted_results() {
         std::fs::read_to_string(&install.output).is_ok_and(|s| s.contains("not yet"))
     });
     assert_eq!(std::fs::read(&install.stderr).unwrap(), b"");
+    let before_restart = check_watch::snapshot(&e, runner.child.id(), false);
     let next = e.waiting(
         "queued while idle",
         "test -f \"$TRK_REPO/restarted\" || exit 42; \
@@ -212,9 +213,26 @@ fn restart_while_watch_is_idle_preserves_emitted_results() {
     );
     install.replace();
     check_wait_until("idle watcher restart without waiting one hour", || {
+        let watcher = e.ok(&["dashboard"])["check_runner"].clone();
+        assert_eq!(watcher["pid"], runner.child.id(), "{watcher}");
+        assert_eq!(watcher["started_at"], before_restart["started_at"]);
+        assert!(
+            watcher["heartbeat_at"]
+                .as_str()
+                .unwrap()
+                .parse::<jiff::Timestamp>()
+                .unwrap()
+                >= before_restart["heartbeat_at"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<jiff::Timestamp>()
+                    .unwrap()
+        );
         std::fs::read_to_string(&install.output).is_ok_and(|s| s.contains(&next))
     });
     install.assert_restart(&e, &runner, &args);
+    let after_restart = check_watch::snapshot(&e, runner.child.id(), false);
+    assert_eq!(after_restart["started_at"], before_restart["started_at"]);
     runner.signal("-INT");
     assert!(!runner.wait().success());
     let output = std::fs::read_to_string(&install.output).unwrap();

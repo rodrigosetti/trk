@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 #[path = "cli/restart.rs"]
 mod restart;
 
+#[path = "cli/check_watch.rs"]
+mod check_watch;
+
 #[path = "cli/resume.rs"]
 mod resume;
 

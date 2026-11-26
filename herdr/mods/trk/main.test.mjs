@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { SourceTextModule, SyntheticModule } from "node:vm";
 
@@ -42,7 +46,10 @@ async function dashboard(state) {
     "gpui-base": {
       v_flex: () => new Element("column"), h_flex: () => new Element("row"),
       h_resizable: () => new Element("split"), resizable_panel: () => new Element("panel"),
-      InputState: { new: () => ({ on() {} }) }, Input() {}, TextView: {},
+      InputState: { new: () => ({
+        text: "", on() {}, focus() {}, set_value(text) { this.text = text; }, value() { return this.text; },
+      }) },
+      Input() {}, TextView: { markdown: (_id, text) => new Element("markdown").child(text) },
     },
     herdr: {
       spaces: () => state.spaces,
@@ -198,6 +205,71 @@ test("CLI errors without hints retain their message and fallback diagnostics", a
   }
 });
 
+test("current CLI envelopes render issues, ordinary notes and timeline, and accept a dashboard note", async () => {
+  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const target = join(repo, "target");
+  execFileSync("cargo", ["build", "--locked", "-p", "trk-cli", "--target-dir", target], { cwd: repo, stdio: "pipe" });
+  const folder = await mkdtemp(join(tmpdir(), "trk-herdr-contract-"));
+  try {
+    const home = join(folder, "home");
+    await mkdir(home);
+    const env = {
+      ...process.env, HOME: home, TRK_USER_DIR: join(folder, "user"),
+      TRK_ACTOR: "human:dashboard@example.com", TRK_NOW: "2026-11-20T10:00:00Z",
+    };
+    delete env.TRK_DIR;
+    const cli = (args) => execFileSync(join(target, "debug", "trk"), args, { cwd: folder, env, encoding: "utf8" });
+    cli(["--json", "install", "--prefix", "test"]);
+    const issue = JSON.parse(cli(["--json", "create", "Current CLI dashboard issue"])).data;
+    cli(["--json", "note", issue.id, "--", "Ordinary v5 note"]);
+    const state = {
+      ...spaceState(), props: { folder },
+      exec: async (_command, args) => ({ code: 0, stdout: cli(args), stderr: "" }),
+    };
+    const { view } = await dashboard(state);
+    const pending = [];
+    const cx = { ...sortContext, spawn: (run) => { pending.push(run(cx)); } };
+    const settle = async () => { while (pending.length) await pending.shift(); };
+    view.context = { cwd: folder, on: null };
+    view.render();
+    view.load(cx);
+    await settle();
+    assert.equal(view.error, null, "the embedded consumer must accept the current CLI's schema");
+    let tree = view.render();
+    assert.ok(content(findElement(tree, `row-${issue.id}`)).includes(issue.title));
+    view.select(issue.id, cx);
+    await settle();
+    tree = view.render();
+    assert.ok(content(findElement(tree, `detail-${issue.id}`)).includes("Ordinary v5 note"));
+    assert.ok(content(tree).includes("Timeline"));
+    assert.equal(content(tree).some((text) => /to.agent/i.test(text)), false);
+
+    findElement(tree, `note-${issue.id}`).click({}, cx);
+    view.input.set_value("Note submitted from the dashboard");
+    view.submit(cx);
+    await settle();
+    assert.equal(view.status.text, `note ${issue.id}: done`);
+    assert.ok(content(view.render()).includes("Note submitted from the dashboard"));
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test("an incompatible CLI version still renders the refresh warning", async () => {
+  const state = spaceState();
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({
+    ok: true, schema_version: 6, data: { issues: [] },
+  }) };
+  const { view } = await dashboard(state);
+  view.context = { cwd: "/current-project", root: "/current-project" };
+  let pending;
+  const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
+  view.load(cx);
+  await pending;
+  assert.ok(content(view.render()).includes(
+    "This mod reads trk's JSON version 5; the installed trk writes 6. Run `trk install` to refresh the mod."));
+});
+
 function findElement(node, id) {
   if (typeof node === "string") return null;
   return node.elementId === id ? node : node.nodes.map((child) => findElement(child, id)).find(Boolean);
@@ -243,7 +315,7 @@ test("Run confirmation survives refresh and dispatches once after a stale action
   // Exercise the real snapshot/detail refresh, not just a repaint.
   state.exec = async (_command, args) => ({
     code: 0, stderr: "", stdout: JSON.stringify({
-      ok: true, schema_version: 4,
+      ok: true, schema_version: 5,
       data: args.includes("dashboard") ? { issues: [...issues].reverse() } : { id: "b" },
     }),
   });
@@ -269,7 +341,7 @@ test("Run confirmation survives refresh and dispatches once after a stale action
     code: args.includes("run") ? 5 : 0, stderr: "", stdout: JSON.stringify(
       args.includes("run")
         ? { ok: false, error: { message: "b is claimed, not ready", hint: "Refresh before retrying" } }
-        : { ok: true, schema_version: 4, data: args.includes("dashboard") ? { issues } : { id: "b" } }),
+        : { ok: true, schema_version: 5, data: args.includes("dashboard") ? { issues } : { id: "b" } }),
   });
   clickRun();
   clickRun();
@@ -439,7 +511,7 @@ test("sort stays within groups and drives navigation and agent order without los
     assert.equal(view.selected, selected);
   }
   view.context = { root: "/current-project", cwd: "/current-project" };
-  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 4, data: { issues: [...issues, attention].reverse() } }) };
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 5, data: { issues: [...issues, attention].reverse() } }) };
   let pending;
   const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
   view.load(cx);
@@ -722,7 +794,7 @@ test("epic folds survive sorting, refresh, parent folding and grouping toggles w
   findElement(tree, "group-epic").click({}, sortContext);
   view.context = { root: "/current-project", cwd: "/current-project" };
   const refreshed = [...epicIssues().reverse(), { ...epicIssues()[0], id: "new-alpha" }];
-  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 4, data: { issues: refreshed } }) };
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 5, data: { issues: refreshed } }) };
   let pending;
   const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
   view.load(cx);
@@ -787,7 +859,7 @@ test("grouping and refresh cannot leave a selected issue inside a folded epic; a
   view.selected = "b";
   view.context = { root: "/current-project", cwd: "/current-project" };
   const issues = epicIssues().map((i) => i.id === "b" ? { ...i, epic: null } : i);
-  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 4, data: { issues } }) };
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 5, data: { issues } }) };
   let pending;
   const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
   view.load(cx);

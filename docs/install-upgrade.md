@@ -20,6 +20,14 @@ See the [changelog](https://github.com/rodrigosetti/trk/blob/main/CHANGELOG.md) 
 
 This builds a release binary and installs it to `~/.cargo/bin/trk`. It also refreshes
 the Herdr mod if already installed.
+
+The dashboard consumes JSON schema 5 (ordinary notes, with Send/Resume for session
+steering). If it reports an incompatible JSON version, upgrade the binary from
+corrected source before refreshing: `trk herdr install --if-installed` refreshes
+the machine-wide mods without reinstalling project seeds. Development mod-folder
+symlinks are left untouched; update their source separately. Personal layouts
+are preserved by the installer.
+
 trk keeps no global database; an optional user configuration can be shared across projects.
 Set up each project:
 

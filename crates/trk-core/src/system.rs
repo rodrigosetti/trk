@@ -19,6 +19,60 @@ pub fn process_liveness(pid: i64) -> Liveness {
     }
 }
 
+/// Whether a process can still be the one recorded at `started`.
+/// Unknown probes conservatively preserve ownership; only proven PID reuse
+/// or a vanished process returns false.
+pub fn process_started_before(pid: i64, started: &str) -> bool {
+    match process_liveness(pid) {
+        Liveness::Gone => return false,
+        Liveness::Unknown => return true,
+        Liveness::Alive => {}
+    }
+    // ps elapsed time is portable across macOS/Linux and avoids local-time
+    // ambiguity in lstart. Sample before ps and subtract another second for its
+    // rounding: only a process definitely newer than the lock proves PID reuse.
+    let observed = jiff::Timestamp::now().as_second();
+    let reused = || -> Option<bool> {
+        let locked = started.parse::<jiff::Timestamp>().ok()?.as_second();
+        let out = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "etime="])
+            .env("LC_ALL", "C")
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = std::str::from_utf8(&out.stdout).ok()?.trim();
+        let (days, clock) = match text.split_once('-') {
+            Some((days, clock)) => (days.parse::<i64>().ok()?, clock),
+            None => (0, text),
+        };
+        let mut fields = clock.rsplit(':');
+        let seconds = fields.next()?.parse::<i64>().ok()?;
+        let minutes = fields.next()?.parse::<i64>().ok()?;
+        let hours = fields
+            .next()
+            .map(str::parse::<i64>)
+            .transpose()
+            .ok()?
+            .unwrap_or(0);
+        if fields.next().is_some()
+            || days < 0
+            || hours < 0
+            || !(0..60).contains(&minutes)
+            || !(0..60).contains(&seconds)
+        {
+            return None;
+        }
+        let elapsed = days
+            .checked_mul(86400)?
+            .checked_add(hours.checked_mul(3600)?)?
+            .checked_add(minutes * 60 + seconds)?;
+        Some(observed.checked_sub(elapsed)?.checked_sub(1)? > locked)
+    };
+    !reused().unwrap_or(false)
+}
+
 /// Probe a process group by its positive group ID. This includes zombies.
 pub fn group_liveness(pgid: i64) -> Liveness {
     match positive_pid(pgid) {
@@ -82,6 +136,18 @@ mod tests {
             process_liveness(i64::from(std::process::id())),
             Liveness::Alive
         );
+    }
+
+    #[test]
+    fn own_process_predates_now_but_not_an_ancient_record() {
+        let pid = i64::from(std::process::id());
+        assert!(process_started_before(
+            pid,
+            &jiff::Timestamp::now().to_string()
+        ));
+        assert!(!process_started_before(pid, "1970-01-01T00:00:00Z"));
+        // An invalid record cannot prove process reuse.
+        assert!(process_started_before(pid, "unknown"));
     }
 
     #[test]

@@ -144,3 +144,177 @@ fn dashboard_and_dependency_epics_preserve_default_order() {
         assert_eq!(shown["deps"]["blocks"][0].get("epic"), Some(&Value::Null));
     }
 }
+
+#[test]
+fn check_watch_is_visible_while_idle_and_uses_physical_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixed: jiff::Timestamp = "2000-01-01T00:00:00Z".parse().unwrap();
+    let mut store = Store::install(
+        &dir.path().join("trk.db"),
+        StoreOpts {
+            now: Some(fixed),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = jiff::Timestamp::now();
+    let pid = i64::from(std::process::id());
+    store
+        .write(HUMAN, false, |c| c.check_watch_register(pid, None))
+        .unwrap();
+    let after = jiff::Timestamp::now();
+    let dashboard = snapshot(&store);
+    let runner = &dashboard["check_runner"];
+    assert_eq!(runner["pid"], pid);
+    assert_eq!(runner["host"], Value::Null);
+    assert_eq!(runner["busy"], false);
+    assert_eq!(runner["started_at"], runner["heartbeat_at"]);
+    let started: jiff::Timestamp = runner["started_at"].as_str().unwrap().parse().unwrap();
+    assert!(before <= started && started <= after);
+    assert_eq!(
+        dashboard["generated_at"]
+            .as_str()
+            .unwrap()
+            .parse::<jiff::Timestamp>()
+            .unwrap(),
+        fixed
+    );
+
+    // A one-shot queue owner makes the watcher busy, without becoming a watcher.
+    store
+        .write(HUMAN, false, |c| c.check_lock_take(pid + 1, None))
+        .unwrap();
+    assert_eq!(snapshot(&store)["check_runner"]["busy"], true);
+    store
+        .write(HUMAN, false, |c| c.check_watch_release(pid, None))
+        .unwrap();
+    assert!(snapshot(&store)["check_runner"].is_null());
+    assert!(store.read(None, |c| c.check_lock()).unwrap().is_some());
+}
+
+#[test]
+fn expired_watchers_are_filtered_without_mutating_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::install(&dir.path().join("trk.db"), StoreOpts::default()).unwrap();
+    store
+        .write(HUMAN, false, |c| c.check_watch_register(41, None))
+        .unwrap();
+    let expired = (jiff::Timestamp::now() - jiff::SignedDuration::from_secs(31)).to_string();
+    store
+        .conn()
+        .execute("UPDATE check_watch SET heartbeat_at = ?1", [&expired])
+        .unwrap();
+    assert!(snapshot(&store)["check_runner"].is_null());
+    assert_eq!(
+        store
+            .conn()
+            .query_row("SELECT count(*) FROM check_watch", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    // A second startup must not erase an expired watcher's ability to resume.
+    store
+        .write(HUMAN, false, |c| {
+            c.check_watch_register(42, None)?;
+            c.check_watch_release(42, None)
+        })
+        .unwrap();
+    assert!(snapshot(&store)["check_runner"].is_null());
+
+    // Heartbeats must not use a far-future issue/test clock either.
+    store.opts.now = Some("2099-01-01T00:00:00Z".parse().unwrap());
+    let before = jiff::Timestamp::now();
+    store
+        .write(HUMAN, false, |c| c.check_watch_heartbeat(41, None))
+        .unwrap();
+    let dashboard = snapshot(&store);
+    let heartbeat = dashboard["check_runner"]["heartbeat_at"]
+        .as_str()
+        .unwrap()
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+    assert!(before <= heartbeat && heartbeat <= jiff::Timestamp::now());
+}
+
+#[test]
+fn fresh_remote_and_unknown_host_watchers_do_not_probe_local_pids() {
+    for host in [None, Some("watch.remote.invalid")] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::install(&dir.path().join("trk.db"), StoreOpts::default()).unwrap();
+        // A reaped local PID cannot rule out a process on a different/unknown host.
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        let pid = i64::from(child.id());
+        child.wait().unwrap();
+        store
+            .write(HUMAN, false, |c| c.check_watch_register(pid, host))
+            .unwrap();
+        assert_eq!(snapshot(&store)["check_runner"]["pid"], pid);
+    }
+}
+
+#[test]
+fn fresh_known_local_watchers_reject_dead_and_reused_pids() {
+    let Some(host) = trk_core::system::hostname() else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::install(&dir.path().join("trk.db"), StoreOpts::default()).unwrap();
+    let mut child = std::process::Command::new("/bin/sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .unwrap();
+    let pid = i64::from(child.id());
+    child.wait().unwrap();
+    store
+        .write(HUMAN, false, |c| c.check_watch_register(pid, Some(host)))
+        .unwrap();
+    assert!(snapshot(&store)["check_runner"].is_null());
+    store
+        .conn()
+        .execute(
+            "UPDATE check_watch SET pid = ?1, started_at = '1970-01-01T00:00:00Z'",
+            [i64::from(std::process::id())],
+        )
+        .unwrap();
+    assert!(snapshot(&store)["check_runner"].is_null());
+}
+
+#[test]
+fn multiple_watchers_prefer_queue_owner_then_oldest_with_stable_ties() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::install(&dir.path().join("trk.db"), StoreOpts::default()).unwrap();
+    let now = jiff::Timestamp::now().to_string();
+    for (pid, host, started) in [
+        (42, "", "2020-01-01T00:00:00Z"),
+        (41, "", "2020-01-01T00:00:00Z"),
+        (43, "watch.remote.invalid", "2021-01-01T00:00:00Z"),
+    ] {
+        store.conn().execute(
+            "INSERT INTO check_watch (pid, host, started_at, heartbeat_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![pid, host, started, now],
+        ).unwrap();
+    }
+    assert_eq!(snapshot(&store)["check_runner"]["pid"], 41);
+    store
+        .write(HUMAN, false, |c| {
+            c.check_lock_take(43, Some("watch.remote.invalid"))
+        })
+        .unwrap();
+    let dashboard = snapshot(&store);
+    assert_eq!(dashboard["check_runner"]["pid"], 43);
+    // Holding the queue is busy even before a subprocess group exists.
+    assert_eq!(dashboard["check_runner"]["busy"], true);
+    store
+        .write(HUMAN, false, |c| c.check_lock_take(43, None))
+        .unwrap();
+    // A PID match on a different host does not identify the owning watcher.
+    assert_eq!(snapshot(&store)["check_runner"]["pid"], 41);
+    store
+        .write(HUMAN, false, |c| c.check_lock_release(43))
+        .unwrap();
+    assert_eq!(snapshot(&store)["check_runner"]["busy"], false);
+}
