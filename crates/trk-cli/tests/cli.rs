@@ -675,6 +675,8 @@ fn only_one_check_runs_at_a_time() {
         "echo second > \"$TRK_REPO/check-second\"; exit 75",
     ]);
     assert_check_busy(&e, first.child.id(), pgid);
+    let refused = e.err(&["check", "--unlock"], 4, "invalid_state");
+    assert_eq!(refused["holder"]["pid"], first.child.id());
     assert!(!e.repo().join("check-second").exists());
     std::fs::write(e.repo().join("check-release"), "").unwrap();
     assert!(first.wait().success());
@@ -827,6 +829,116 @@ fn assert_check_busy(e: &Env, pid: u32, pgid: i64) {
     assert_eq!(holder["pgid"], pgid);
 }
 
+fn seed_check_holder(e: &Env, pid: i64, host: Option<&str>, started: &str, pgid: Option<i64>) {
+    let store =
+        trk_core::Store::open(&e.trk_dir().join("trk.db"), trk_core::StoreOpts::default()).unwrap();
+    store.conn().execute(
+        "INSERT OR REPLACE INTO check_lock (id, pid, host, started_at, pgid) VALUES (1, ?1, ?2, ?3, ?4)",
+        (pid, host, started, pgid),
+    ).unwrap();
+}
+
+#[test]
+fn check_recovers_a_recycled_pid_without_touching_the_unrelated_process() {
+    let e = Env::new();
+    let id = e.waiting(
+        "recycled pid",
+        "echo ran > \"$TRK_REPO/recovered\"; exit 75",
+    );
+    // This live test process cannot be the runner from the year 2000.
+    seed_check_holder(
+        &e,
+        i64::from(std::process::id()),
+        Some(&local_host()),
+        "2000-01-01T00:00:00Z",
+        None,
+    );
+    // Previews use the same identity rules without mutating the lock.
+    e.ok(&["gc", "--dry-run"]);
+    assert_ne!(e.ok(&["whoami"])["check_running"], Value::Null);
+    let recovered = e.ok(&["check", &id]);
+    assert_eq!(recovered["busy"], false);
+    assert_eq!(recovered["results"][0]["result"], "retry");
+    assert_eq!(
+        std::fs::read_to_string(e.repo().join("recovered")).unwrap(),
+        "ran\n"
+    );
+    assert_eq!(e.ok(&["whoami"])["check_running"], Value::Null);
+}
+
+#[test]
+fn check_keeps_ambiguous_process_identity_and_live_groups_locked() {
+    let e = Env::new();
+    let id = e.waiting("protected", "touch \"$TRK_REPO/unsafe\"; exit 75");
+    let pid = i64::from(std::process::id());
+    let output = StdCommand::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "pgid="])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let pgid = String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse::<i64>()
+        .unwrap();
+    for (started, group) in [
+        ("invalid timestamp", None),
+        ("9999-01-01T00:00:00Z", None),
+        ("2000-01-01T00:00:00Z", Some(pgid)),
+    ] {
+        seed_check_holder(&e, pid, Some(&local_host()), started, group);
+        assert_eq!(e.ok(&["check", &id])["busy"], true);
+        e.err(&["check", "--unlock"], 4, "invalid_state");
+        assert!(!e.repo().join("unsafe").exists());
+    }
+}
+
+#[test]
+fn check_unlock_is_human_only_audited_and_recovers_unknown_hosts() {
+    let e = Env::new();
+    let id = e.waiting(
+        "manual recovery",
+        "echo ran > \"$TRK_REPO/unlocked\"; exit 75",
+    );
+    let here = local_host();
+    for host in [Some("previous-host.invalid"), None, Some(here.as_str())] {
+        // A local absent PID is safe; remote/unknown PIDs cannot be probed.
+        let pid = if host == Some(here.as_str()) {
+            i64::from(i32::MAX)
+        } else {
+            i64::from(std::process::id())
+        };
+        seed_check_holder(&e, pid, host, "2000-01-01T00:00:00Z", None);
+        let before = e.ok(&["log"]);
+        let holder = e.ok(&["whoami"])["check_running"].clone();
+        e.err(
+            &["check", "--unlock", "--as", "agent:omp:unlock"],
+            5,
+            "not_permitted",
+        );
+        assert_eq!(e.ok(&["whoami"])["check_running"], holder);
+        assert_eq!(e.ok(&["log"]), before);
+        if host != Some(here.as_str()) {
+            assert_eq!(e.ok(&["check", &id])["busy"], true);
+            assert!(!e.repo().join("unlocked").exists());
+        }
+        let unlocked = e.ok(&["check", "--unlock"]);
+        assert_eq!(unlocked["unlocked"], true);
+        assert_eq!(unlocked["holder"], holder);
+        assert_eq!(e.ok(&["whoami"])["check_running"], Value::Null);
+        let log = e.ok(&["log"]);
+        let event = log.as_array().unwrap().last().unwrap();
+        assert_eq!(event["actor"], "human:alice@example.com");
+        assert_eq!(event["issue_id"], Value::Null);
+        assert_eq!(event["payload"]["check_unlock"], holder);
+    }
+    let before = e.ok(&["log"]);
+    assert_eq!(e.ok(&["check", "--unlock"])["unlocked"], false);
+    assert_eq!(e.ok(&["log"]), before);
+    assert_eq!(e.ok(&["check", &id])["results"][0]["result"], "retry");
+    assert!(e.repo().join("unlocked").exists());
+}
+
 /// The descendant handles TERM without terminating, forcing group-wide
 /// escalation. Its readiness file is published only after installing the trap.
 const STUBBORN_CHECK: &str = "\
@@ -917,6 +1029,7 @@ fn check_sigkill_keeps_ownership_until_the_old_group_is_gone() {
         "echo second > \"$TRK_REPO/check-second\"; exit 75",
     ]);
     assert_check_busy(&e, runner.child.id(), pgid);
+    e.err(&["check", "--unlock"], 4, "invalid_state");
     assert!(!e.repo().join("check-second").exists());
 
     // Let the original shell reap its descendant itself. Recovery must not
@@ -1664,6 +1777,102 @@ fn agent_preview_and_run_dry_run() {
     let done = e.create(&["Done"]);
     e.ok(&["close", &done]);
     e.err(&["run", &done, "--dry-run"], 4, "invalid_state");
+}
+
+#[test]
+fn run_print_creates_private_session_and_harness_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let e = Env::new();
+    let config = e.trk_dir().join("config.toml");
+    let text = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(
+        config,
+        format!(
+            "{text}\n\
+             [harness.private-files]\n\
+             command = 'sh'\n\
+             builtin_tools = {{ read-only = [] }}\n\
+             [harness.private-files.files]\n\
+             '.generated/nested/new.json' = '{{{{ mcp_servers | tojson }}}}'\n\
+             '.generated/existing.json' = '{{{{ actor }}}}'\n\
+             '{{{{ session_dir }}}}/nested/profile.json' = '{{{{ actor }}}}'\n\
+             '{{{{ cwd }}}}/absolute/nested/profile.json' = '{{{{ actor }}}}'\n"
+        ),
+    )
+    .unwrap();
+    let existing = e.repo().join(".generated/existing.json");
+    std::fs::create_dir_all(existing.parent().unwrap()).unwrap();
+    std::fs::write(
+        &existing,
+        "old public contents that must be replaced completely",
+    )
+    .unwrap();
+    std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o666)).unwrap();
+    let id = e.create(&["Private generated files", "--type", "research"]);
+
+    // Set the umask only in the child, independent of concurrent tests and the host.
+    let out = StdCommand::new("sh")
+        .args(["-c", "umask 000; exec \"$@\"", "sh"])
+        .arg(env!("CARGO_BIN_EXE_trk"))
+        .args([
+            "--json",
+            "run",
+            &id,
+            "--harness",
+            "private-files",
+            "--print",
+        ])
+        .current_dir(e.repo())
+        .env("TRK_USER_DIR", e.user_dir())
+        .env("HOME", e.dir.path().join("home"))
+        .env("TRK_ACTOR", "human:alice@example.com")
+        .env("TRK_NOW", "2026-11-20T10:00:00Z")
+        .env_remove("TRK_FORMAT")
+        .env_remove("TRK_DIR")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(envelope["ok"], true, "{envelope:#}");
+    let spec = &envelope["data"];
+    let session = PathBuf::from(spec["session_dir"].as_str().unwrap());
+    for dir in [
+        e.trk_dir().join("sessions"),
+        session.clone(),
+        session.join("nested"),
+        e.repo().join(".generated/nested"),
+        e.repo().join("absolute"),
+        e.repo().join("absolute/nested"),
+    ] {
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o7777,
+            0o700,
+            "{}",
+            dir.display()
+        );
+    }
+    for name in ["briefing.md", "instructions.md", "mcp.json"] {
+        assert!(session.join(name).is_file(), "{name}");
+    }
+    let files = spec["files"].as_object().unwrap();
+    assert_eq!(files.len(), 7);
+    for (path, content) in files {
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o7777,
+            0o600,
+            "{path}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            content.as_str().unwrap(),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(existing).unwrap(),
+        spec["actor"].as_str().unwrap()
+    );
 }
 
 #[test]
