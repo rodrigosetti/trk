@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { SourceTextModule, SyntheticModule } from "node:vm";
 
@@ -43,7 +47,10 @@ async function dashboard(state) {
       v_flex: () => new Element("column"), h_flex: () => new Element("row"),
       h_resizable: () => new Element("split"), resizable_panel: () => new Element("panel"),
       Tabs: { new: (id) => new Element("tabs").id(id) }, Tab: { new: (id) => new Element("tab").id(id) },
-      InputState: { new: () => ({ on() {} }) }, Input() {}, TextView: {},
+      InputState: { new: () => ({
+        text: "", on() {}, focus() {}, set_value(text) { this.text = text; }, value() { return this.text; },
+      }) },
+      Input() {}, TextView: { markdown: (_id, text) => new Element("markdown").child(text) },
     },
     herdr: {
       spaces: () => state.spaces,
@@ -197,6 +204,71 @@ test("CLI errors without hints retain their message and fallback diagnostics", a
     state.output = { code: 5, stdout, stderr };
     await assert.rejects(view.trk(["unclaim", "orch-123"]), { message: expected });
   }
+});
+
+test("current CLI envelopes render issues, ordinary notes and timeline, and accept a dashboard note", async () => {
+  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const target = join(repo, "target");
+  execFileSync("cargo", ["build", "--locked", "-p", "trk-cli", "--target-dir", target], { cwd: repo, stdio: "pipe" });
+  const folder = await mkdtemp(join(tmpdir(), "trk-herdr-contract-"));
+  try {
+    const home = join(folder, "home");
+    await mkdir(home);
+    const env = {
+      ...process.env, HOME: home, TRK_USER_DIR: join(folder, "user"),
+      TRK_ACTOR: "human:dashboard@example.com", TRK_NOW: "2026-11-20T10:00:00Z",
+    };
+    delete env.TRK_DIR;
+    const cli = (args) => execFileSync(join(target, "debug", "trk"), args, { cwd: folder, env, encoding: "utf8" });
+    cli(["--json", "install", "--prefix", "test"]);
+    const issue = JSON.parse(cli(["--json", "create", "Current CLI dashboard issue"])).data;
+    cli(["--json", "note", issue.id, "--", "Ordinary v5 note"]);
+    const state = {
+      ...spaceState(), props: { folder },
+      exec: async (_command, args) => ({ code: 0, stdout: cli(args), stderr: "" }),
+    };
+    const { view } = await dashboard(state);
+    const pending = [];
+    const cx = { ...sortContext, spawn: (run) => { pending.push(run(cx)); } };
+    const settle = async () => { while (pending.length) await pending.shift(); };
+    view.context = { cwd: folder, on: null };
+    view.render();
+    view.load(cx);
+    await settle();
+    assert.equal(view.error, null, "the embedded consumer must accept the current CLI's schema");
+    let tree = view.render();
+    assert.ok(content(findElement(tree, `row-${issue.id}`)).includes(issue.title));
+    view.select(issue.id, cx);
+    await settle();
+    tree = view.render();
+    assert.ok(content(findElement(tree, `detail-${issue.id}`)).includes("Ordinary v5 note"));
+    assert.ok(content(tree).includes("Timeline"));
+    assert.equal(content(tree).some((text) => /to.agent/i.test(text)), false);
+
+    findElement(tree, `note-${issue.id}`).click({}, cx);
+    view.input.set_value("Note submitted from the dashboard");
+    view.submit(cx);
+    await settle();
+    assert.equal(view.status.text, `note ${issue.id}: done`);
+    assert.ok(content(view.render()).includes("Note submitted from the dashboard"));
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test("an incompatible CLI version still renders the refresh warning", async () => {
+  const state = spaceState();
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({
+    ok: true, schema_version: 6, data: { issues: [] },
+  }) };
+  const { view } = await dashboard(state);
+  view.context = { cwd: "/current-project", root: "/current-project" };
+  let pending;
+  const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
+  view.load(cx);
+  await pending;
+  assert.ok(content(view.render()).includes(
+    "This mod reads trk's JSON version 5; the installed trk writes 6. Run `trk install` to refresh the mod."));
 });
 
 function findElement(node, id) {

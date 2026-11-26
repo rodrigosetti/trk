@@ -1108,6 +1108,140 @@ fn the_check_lock_has_one_holder() {
 }
 
 #[test]
+fn check_watch_reregistration_preserves_exec_identity_and_release_is_scoped() {
+    let (_d, mut s) = setup();
+    let pid = i64::from(std::process::id());
+    let host = trk_core::system::hostname();
+    s.write(HUMAN, false, |c| c.check_watch_register(pid, host))
+        .unwrap();
+    let started = s
+        .conn()
+        .query_row(
+            "SELECT started_at FROM check_watch WHERE pid = ?1",
+            [pid],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap();
+    // Model a slow exec: heartbeat expiry alone does not prove local PID reuse.
+    s.conn()
+        .execute(
+            "UPDATE check_watch SET heartbeat_at = '2000-01-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+    s.write(HUMAN, false, |c| c.check_watch_register(pid, host))
+        .unwrap();
+    let renewed = s
+        .conn()
+        .query_row(
+            "SELECT started_at, heartbeat_at FROM check_watch WHERE pid = ?1",
+            [pid],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .unwrap();
+    if host.is_some() {
+        assert_eq!(renewed.0, started);
+    }
+    assert_ne!(renewed.1, "2000-01-01T00:00:00Z");
+    s.write(HUMAN, false, |c| {
+        c.check_watch_register(pid, Some("other.watch.invalid"))?;
+        c.check_lock_take(pid, host)?;
+        c.check_watch_release(pid + 1, host)?;
+        c.check_watch_release(pid, Some("nonmatching.watch.invalid"))
+    })
+    .unwrap();
+    assert_eq!(
+        s.conn()
+            .query_row("SELECT count(*) FROM check_watch", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    s.write(HUMAN, false, |c| c.check_watch_release(pid, host))
+        .unwrap();
+    assert_eq!(
+        s.conn()
+            .query_row("SELECT host FROM check_watch", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "other.watch.invalid"
+    );
+    assert!(s.read(None, |c| c.check_lock()).unwrap().is_some());
+}
+
+#[test]
+fn check_watch_register_resets_reused_pid_without_deleting_other_watchers() {
+    let Some(host) = trk_core::system::hostname() else {
+        return;
+    };
+    let (_d, mut s) = setup();
+    let pid = i64::from(std::process::id());
+    s.write(HUMAN, false, |c| c.check_watch_register(pid, Some(host)))
+        .unwrap();
+    s.conn()
+        .execute(
+            "UPDATE check_watch SET started_at = '1970-01-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+    s.conn()
+        .execute(
+            "INSERT INTO check_watch (pid, host, started_at, heartbeat_at)
+         VALUES (?1, '', '2000-01-01T00:00:00Z', '2000-01-01T00:00:00Z')",
+            [pid + 1],
+        )
+        .unwrap();
+    s.write(HUMAN, false, |c| c.check_watch_register(pid, Some(host)))
+        .unwrap();
+    let (started, count): (String, i64) = s
+        .conn()
+        .query_row(
+            "SELECT started_at, (SELECT count(*) FROM check_watch) FROM check_watch WHERE pid = ?1 AND host = ?2",
+            rusqlite::params![pid, host],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_ne!(started, "1970-01-01T00:00:00Z");
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn expired_unknown_host_registration_resets_start_and_empty_host_is_normalized() {
+    let (_d, mut s) = setup();
+    s.write(HUMAN, false, |c| c.check_watch_register(41, None))
+        .unwrap();
+    s.conn()
+        .execute(
+            "UPDATE check_watch SET started_at = '2000-01-01T00:00:00Z',
+         heartbeat_at = '2000-01-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+    s.write(HUMAN, false, |c| c.check_watch_register(41, Some("")))
+        .unwrap();
+    let (host, started, heartbeat): (String, String, String) = s
+        .conn()
+        .query_row(
+            "SELECT host, started_at, heartbeat_at FROM check_watch",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(host.is_empty());
+    assert_ne!(started, "2000-01-01T00:00:00Z");
+    assert_eq!(started, heartbeat);
+    s.write(HUMAN, false, |c| c.check_watch_release(41, None))
+        .unwrap();
+    assert_eq!(
+        s.conn()
+            .query_row("SELECT count(*) FROM check_watch", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn the_check_lock_group_persists_and_replacement_clears_it() {
     let (d, mut s) = setup();
     s.write(HUMAN, false, |c| {

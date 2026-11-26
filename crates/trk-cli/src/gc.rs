@@ -555,7 +555,7 @@ fn collect_with_recovery(
                     .and_then(|actor| actor.split_once(':'))
                     && seen_sessions.insert((claim.host.as_deref(), session))
                 {
-                    let resource = if host_matches(claim, host.as_deref()) {
+                    let resource = if host_matches(claim, host) {
                         capture(session_dir(env, session, &cwd, dry_run), &mut errors)
                     } else {
                         Resource::new(

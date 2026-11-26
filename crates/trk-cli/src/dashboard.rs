@@ -23,7 +23,6 @@ use serde_json::Value;
 use trk_core::dashboard::Dashboard;
 use trk_core::error::{Code, Error, Result};
 use trk_core::ops::Edit;
-use trk_core::system::{Liveness, hostname, process_liveness};
 use trk_core::{State, Store};
 
 use crate::env::Env;
@@ -87,7 +86,6 @@ struct Job {
 struct App<'a> {
     env: &'a Env,
     store: Store,
-    host: Option<&'static str>,
     ui: Ui,
     data_version: i64,
     refreshed: Instant,
@@ -101,7 +99,6 @@ struct App<'a> {
 /// snapshot once.
 pub fn dashboard(env: &Env, json: bool) -> Result<Out> {
     let store = env.store()?;
-    let host = hostname();
     let snap = snapshot(&store, env)?;
     if json || !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
         return Ok(Out::Data(serde_json::to_value(&snap)?));
@@ -116,7 +113,6 @@ pub fn dashboard(env: &Env, json: bool) -> Result<Out> {
         ui: Ui::new(project, snap, store.now()),
         env,
         store,
-        host,
         data_version: 0,
         refreshed: Instant::now(),
         status_at: Instant::now(),
@@ -188,15 +184,9 @@ impl App<'_> {
         }
     }
 
-    /// Load what the snapshot leaves out: the selected issue's text, and
-    /// whether the check runner still exists.
+    /// Load the selected issue's text, which the snapshot leaves out.
     fn after_snapshot(&mut self) {
         self.ui.now = self.store.now();
-        self.ui.runner_alive = self.ui.snap.check_runner.as_ref().and_then(|r| {
-            (r.host.is_none() || r.host.as_deref() == self.host)
-                // Preserve the display's false-on-unknown policy.
-                .then(|| process_liveness(r.pid) == Liveness::Alive)
-        });
         self.load_detail();
     }
 

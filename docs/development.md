@@ -18,6 +18,12 @@ covers both the minimum supported Rust version (MSRV), read from
 tests use Node.js 24 and
 `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
 
+The mod suite requires Cargo: its contract regression builds the current CLI in
+the worktree's `target/`, installs an isolated temporary project, and renders real
+dashboard/detail envelopes and a note submitted through the dashboard. Keep this
+consumer test in step with JSON schema changes; fabricated envelopes alone cannot
+detect a stale embedded mod version.
+
 Separate CI jobs check formatting with stable Rust and scan all dependency
 features against RustSec advisories. To run the dependency check locally:
 

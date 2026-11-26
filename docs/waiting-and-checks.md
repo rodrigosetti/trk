@@ -106,6 +106,37 @@ and do not change check outcomes or exit status. JSON includes optional `data.gc
 are no eligible issues or errors. Pretty output shows one line per issue with removals;
 skips and their reasons are shown once per issue per run, rather than on every watch pass.
 
+### Watcher presence
+
+`trk check --watch` registers its PID, host, physical `started_at` and
+`heartbeat_at` independently of the per-pass queue lock. Its heartbeat refreshes
+every five seconds, including between passes and during long checks or cleanup.
+Normal exit and handled signals remove only that watcher's registration. Re-exec
+keeps the same PID and registration without an unregister/register gap, preserving
+the start time when local process identity can be established.
+
+`trk dashboard --json` reports `check_runner: null` when no live watcher is
+registered; otherwise it contains `pid`, `host`, `started_at`, `heartbeat_at` and
+`busy`. Both dashboards use this snapshot: an idle watcher remains “on”; `busy`
+means the queue lock is held, including by another watcher, a one-shot check,
+resume or cleanup. One-shot `trk check` never registers as a watcher.
+`--watch --dry-run` still advertises its presence, but previews checks and cleanup.
+
+A registration expires after 30 seconds without a heartbeat. On a known local
+host, a definitely dead or reused PID is filtered immediately on the next snapshot;
+unknown process identity is retained only until heartbeat expiry. Remote or unknown
+hosts rely on that same 30-second bound. These probes and timestamps use physical
+time, not `TRK_NOW`. Expired rows can remain in the store but are never reported as
+live; a paused process can resume heartbeats without losing its registration.
+Dashboard refresh cadence adds its normal display delay.
+
+Multiple watchers on one project are allowed. Each registers, refreshes and removes
+only its own presence; the unchanged queue lock permits just one pass at a time,
+and a competing pass reports busy. The snapshot selects the live lock-owning
+watcher when present, otherwise the oldest live watcher (host then PID break ties).
+Watcher expiry never releases or bypasses queue ownership: stale-lock recovery and
+`trk check --unlock` retain their separate safety rules.
+
 ### Human-authorized resume
 
 A human can continue the original live waiting session, with or without a check:

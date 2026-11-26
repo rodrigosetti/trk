@@ -172,6 +172,15 @@ CREATE TABLE check_run (
   output_truncated INTEGER NOT NULL
 );
 
+-- Watchers remain visible between queue passes and do not own the queue lock.
+CREATE TABLE check_watch (
+  pid           INTEGER NOT NULL,
+  host          TEXT NOT NULL DEFAULT '',
+  started_at    TEXT NOT NULL,
+  heartbeat_at  TEXT NOT NULL,
+  PRIMARY KEY (pid, host)
+);
+
 -- Destructive GC effects hold only this issue-scoped reservation, not a transaction.
 CREATE TABLE gc_reservation (
   issue_id TEXT PRIMARY KEY REFERENCES issue(id),

@@ -23,6 +23,36 @@ const ID_ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
 /// How much of a failed check's output is kept in the note.
 pub const CHECK_OUTPUT_TAIL: usize = 4096;
 
+/// Physical-time heartbeat cadence and expiry for `trk check --watch`.
+pub const CHECK_WATCH_HEARTBEAT_SECS: u64 = 5;
+pub const CHECK_WATCH_EXPIRY_SECS: i64 = 30;
+
+pub(crate) struct CheckWatch {
+    pub pid: i64,
+    pub host: String,
+    pub started_at: String,
+    pub heartbeat_at: String,
+}
+
+impl CheckWatch {
+    fn fresh(&self, now: jiff::Timestamp) -> bool {
+        self.heartbeat_at
+            .parse::<jiff::Timestamp>()
+            .is_ok_and(|heartbeat| {
+                heartbeat >= now - jiff::SignedDuration::from_secs(CHECK_WATCH_EXPIRY_SECS)
+            })
+    }
+
+    fn local(&self) -> bool {
+        !self.host.is_empty() && crate::system::hostname() == Some(self.host.as_str())
+    }
+
+    fn live(&self, now: jiff::Timestamp) -> bool {
+        self.fresh(now)
+            && (!self.local() || crate::system::process_started_before(self.pid, &self.started_at))
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct NewIssue {
     /// A fixed id (imports); otherwise one is allocated.
@@ -1150,6 +1180,87 @@ impl Ctx<'_> {
             .query_map(params![all, self.ts()], row_to_issue)?
             .collect::<std::result::Result<_, _>>()?;
         Ok(v)
+    }
+
+    /// Register a watcher independently of the serialized check queue.
+    /// Preserve its start time across exec, but not across proven PID reuse.
+    pub fn check_watch_register(&self, pid: i64, host: Option<&str>) -> Result<()> {
+        let host = host.unwrap_or("");
+        let now = jiff::Timestamp::now();
+        let previous = self
+            .conn
+            .query_row(
+                "SELECT pid, host, started_at, heartbeat_at FROM check_watch WHERE pid = ?1 AND host = ?2",
+                params![pid, host],
+                |r| Ok(CheckWatch {
+                    pid: r.get(0)?,
+                    host: r.get(1)?,
+                    started_at: r.get(2)?,
+                    heartbeat_at: r.get(3)?,
+                }),
+            )
+            .optional()?;
+        let preserve = previous.is_some_and(|watch| {
+            // Exec can outlast expiry without changing local process identity.
+            if watch.local() {
+                crate::system::process_started_before(pid, &watch.started_at)
+            } else {
+                watch.fresh(now)
+            }
+        });
+        // Do not delete other expired rows: a paused watcher must be able to
+        // resume heartbeats after another watcher has registered.
+        let now = now.to_string();
+        self.conn.execute(
+            "INSERT INTO check_watch (pid, host, started_at, heartbeat_at)
+             VALUES (?1, ?2, ?3, ?3)
+             ON CONFLICT (pid, host) DO UPDATE SET
+               started_at = CASE WHEN ?4 THEN check_watch.started_at ELSE excluded.started_at END,
+               heartbeat_at = excluded.heartbeat_at",
+            params![pid, host, now, preserve],
+        )?;
+        Ok(())
+    }
+
+    /// Refresh only this registered watcher, using physical rather than issue time.
+    pub fn check_watch_heartbeat(&self, pid: i64, host: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE check_watch SET heartbeat_at = ?3 WHERE pid = ?1 AND host = ?2",
+            params![pid, host.unwrap_or(""), jiff::Timestamp::now().to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Remove only this watcher; the queue lock and other watchers are untouched.
+    pub fn check_watch_release(&self, pid: i64, host: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM check_watch WHERE pid = ?1 AND host = ?2",
+            params![pid, host.unwrap_or("")],
+        )?;
+        Ok(())
+    }
+
+    fn check_watches(&self) -> Result<Vec<CheckWatch>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT pid, host, started_at, heartbeat_at FROM check_watch")?;
+        Ok(st
+            .query_map([], |r| {
+                Ok(CheckWatch {
+                    pid: r.get(0)?,
+                    host: r.get(1)?,
+                    started_at: r.get(2)?,
+                    heartbeat_at: r.get(3)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub(crate) fn check_watch_live(&self) -> Result<Vec<CheckWatch>> {
+        let now = jiff::Timestamp::now();
+        let mut watches = self.check_watches()?;
+        watches.retain(|watch| watch.live(now));
+        Ok(watches)
     }
 
     /// The runner pid, host, start time and active subprocess group, if any.

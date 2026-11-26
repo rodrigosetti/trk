@@ -280,7 +280,7 @@ fn migration_backup(conn: &Connection, path: &Path) -> Result<PathBuf> {
     Ok(backup)
 }
 
-fn migrations() -> [M<'static>; 8] {
+fn migrations() -> [M<'static>; 9] {
     [
         M::up(include_str!("schema_v1.sql")),
         M::up(include_str!("resume_chat.sql")).foreign_key_check(),
@@ -291,6 +291,7 @@ fn migrations() -> [M<'static>; 8] {
         M::up(
             "ALTER TABLE issue ADD COLUMN waiting_on_pass TEXT NOT NULL DEFAULT 'close' CHECK (waiting_on_pass IN ('close', 'wake'));",
         ),
+        M::up(include_str!("check_watch.sql")),
         M::up(include_str!("check_runs.sql")),
     ]
 }
@@ -708,6 +709,90 @@ mod tests {
     use crate::view::With;
 
     #[test]
+    fn watch_migration_preserves_queue_owner_and_supports_multiple_watchers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let mut conn = Connection::open(&path).unwrap();
+        let steps = migrations();
+        Migrations::from_slice(&steps[..7])
+            .to_latest(&mut conn)
+            .unwrap();
+        seed_legacy_database(&conn);
+        conn.execute(
+            "INSERT INTO check_lock (id, pid, host, started_at, pgid)
+             VALUES (1, 41, 'old-host', '2026-11-20T10:00:00Z', 51)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut store = Store::open(&path, StoreOpts::default()).unwrap();
+        assert_eq!(
+            store.read(None, |c| c.check_lock()).unwrap(),
+            Some((
+                41,
+                Some("old-host".into()),
+                "2026-11-20T10:00:00Z".into(),
+                Some(51)
+            ))
+        );
+        assert_eq!(
+            store.read(None, |c| c.issue("trk-old")).unwrap().title,
+            "Existing issue"
+        );
+        store
+            .write("human:alice@example.com", false, |c| {
+                c.check_watch_register(41, Some("old-host"))?;
+                c.check_watch_register(42, None)
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM check_watch", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        drop(store);
+        let store = Store::open(&path, StoreOpts::default()).unwrap();
+        assert_eq!(
+            store
+                .conn
+                .query_row("SELECT count(*) FROM check_watch", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn latest_schema_supports_watchers_without_migrations() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(include_str!("schema.sql")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO check_watch (pid, started_at, heartbeat_at)
+             VALUES (41, '2026-11-20T10:00:00Z', '2026-11-20T10:00:00Z');
+             INSERT INTO check_watch (pid, host, started_at, heartbeat_at)
+             VALUES (41, 'other-host', '2026-11-20T10:00:00Z', '2026-11-20T10:00:00Z');",
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM check_watch", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO check_watch (pid, started_at, heartbeat_at)
+             VALUES (41, '2026-11-20T10:00:00Z', '2026-11-20T10:00:00Z')",
+                [],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn on_pass_migration_preserves_legacy_waits_and_defaults_to_close() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trk.db");
@@ -757,10 +842,17 @@ mod tests {
         let path = dir.path().join("trk.db");
         let mut conn = Connection::open(&path).unwrap();
         let steps = migrations();
-        Migrations::from_slice(&steps[..7])
+        Migrations::from_slice(&steps[..8])
             .to_latest(&mut conn)
             .unwrap();
         seed_legacy_database(&conn);
+        let now = jiff::Timestamp::now().to_string();
+        conn.execute(
+            "INSERT INTO check_watch (pid, host, started_at, heartbeat_at)
+             VALUES (41, 'watch.remote.invalid', ?1, ?1)",
+            [&now],
+        )
+        .unwrap();
         drop(conn);
         let store = Store::open(&path, StoreOpts::default()).unwrap();
         let dashboard = store
@@ -768,6 +860,7 @@ mod tests {
             .unwrap();
         assert_eq!(dashboard.issues[0].id, "trk-old");
         assert!(dashboard.check_runs.is_empty());
+        assert_eq!(dashboard.check_runner.unwrap().pid, 41);
     }
 
     fn seed_legacy_database(conn: &Connection) {

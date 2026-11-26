@@ -10,6 +10,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Agent launching in dedicated Git worktrees, with claims, leases, and session tracking.
 - Serialized waiting checks for verification and landing, plus a live dashboard and Herdr integration.
 - Store-backed Herdr **Checks** view in all placements, with issue details, copyable IDs, expandable output and a failed-only filter; `dashboard --json` exposes the latest 100 persisted runs with bounded output, including successes, retries and skips from external watchers.
+- Persistent `trk check --watch` presence between passes, with heartbeats, bounded stale detection, re-exec continuity, independent multiple watchers, and shared dashboard liveness.
 - Per-wait `--on-pass wake` (MCP `on_pass: "wake"`) continues the same live session after a passing check for pending work, without consuming failure wakes; default checks still close, and unavailable continuation reopens with a pending-work note.
 - Embedded installation seeds, configurable agents, harnesses, launchers, and prompts.
 - Explicit ID-scoped `trk gc --legacy-hc` recovery for independently verified historical hc sessions missing launcher profiles, with finished-session identity checks and append-only GC receipts.
@@ -36,6 +37,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 
 ### Fixed
 
+- Restored the Herdr dashboard's compatibility with JSON schema 5, retaining incompatible-version warnings and covering real current CLI snapshots, issue details, and ordinary note submission.
 - Waiting checks now retain only a bounded 4096-byte stdout/stderr tail, mark truncated output in JSON and notes, avoid per-check log files on all exit paths, and remove legacy logs whose owner PID is gone.
 - Fixed Herdr Run confirmations silently refusing to launch after an earlier command completed across a project or fixed-tab context change; pending commands no longer arm another confirmation.
 - Launcher templates now expand placeholders only once, preserving literal placeholders in issue content and preventing re-expansion from corrupting shell quoting.
@@ -49,6 +51,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
 - The Herdr dashboard's wide list/details split now starts at 50/50 instead of a fixed list width, retaining user resizing and pane minimums.
 - Restored CI Clippy checks with narrowly scoped argument-count expectations on GC helpers, preserving cleanup safety gates and opt-in legacy recovery behavior.
+- Removed a redundant GC host-option conversion flagged by Clippy, preserving host matching and cleanup safety checks.
 - Unified local PID probes without subprocesses; permission-denied processes count as alive. Hostname detection now uses a cached system call and treats unavailable or empty names as unknown.
 - Fixed Clippy's collapsible status check in Herdr layout migration without changing status parsing or offline fallback.
 - Removed transitive unmaintained `chrono` by pinning rmcp's upstream opt-out change and retaining the existing non-chrono MCP features; MCP tests pass on Rust 1.89.
