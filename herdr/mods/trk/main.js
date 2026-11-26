@@ -18,7 +18,7 @@ import {
 } from "herdr";
 
 /** The envelope version of `trk --json` this mod was written against. */
-const SCHEMA = 4;
+const SCHEMA = 5;
 const GROUPS = [
   { id: "attention", label: "Needs you", color: "blocked" },
   { id: "running", label: "In flight", color: "working" },
