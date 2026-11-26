@@ -9,30 +9,15 @@ use serde_json::json;
 
 pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
     match cmd {
-        Cmd::Note {
-            id,
-            text,
-            amends,
-            to_agent,
-        } => {
+        Cmd::Note { id, text, amends } => {
             let actor = env.actor()?.to_string();
             let body = match text.as_deref() {
                 None | Some("-") => read_value("@-")?,
                 Some(t) => t.to_string(),
             };
             with_open(env, |s| {
-                let seq = s.write(&actor, false, |c| c.note(&id, &body, amends, to_agent))?;
-                Ok(Out::Text(
-                    format!(
-                        "note #{seq} added{}",
-                        if to_agent {
-                            " and queued for the agent"
-                        } else {
-                            ""
-                        }
-                    ),
-                    json!({"seq": seq, "to_agent": to_agent}),
-                ))
+                let seq = s.write(&actor, false, |c| c.note(&id, &body, amends))?;
+                Ok(Out::Text(format!("note #{seq} added"), json!({"seq": seq})))
             })
         }
         Cmd::Log { id } => {

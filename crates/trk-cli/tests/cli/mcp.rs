@@ -136,7 +136,6 @@ fn mcp_server_over_stdio() {
     let spec = e.ok(&["run", &id, "--harness", "omp", "--print"]);
     let actor = spec["actor"].as_str().unwrap().to_string();
     let wt = PathBuf::from(spec["worktree"].as_str().unwrap());
-    e.ok(&["note", &id, "keep it small", "--to-agent"]);
     let bin = assert_cmd::cargo::cargo_bin("trk");
     let mut child = StdCommand::new(bin)
         .args([
@@ -239,7 +238,7 @@ fn mcp_server_over_stdio() {
         };
     let (err, v) = call(&mut req, "add_note", json!({"body": "working"}));
     assert!(!err);
-    assert_eq!(v["messages_for_you"][0]["body"], "keep it small");
+    assert!(v.get("messages_for_you").is_none(), "{v:#}");
     assert_eq!(v["task"]["state"], "claimed");
     let (err, task) = call(&mut req, "get_task", json!({}));
     assert!(!err, "{task}");
