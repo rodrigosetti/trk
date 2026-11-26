@@ -28,9 +28,9 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 
 ### Fixed
 
-- The seeded hc launcher now requests JSON explicitly and binds its `address` rather than the entire JSON object; other launcher stdout contracts are unchanged. Invalid JSON launch responses retain the claim to prevent duplicate sessions.
 - Fixed Herdr Run confirmations silently refusing to launch after an earlier command completed across a project or fixed-tab context change; pending commands no longer arm another confirmation.
 - Launcher templates now expand placeholders only once, preserving literal placeholders in issue content and preventing re-expansion from corrupting shell quoting.
+- The seeded hc launcher now requests JSON explicitly and binds its `address` rather than the entire JSON object; other launcher stdout contracts are unchanged. Invalid JSON launch responses retain the claim to prevent duplicate sessions.
 - Brighter, larger Herdr state and epic headings in dark and light themes, with every top-level state heading in ALL CAPS and smaller counts preserving the hierarchy.
 - Restored GC classification of historical claim paths: local primary-checkout claims own no disposable Git resources, and absent outside-root paths are reported as absent. Existing outside-root worktrees and branches held by stale Git registrations remain protected.
 - Herdr issue rows now indent beneath rendered epic subheaders, including **No epic**, while preserving shared responsive columns; grouping off and entirely unassigned state groups remain flat.
