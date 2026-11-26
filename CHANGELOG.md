@@ -28,6 +28,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 
 ### Fixed
 
+- Check queue recovery distinguishes recycled PIDs from live runners, retains surviving process-group protection, and offers audited human-only `trk check --unlock` recovery for stale or changed-host locks.
 - Fixed Herdr Run confirmations silently refusing to launch after an earlier command completed across a project or fixed-tab context change; pending commands no longer arm another confirmation.
 - Launcher templates now expand placeholders only once, preserving literal placeholders in issue content and preventing re-expansion from corrupting shell quoting.
 - Brighter, larger Herdr state and epic headings in dark and light themes, with every top-level state heading in ALL CAPS and smaller counts preserving the hierarchy.
