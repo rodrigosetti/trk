@@ -77,6 +77,7 @@ impl Resource {
 struct IssueResult {
     id: String,
     session: Resource,
+    session_dir: Resource,
     worktree: Resource,
     branch: Resource,
 }
@@ -93,6 +94,7 @@ impl IssueResult {
         Self {
             id,
             session: Resource::new("skipped", reason),
+            session_dir: Resource::new("skipped", reason),
             worktree: Resource::new("skipped", reason),
             branch: Resource::new("skipped", reason),
         }
@@ -200,6 +202,52 @@ fn session(
         format!(
             "{} terminal {terminal}",
             if dry_run { "would remove" } else { "removed" }
+        ),
+    ))
+}
+
+fn session_dir(env: &Env, session: &str, cwd: &Path, dry_run: bool) -> Result<Resource> {
+    // Only trk run's UUID-named directories establish ownership. Actor session
+    // IDs are otherwise arbitrary strings, not trusted filesystem paths.
+    if uuid::Uuid::parse_str(session).is_err() {
+        return Ok(Resource::new("skipped", "session id is not a UUID"));
+    }
+    let path = env.sessions_dir().join(session);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Resource::new(
+                "absent",
+                "session directory is already absent",
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    // Do not let a symlinked sessions root redefine the deletion boundary, or
+    // a UUID symlink establish ownership of another session's directory.
+    let root = resolved(&env.dir)?.join("sessions");
+    let target = resolved(&path)?;
+    if !metadata.is_dir() || target == root || !target.starts_with(&root) {
+        return Ok(Resource::new(
+            "skipped",
+            "session directory is not a directory inside .trk/sessions",
+        ));
+    }
+    if cwd.starts_with(&target) {
+        return Ok(Resource::new(
+            "skipped",
+            "session directory contains the current working directory",
+        ));
+    }
+    if !dry_run {
+        std::fs::remove_dir_all(&path)?;
+    }
+    Ok(Resource::new(
+        "removed",
+        format!(
+            "{} session directory {}",
+            if dry_run { "would remove" } else { "removed" },
+            path.display()
         ),
     ))
 }
@@ -492,13 +540,36 @@ fn collect_with_recovery(
                 continue;
             };
             let mut sessions = Vec::new();
+            let mut directories = Vec::new();
             let mut paths = Vec::new();
             let mut seen_terminals = BTreeSet::new();
+            let mut seen_sessions = BTreeSet::new();
             let mut seen_paths = BTreeSet::new();
             let mut removed = Vec::new();
             let mut clear = true;
             let mut planned_paths = BTreeSet::new();
             for (claim, recovered) in &claims {
+                if let Some((_, session)) = claim
+                    .actor
+                    .strip_prefix("agent:")
+                    .and_then(|actor| actor.split_once(':'))
+                    && seen_sessions.insert((claim.host.as_deref(), session))
+                {
+                    let resource = if host_matches(claim, host.as_deref()) {
+                        capture(session_dir(env, session, &cwd, dry_run), &mut errors)
+                    } else {
+                        Resource::new(
+                            "skipped",
+                            "session directory belongs to another or unknown host",
+                        )
+                    };
+                    if resource.status == "removed" {
+                        removed.push(resource.reason.clone());
+                    }
+                    let mut item = serde_json::to_value(resource)?;
+                    item["path"] = json!(env.sessions_dir().join(session));
+                    directories.push(item);
+                }
                 if let Some(terminal) = &claim.terminal
                     && seen_terminals.insert((claim.host.as_deref(), terminal))
                 {
@@ -573,6 +644,7 @@ fn collect_with_recovery(
             let result = IssueResult {
                 id,
                 session: Resource::summary(sessions, "no recorded terminals"),
+                session_dir: Resource::summary(directories, "no recorded session directories"),
                 worktree: Resource::summary(paths, "no recorded worktrees"),
                 branch,
             };
@@ -595,6 +667,7 @@ fn collect_with_recovery(
                         pid,
                         current
                             && result.session.collected()
+                            && result.session_dir.collected()
                             && result.worktree.collected()
                             && result.branch.collected(),
                     )?;
@@ -683,6 +756,7 @@ pub fn run(
         ));
         for (name, resource) in [
             ("session", &issue["session"]),
+            ("session_dir", &issue["session_dir"]),
             ("worktree", &issue["worktree"]),
             ("branch", &issue["branch"]),
         ] {
