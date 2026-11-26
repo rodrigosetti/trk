@@ -24,6 +24,10 @@ pub const MOD: &str = "trk";
 /// The mod's files, relative to `mods/trk/`.
 const MOD_FILES: &[(&str, &str)] = &[
     ("main.js", include_str!("../../../herdr/mods/trk/main.js")),
+    (
+        "watcher.js",
+        include_str!("../../../herdr/mods/trk/watcher.js"),
+    ),
     ("mod.json", include_str!("../../../herdr/mods/trk/mod.json")),
     (
         "dashboard.svg",

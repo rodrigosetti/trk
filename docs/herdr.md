@@ -20,13 +20,58 @@ ID and Output clicks do not select the issue. **Failed only** includes failed ru
 failure wakes, but not successful wakes, retries, or stale/skipped results.
 
 The panel reads `check_runs` from the store-backed `trk dashboard --json` snapshot,
-on its normal database-change/10-second refresh (remote panels use the timer). A watcher
-in another terminal supplies the same records; the panel never starts or reads a
-`--watch` stream. Runs survive panel/watcher restarts. Only executions by an updated
-binary are recorded; earlier lifecycle events are not backfilled. The store retains
-100 runs globally per project, each with at most a 4096-byte UTF-8 output tail.
-View/filter/expansion choices are per-panel memory; set `"view": "checks"` in mod props
-to start on Checks after opening or restarting a panel.
+on its normal database-change/10-second refresh (remote panels use the timer).
+Runs survive panel/watcher restarts. Only executions by an updated binary are recorded;
+earlier lifecycle events are not backfilled. The store retains 100 runs globally per project,
+each with at most a 4096-byte UTF-8 output tail. View/filter/expansion choices are per-panel
+memory; set `"view": "checks"` in mod props to start on Checks.
+
+### Optional check watcher
+
+By default the panel **never starts a watcher**. Explicitly opt a panel in with
+`"watchChecks": true`:
+
+```sh
+herdr-app do tab.new --mod trk --props '{"folder": "/path/to/project", "watchChecks": true}'
+```
+
+In a personal layout, add the same prop to its trk block's `content.props` (alongside
+`"fixedTab": true` for the installed trk layout). Installation never enables it.
+
+**This enables the check queue, including session-requested merges.** The header chip
+shows **running**, **checking** (the queue is busy), or **stopped**. **Peek** opens the
+watcher's raw terminal log; **Restart** resumes supervision; **Stop** pauses that project
+across all panel copies until Restart, including after panel/app restarts.
+Failures and restart backoff appear in the chip's tooltip.
+
+Supervision is local only; `context.on` remote projects are not started or controlled.
+It first reads the project's watcher liveness record. An existing watcher is adopted,
+not duplicated: a local Herdr watcher offers Peek/Restart/Stop; a watcher outside Herdr
+shows its PID, host and **external**, with no process controls. The panel never signals
+an external watcher. After it disappears from the liveness record (including its normal
+staleness window), an opted-in panel can start its own.
+
+Managed watchers start already hidden via `hc run --bg`, with a unique project name to
+serialize racing panel launches. `terminal.open` has no supported parked placement;
+opening and then parking would briefly create a pane. Closing/killing a managed watcher
+causes it to return while supervision is enabled; repeated failures/exits back off
+(10 seconds up to 5 minutes). An interrupted startup lease expires within 2 minutes.
+There is no watcher stream buffered in the mod.
+
+Herdr starts a mod copy when first shown; its timers then continue in background tabs
+and hidden layout blocks. An opted-in following panel remembers projects it has seen
+and supervises them even while another space is shown. A never-shown panel has not started.
+Managed watchers carry their owning space's ID. Parking removes Herdr's own space labels,
+so space closure alone does **not** reliably kill a parked terminal: live trk panels reap
+managed watchers whose owning space disappeared, and an observing copy's `close()` hook
+requests cleanup of managed watchers when that copy is removed or the app quits. Another opted-in copy may
+restart the watcher if its owning space still exists. Closing the owning space also
+pauses that project until Restart, even if it is later opened in a new space.
+Cleanup on quit is bounded/best-effort: a crash or forced termination can leave a watcher
+running without a UI. Stop it with `hc kill <address>` (find it with `hc ls --json`, custom
+labels `trk.check.dir` / `trk.check.space`); do not rely on closing the app to stop merges.
+
+### Dashboard controls
 
 Each issue row and detail header shows a colored type badge, including `code-change`.
 Built-in types use consistent theme colors; custom types get a stable color from their name.
@@ -154,6 +199,6 @@ trk herdr uninstall              # remove mods and unedited layout; preserve per
   Invalid sort values fall back to Priority ascending. Set `"group": "epic"` to start
   with epic grouping on; omitted or other values start flat. For example:
   `herdr-app do tab.new --mod trk --props '{"sort": "updated", "group": "epic"}'`.
-  Run the dashboard's location, sorting, grouping, and action-confirmation regressions with
-  `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
+  Run the dashboard and watcher regressions with
+  `node --experimental-vm-modules --test herdr/mods/trk/*.test.mjs`.
 

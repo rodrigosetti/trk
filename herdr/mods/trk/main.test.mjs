@@ -8,6 +8,7 @@ import test from "node:test";
 import { SourceTextModule, SyntheticModule } from "node:vm";
 
 const source = await readFile(new URL("./main.js", import.meta.url), "utf8");
+const watcherSource = await readFile(new URL("./watcher.js", import.meta.url), "utf8");
 
 // Retain rendered content and conditional children; native checks cover styling.
 class Element {
@@ -59,6 +60,7 @@ async function dashboard(state) {
       props: () => state.props,
       run: (name, args) => {
         commands.push({ name, args });
+        state.run?.(name, args);
         // Both opening and selecting a mod tab move focus away from the terminal.
         if (name === "tab.new") {
           const space = state.spaces.find((s) => s.id === args.space);
@@ -72,14 +74,21 @@ async function dashboard(state) {
         if (state.exec) return state.exec(command, args, options);
         return state.output ?? { code: 0, stdout: JSON.stringify({ ok: true, data: {} }), stderr: "" };
       },
-      agents: () => [], terminals: () => [], theme: () => ({}), settings: () => ({}),
-      notify: (message) => notifications.push(message), checking: () => true, shared: (key) => state.shared?.get(key),
+      hc: async (args) => {
+        executions.push({ command: "hc", args });
+        if (state.hc) return state.hc(args);
+        throw new Error("Unexpected core command");
+      },
+      agents: () => [], terminals: () => state.terminals ?? [], theme: () => ({}), settings: () => ({}),
+      notify: (message) => notifications.push(message), checking: () => state.checking ?? true, shared: (key) => state.shared?.get(key),
       setShared: (key, value) => state.shared?.set(key, value), setBadge() {}, setAgentOrder: (order) => { state.agentOrder = order; },
       nextCommand() {}, watchFolder() {}, layout() {},
     },
   };
   const mod = new SourceTextModule(source);
+  const watcherMod = new SourceTextModule(watcherSource);
   await mod.link((name) => {
+    if (name === "./watcher.js") return watcherMod;
     const exports = modules[name];
     return new SyntheticModule(Object.keys(exports), function () {
       for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
@@ -995,4 +1004,47 @@ test("Checks has empty states and cannot dispatch hidden issue keyboard actions"
   assert.deepEqual(view.sort, { key: "priority", desc: false });
   findElement(view.render(), "checks-failed").click({}, sortContext);
   assert.ok(content(view.render()).includes("No failed check runs."));
+});
+
+test("watcher header exposes raw logs and persistent Stop only for a local Herdr process", async () => {
+  const state = { ...spaceState(), props: { watchChecks: true }, shared: new Map() };
+  const { view, commands } = await dashboard(state);
+  state.checking = false;
+  const runner = { pid: 1234, host: "local-host", busy: false };
+  let live = runner;
+  state.terminals = [{ address: "t-watch", pid: runner.pid, state: "live", labels: {} }];
+  state.exec = async (command) => ({ code: 0, stderr: "", stdout: command === "hostname" ? "local-host\n"
+    : JSON.stringify({ ok: true, schema_version: 5, data: { issues: [], check_runner: live } }) });
+  state.run = (name, args) => {
+    if (name === "terminal.peek") return;
+    assert.equal(name, "terminal.kill");
+    assert.equal(args.terminal, "t-watch");
+    state.terminals[0].state = "finished";
+    live = null;
+  };
+  view.context = { cwd: "/project", root: "/project", dir: "/project/.trk", on: null, watchSpace: "current" };
+  view.data = { issues: [], check_runner: runner };
+  view.watcher.observe(view.watcherContext());
+  await view.watcher.tick();
+  let tree = view.render();
+  assert.ok(content(findElement(tree, "check-watcher")).includes("running"));
+  findElement(tree, "watcher-peek").click({}, sortContext);
+  assert.deepEqual(commands.at(-1), { name: "terminal.peek", args: { terminal: "t-watch" } });
+  const pending = [];
+  const cx = { ...sortContext, spawn: (run) => { pending.push(run(cx)); } };
+  findElement(tree, "watcher-stop").click({}, cx);
+  while (pending.length) await pending.shift();
+  await view.watcher.tick();
+  tree = view.render();
+  assert.ok(content(findElement(tree, "check-watcher")).includes("stopped"));
+  assert.ok(findElement(tree, "watcher-restart"), "Restart remains available after persistent Stop");
+});
+
+test("external watcher header identifies PID and host without process controls", async () => {
+  const { view } = await dashboard({ ...spaceState(), props: { watchChecks: true } });
+  view.context = { root: "/project", dir: "/project/.trk", on: null, watchSpace: "current" };
+  view.data = { issues: [], check_runner: { pid: 1234, host: "other-host", busy: true } };
+  const tree = view.render();
+  assert.ok(content(findElement(tree, "check-watcher")).includes("checking · external 1234@other-host"));
+  for (const id of ["watcher-peek", "watcher-restart", "watcher-stop"]) assert.equal(findElement(tree, id), undefined);
 });

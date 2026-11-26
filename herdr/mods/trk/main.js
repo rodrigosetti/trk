@@ -2,7 +2,7 @@
 // you, live sessions and waiting checks. The data is `trk dashboard --json`
 // (the snapshot the terminal dashboard draws); every action runs `trk` itself.
 //
-// Props: { folder?: string, select?: string, focus?: "agent", fixedTab?: boolean, sort?: string, group?: "epic", view?: "issues" | "checks" }
+// Props: { folder?: string, select?: string, focus?: "agent", fixedTab?: boolean, sort?: string, group?: "epic", view?: "issues" | "checks", watchChecks?: boolean }
 //   folder  show this project instead of the shown space's.
 //   select  the issue to start on, with its detail open.
 //   focus   "agent": selecting an issue shows its session in an agent block.
@@ -10,6 +10,7 @@
 //   group  "epic": bucket issues by epic inside each state group; flat by default.
 //   view  "checks": start on recorded check executions; issues by default.
 //   fixedTab  layout-owned dashboard; project/machine come from trk-tabs, never discovery.
+//   watchChecks  true: supervise local check watchers; off by default (checks can land merges).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Input, TextView, Tabs, Tab } from "gpui-base";
@@ -17,6 +18,7 @@ import {
   exec, spaces, panes, agents, terminals, theme, settings, props, run, notify, checking,
   shared, setShared, setBadge, setAgentOrder, nextCommand, watchFolder,
 } from "herdr";
+import { WatcherSupervisor } from "./watcher.js";
 
 /** The envelope version of `trk --json` this mod was written against. */
 const SCHEMA = 5;
@@ -156,6 +158,7 @@ export default class Trk extends View {
     this.loading = false;
     this.loadedAt = 0;
     this.handle = cx.focus_handle();
+    this.watcher = new WatcherSupervisor();
     this.input = InputState.new({ placeholder: "" });
     this.input.on("submit", (_e, cx) => this.submit(cx));
     this.inputFocused = false;
@@ -164,7 +167,7 @@ export default class Trk extends View {
     if (checking()) return;
     this.want = this.location();
     this.follow(cx);
-    cx.timer.every(REFRESH_MS, (cx) => this.load(cx));
+    cx.timer.every(REFRESH_MS, (cx) => { this.load(cx); this.supervise(cx); });
     // render() only notes where the shown space is: work started from render's cx stalls.
     cx.timer.every(FOLLOW_MS, (cx) => this.follow(cx));
     cx.spawn(async (cx) => {
@@ -179,6 +182,7 @@ export default class Trk extends View {
   }
 
   async close() {
+    this.watcher.close();
     const root = this.context?.root;
     this.context = null;
     this.publish(root, 0);
@@ -251,7 +255,7 @@ export default class Trk extends View {
       this.fixedFocused = this.handle.is_focused() || this.inputFocused;
     }
     if (!loc || this.context?.key === key) return;
-    this.context = { key, ...loc, root: null };
+    this.context = { key, ...loc, root: null, watchSpace: loc.space ?? spaces().find((s) => s.active)?.id };
     this.load(cx, true);
   }
 
@@ -290,6 +294,7 @@ export default class Trk extends View {
         this.error = out.schema_version === SCHEMA ? null : `This mod reads trk's JSON version ${SCHEMA}; the installed trk writes ${out.schema_version}. Run \`trk install\` to refresh the mod.`;
         this.loadedAt = Date.now();
         this.announce(context);
+        this.supervise(cx);
         if (this.view === "issues" && this.selected && !this.data.issues.some((i) => i.id === this.selected)) { this.selected = null; this.detail = null; }
         if (this.selected && this.open) {
           cx.notify();
@@ -317,6 +322,35 @@ export default class Trk extends View {
           this.load(cx);
         }
       } catch { /* too many watches, or none on this platform: the timer still refreshes */ }
+    });
+  }
+
+  /** Opt-in registration follows projects; the controller keeps watching remembered spaces. */
+  supervise(cx) {
+    if (checking()) return;
+    const context = this.watcherContext();
+    if (props()?.watchChecks === true && context?.dir) this.watcher.observe(context);
+    cx.spawn(async (cx) => {
+      await this.watcher.tick();
+      cx.notify();
+    });
+  }
+
+  watcherContext() {
+    return this.context ? { ...this.context, space: this.context.watchSpace ?? this.context.space } : null;
+  }
+
+  watcherAction(cx, action) {
+    const context = this.watcherContext();
+    const runner = this.data?.check_runner;
+    cx.spawn(async (cx) => {
+      try {
+        await this.watcher[action](context, runner);
+        this.load(cx);
+      } catch (e) {
+        this.status = { level: "error", text: `Check watcher: ${e.message}` };
+      }
+      cx.notify();
     });
   }
 
@@ -748,14 +782,30 @@ export default class Trk extends View {
           .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(eventText(e)))))));
   }
 
+  watcherChip(t) {
+    const context = this.watcherContext();
+    const runner = this.data?.check_runner;
+    const optIn = props()?.watchChecks === true;
+    if (!runner && !optIn) return null;
+    const state = this.watcher.status(context, runner);
+    const supported = optIn && context?.dir && !context.on && spaces().some((s) => s.id === context.space && !s.machine);
+    return h_flex().id("check-watcher").flex_none().gap(3).items_center()
+      .child(div().text_size(10.5).text_color(state.label === "checking" ? t.working : state.label === "running" ? t.done : t.dim)
+        .tooltip(state.detail).child(state.external ? `${state.label} · external ${runner?.pid ?? ""}@${runner?.host ?? "unknown"}` : state.label))
+      .when(Boolean(state.terminal), (el) => el.child(this.button(t, "watcher-peek", "Peek", () => run("terminal.peek", { terminal: state.terminal }), { tip: "Peek at the watcher's raw terminal log" })))
+      .when(Boolean(supported) && !state.external, (el) => el
+        .child(this.button(t, "watcher-restart", "Restart", (cx) => this.watcherAction(cx, "restart"), { tip: "Restart trk check --watch; checks can land queued merges" }))
+        .child(this.button(t, "watcher-stop", "Stop", (cx) => this.watcherAction(cx, "stop"), { tip: "Stop check supervision for this project in every panel until Restart" })));
+  }
+
   header(t, title) {
     const c = this.data?.counts;
-    const runner = this.data?.check_runner;
+    const watcher = this.watcherChip(t);
     const reapable = this.data?.issues.some((i) => i.attention.some((a) => a.startsWith("session ended")));
-    return h_flex().h(40).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
+    return h_flex().min_h(40).py(4).flex_wrap().flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
       .child(div().flex_1().min_w(0).truncate().font_semibold().text_color(t.foreground).child(title))
-      .when(Boolean(runner), (el) => el.child(div().flex_none().text_size(10.5).text_color(runner?.busy ? t.working : t.dim).tooltip(`trk check --watch, pid ${runner?.pid}`).child(runner?.busy ? "checking" : "checks on")))
-      .when(Boolean(c) && !runner && c.waiting > 0, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.done).tooltip("Waiting issues have checks, and no `trk check --watch` is running").child("no check runner")))
+      .when(Boolean(watcher), (el) => el.child(watcher))
+      .when(Boolean(c) && !watcher && c.waiting > 0, (el) => el.child(div().flex_none().text_size(10.5).text_color(t.done).tooltip("Waiting issues have checks, and no `trk check --watch` is running").child("no check runner")))
       .when(Boolean(c), (el) => el.child(div().flex_none().text_size(10.5).text_color(t.dim).child(`${c.closed} closed`)))
       .when(reapable, (el) => el.child(this.button(t, "reap", "Reap", (cx) => { if (this.confirmed("reap", cx)) this.act(cx, "reap", ["reap"]); }, { tip: "Release the claims of ended sessions" })))
       .child(this.button(t, "new", "New", (cx) => { this.ask({ kind: "create" }); cx.notify(); }, { tip: "New issue (c)" }));
