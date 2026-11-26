@@ -1,5 +1,6 @@
 //! Store-level tests of the four-state machine.
 
+use trk_core::model::OnPass;
 use trk_core::ops::{CheckResult, CheckRun, ClaimOpts, Edit, NewIssue, WaitOpts};
 use trk_core::view::With;
 use trk_core::{Code, State, Store, StoreOpts};
@@ -361,6 +362,7 @@ fn waiting_releases_the_claim_and_keeps_the_worktree() {
                 interval: Some(jiff::SignedDuration::from_mins(2)),
                 reason: Some("merge into main".into()),
                 force: false,
+                on_pass: OnPass::Close,
             },
         )
     })
@@ -1787,4 +1789,323 @@ fn links_are_stored_shown_and_recorded_without_being_interpreted() {
         changes[4],
         serde_json::json!({"from": "http://preview.example.com/", "to": null})
     );
+}
+
+fn wait_for_pass_wake(s: &mut Store, id: &str) {
+    s.write(AGENT, false, |c| {
+        c.wait(
+            id,
+            WaitOpts {
+                check: Some("merge".into()),
+                reason: Some("run the post-merge deployment".into()),
+                on_pass: OnPass::Wake,
+                ..Default::default()
+            },
+        )
+    })
+    .unwrap();
+}
+
+#[test]
+fn passing_wake_restores_metadata_without_spending_the_failure_budget() {
+    let (d, mut s) = setup();
+    let id = create(&mut s, "Deploy");
+    let dependent = s
+        .write(HUMAN, false, |c| {
+            c.create(NewIssue {
+                blocked_by: vec![id.clone()],
+                ..new("After deployment")
+            })
+        })
+        .unwrap();
+    let original = s
+        .write(AGENT, false, |c| {
+            c.claim(
+                &id,
+                ClaimOpts {
+                    worktree: Some("/tmp/deploy".into()),
+                    host: Some("host".into()),
+                    agent: Some("implementer".into()),
+                    terminal: Some("terminal".into()),
+                    launcher: Some("launcher".into()),
+                    on_behalf_of: Some(HUMAN.into()),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    // First spend a failure wake, then prove pass wakes ignore the exhausted cap.
+    wait(&mut s, AGENT, &id, Some("merge"), None);
+    let failed = s
+        .write(HUMAN, false, |c| {
+            c.check_record(
+                &id,
+                "merge",
+                c.issue_revision(&id)?,
+                &run(1, "conflict"),
+                Some(original.id),
+            )
+        })
+        .unwrap();
+    let CheckResult::Woken { claim: previous } = failed else {
+        panic!("{failed:?}")
+    };
+    s.opts.max_wakes = 0;
+    wait_for_pass_wake(&mut s, &id);
+    let revision = s.read(None, |c| c.issue_revision(&id)).unwrap();
+    assert_eq!(
+        record(&mut s, &id, "merge", &run(75, "pending")),
+        CheckResult::Retry
+    );
+    let issue = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(issue.waiting_on_pass, OnPass::Wake);
+    assert_eq!(issue.last_check_exit, Some(75));
+    assert_eq!(s.read(None, |c| c.issue_revision(&id)).unwrap(), revision);
+    let shown = s.read(None, |c| c.show(&id, With::default())).unwrap();
+    assert_eq!(shown["waiting"]["on_pass"], "wake");
+    let runs = serde_json::to_value(s.read(None, |c| c.runs()).unwrap()).unwrap();
+    assert_eq!(runs[0]["waiting"]["on_pass"], "wake");
+    let dashboard = serde_json::to_value(
+        s.read(None, |c| c.dashboard(0, &|_, _, _| None, &|_| None))
+            .unwrap(),
+    )
+    .unwrap();
+    let row = dashboard["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id)
+        .unwrap();
+    assert_eq!(row["waiting"]["on_pass"], "wake");
+    s.opts.now = Some(ts("2026-11-20T11:00:00Z"));
+    let result = s
+        .write(HUMAN, false, |c| {
+            c.check_record(&id, "merge", revision, &run(0, "merged"), Some(previous))
+        })
+        .unwrap();
+    let CheckResult::PassWoken { claim: restored } = result else {
+        panic!("{result:?}")
+    };
+    assert_eq!(result.as_str(), "pass_woken");
+    assert_ne!(restored, previous);
+    let active = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    assert_eq!(active.actor, original.actor);
+    assert_eq!(active.on_behalf_of, original.on_behalf_of);
+    assert_eq!(active.worktree, original.worktree);
+    assert_eq!(active.host, original.host);
+    assert_eq!(active.agent, original.agent);
+    assert_eq!(active.terminal, original.terminal);
+    assert_eq!(active.launcher, original.launcher);
+    assert_eq!(active.lease_until.as_deref(), Some("2026-11-20T11:30:00Z"));
+    let issue = s.read(None, |c| c.issue(&id)).unwrap();
+    assert_eq!(issue.state, State::Claimed);
+    assert_eq!(issue.wake_count, 1);
+    assert_eq!(issue.waiting_on_pass, OnPass::Close);
+    assert!(issue.waiting_check.is_none());
+    assert!(issue.waiting_reason.is_none());
+    assert!(issue.next_check_at.is_none());
+    assert!(ids(&s, "blocked").contains(&dependent));
+    s.write(AGENT, false, |c| c.note(&id, "deploying now", None))
+        .unwrap();
+    // Reopening the database cannot reset the per-session pass marker.
+    let opts = s.opts.clone();
+    drop(s);
+    let mut s = Store::open(&d.path().join("trk.db"), opts).unwrap();
+    let error = s
+        .write(AGENT, false, |c| {
+            c.wait(
+                &id,
+                WaitOpts {
+                    check: Some("merge".into()),
+                    on_pass: OnPass::Wake,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap_err();
+    assert_eq!(error.code(), Code::InvalidState);
+    assert!(error.to_string().contains("already woke"));
+    // A second ordinary checked wait closes; no pass-wake loop.
+    wait(&mut s, AGENT, &id, Some("merge"), None);
+    assert_eq!(
+        record(&mut s, &id, "merge", &run(0, "")),
+        CheckResult::Passed
+    );
+    assert!(ids(&s, "ready").contains(&dependent));
+}
+
+#[test]
+fn wake_requires_a_check_and_replacements_invalidate_check_snapshots() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    let original = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    let error = s
+        .write(AGENT, false, |c| {
+            c.wait(
+                &id,
+                WaitOpts {
+                    reason: Some("a decision".into()),
+                    on_pass: OnPass::Wake,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap_err();
+    assert_eq!(error.code(), Code::InvalidField);
+    assert_eq!(state(&s, &id), State::Claimed);
+    wait_for_pass_wake(&mut s, &id);
+    let revision = s.read(None, |c| c.issue_revision(&id)).unwrap();
+    wait(&mut s, HUMAN, &id, Some("merge"), None);
+    assert_eq!(
+        s.write(HUMAN, false, |c| c.check_record(
+            &id,
+            "merge",
+            revision,
+            &run(0, ""),
+            Some(original.id),
+        ))
+        .unwrap(),
+        CheckResult::Skipped,
+    );
+    assert_eq!(state(&s, &id), State::Waiting);
+    assert_eq!(
+        s.read(None, |c| c.issue(&id)).unwrap().waiting_on_pass,
+        OnPass::Close
+    );
+    assert_eq!(
+        record(&mut s, &id, "merge", &run(0, "")),
+        CheckResult::Passed
+    );
+}
+
+#[test]
+fn passing_wake_without_the_original_live_session_reopens_with_pending_work() {
+    let (_d, mut s) = setup();
+    for candidate in [None, Some(i64::MAX)] {
+        let id = create(&mut s, "Work");
+        claim(&mut s, AGENT, &id);
+        wait_for_pass_wake(&mut s, &id);
+        let result = s
+            .write(HUMAN, false, |c| {
+                c.check_record(&id, "merge", c.issue_revision(&id)?, &run(0, ""), candidate)
+            })
+            .unwrap();
+        assert_eq!(result, CheckResult::PassReopened);
+        assert_eq!(result.as_str(), "pass_reopened");
+        assert_eq!(state(&s, &id), State::Open);
+        assert!(s.read(None, |c| c.active_claim(&id)).unwrap().is_none());
+        let notes = s.read(None, |c| c.notes(&id)).unwrap();
+        let body = notes.last().unwrap()["body"].as_str().unwrap();
+        assert!(body.contains("check passed"), "{body}");
+        assert!(body.contains("still pending"), "{body}");
+        assert!(body.contains("post-merge deployment"), "{body}");
+    }
+}
+
+#[test]
+fn pass_wake_delivery_failure_and_lease_expiry_retain_pending_reason() {
+    let (_d, mut s) = setup();
+    for expire in [false, true] {
+        let id = create(&mut s, "Work");
+        claim(&mut s, AGENT, &id);
+        let original = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+        wait_for_pass_wake(&mut s, &id);
+        let result = s
+            .write(HUMAN, false, |c| {
+                c.check_record(
+                    &id,
+                    "merge",
+                    c.issue_revision(&id)?,
+                    &run(0, ""),
+                    Some(original.id),
+                )
+            })
+            .unwrap();
+        let CheckResult::PassWoken { claim } = result else {
+            panic!("{result:?}")
+        };
+        assert!(
+            !s.write(HUMAN, false, |c| c.check_wake_failed(&id, original.id))
+                .unwrap()
+        );
+        if expire {
+            s.opts.now = Some(s.now() + jiff::SignedDuration::from_hours(1));
+            s.write(HUMAN, false, |_| Ok(())).unwrap();
+        } else {
+            assert!(
+                s.write(HUMAN, false, |c| c.check_wake_failed(&id, claim))
+                    .unwrap()
+            );
+        }
+        assert_eq!(state(&s, &id), State::Open);
+        assert!(s.read(None, |c| c.active_claim(&id)).unwrap().is_none());
+        let notes = s.read(None, |c| c.notes(&id)).unwrap();
+        let body = notes.last().unwrap()["body"].as_str().unwrap();
+        assert!(body.contains("check passed"), "{body}");
+        assert!(body.contains("still pending"), "{body}");
+        assert!(body.contains("post-merge deployment"), "{body}");
+        assert!(
+            body.contains(if expire { "lease expired" } else { "delivery" }),
+            "{body}"
+        );
+        assert!(
+            !s.write(HUMAN, false, |c| c.check_wake_failed(&id, claim))
+                .unwrap()
+        );
+    }
+}
+
+#[test]
+fn pass_wake_marker_follows_restored_claim_lineage_but_not_fresh_claims() {
+    let (_d, mut s) = setup();
+    let id = create(&mut s, "Work");
+    claim(&mut s, AGENT, &id);
+    let original = s.read(None, |c| c.active_claim(&id)).unwrap().unwrap();
+    wait_for_pass_wake(&mut s, &id);
+    let result = s
+        .write(HUMAN, false, |c| {
+            c.check_record(
+                &id,
+                "merge",
+                c.issue_revision(&id)?,
+                &run(0, ""),
+                Some(original.id),
+            )
+        })
+        .unwrap();
+    let CheckResult::PassWoken { claim: restored } = result else {
+        panic!("{result:?}")
+    };
+    wait(&mut s, AGENT, &id, Some("finish"), None);
+    let result = s
+        .write(HUMAN, false, |c| {
+            c.check_record(
+                &id,
+                "finish",
+                c.issue_revision(&id)?,
+                &run(1, "failed"),
+                Some(restored),
+            )
+        })
+        .unwrap();
+    assert!(matches!(result, CheckResult::Woken { .. }));
+    assert_eq!(
+        s.write(AGENT, false, |c| c.wait(
+            &id,
+            WaitOpts {
+                check: Some("merge".into()),
+                on_pass: OnPass::Wake,
+                ..Default::default()
+            }
+        ))
+        .unwrap_err()
+        .code(),
+        Code::InvalidState
+    );
+    s.write(AGENT, false, |c| c.unclaim(&id, false, None))
+        .unwrap();
+    claim(&mut s, AGENT, &id);
+    wait_for_pass_wake(&mut s, &id);
+    assert_eq!(state(&s, &id), State::Waiting);
 }

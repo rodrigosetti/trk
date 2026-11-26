@@ -214,19 +214,25 @@ enum Cmd {
     /// End work without closing: claimed → waiting, until a check passes or a human decides
     #[command(
         after_help = "The check runs later, by `trk check`, with `sh -c` in the claim's worktree.\n\
-        Exit 0 closes the issue as done; exit 75 means not yet, check again after --every;\n\
+        Exit 0 closes the issue as done by default; --on-pass wake restores the same live session\n\
+        for a final work cycle instead. Exit 75 means not yet, check again after --every;\n\
         any other exit or timeout wakes the original live session, otherwise reopens the issue;\n\
         the output is kept in a note. Failed wake delivery also reopens the issue.\n\
-        [check] max_wakes caps wakes per session (default 5; 0 disables waking).\n\
+        [check] max_wakes caps failure wakes per session (default 5; 0 disables failure waking).\n\
         At the cap, failures reopen with an output note. A fresh claim resets the count.\n\
+        Pass wakes do not consume that budget. If waking is unavailable, the issue reopens\n\
+        with the pending reason. A pass-woken session must close or use a close-on-pass wait.\n\
         Without --check the issue waits for a human to close, reopen, or explicitly resume it.\n\
-        On an issue that is already waiting, this replaces its check, interval and reason."
+        On an issue that is already waiting, this replaces its check, on-pass action, interval and reason."
     )]
     Wait {
         id: String,
         /// Shell command that decides the issue's fate (text, @file, or @-)
         #[arg(short = 'c', long)]
         check: Option<String>,
+        /// On success, close or wake the same live session for a final work cycle (wake requires --check)
+        #[arg(long, value_parser = ["close", "wake"], default_value = "close")]
+        on_pass: String,
         /// Time between checks, e.g. 2m, 1h (default: [check] interval, 5m)
         #[arg(long, value_name = "DURATION")]
         every: Option<String>,

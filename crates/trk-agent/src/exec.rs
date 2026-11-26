@@ -3,6 +3,7 @@
 use serde_json::{Map, Value, json};
 use trk_core::config::parse_duration;
 use trk_core::error::{Code, Error, Result, bad_args};
+use trk_core::model::OnPass;
 use trk_core::ops::{NewIssue, WaitOpts};
 use trk_core::view::With;
 use trk_core::{Ctx, Store};
@@ -118,6 +119,12 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
             let reason = str_arg(&a, "reason")?.to_string();
             let check = opt_arg(&a, "check").map(String::from);
             let interval = opt_arg(&a, "interval").map(parse_duration).transpose()?;
+            let on_pass = match a.get("on_pass") {
+                None => OnPass::Close,
+                Some(Value::String(value)) if value == "close" => OnPass::Close,
+                Some(Value::String(value)) if value == "wake" => OnPass::Wake,
+                _ => return Err(bad_args("on_pass must be 'close' or 'wake'")),
+            };
             let has_check = check.is_some();
             store.write(&sess.actor, false, |c| {
                 c.wait(
@@ -125,15 +132,18 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
                     WaitOpts {
                         check,
                         interval,
+                        on_pass,
                         reason: Some(reason.clone()),
                         force: false,
                     },
                 )
             })?;
             return Ok(json!({
-                "waiting": id, "reason": reason,
-                "message": if has_check {
-                    "The issue is waiting and your claim released. trk runs the check on its schedule; your work in this session is done.".to_owned()
+                "waiting": id, "reason": reason, "on_pass": on_pass,
+                "message": if has_check && on_pass == OnPass::Wake {
+                    "The issue is waiting and your claim released. A successful check restores this same live session's claim and tools for a final work cycle, without consuming the failure wake budget. Dependents remain blocked. After waking, close the issue or wait with on_pass: close; a second pass wake is refused. If waking is unavailable or your restored lease expires, the issue opens with the passed check and pending reason recorded.".to_owned()
+                } else if has_check {
+                    "The issue is waiting and your claim released. trk runs the check on its schedule; a pass closes the issue. This work cycle is done.".to_owned()
                 } else if store.opts.chat_resume {
                         format!(
                             "The issue is waiting for a human and your claim released. This work cycle is done. \

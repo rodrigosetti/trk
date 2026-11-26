@@ -334,6 +334,34 @@ fn named_custom_length_and_character_set_apply_before_start() {
 }
 
 #[test]
+fn runs_describes_checked_wait_pass_actions_without_color() {
+    let tmux = Tmux::new();
+    let id = tmux.launch();
+    for (policy, action) in [("close", "closes"), ("wake", "wakes")] {
+        tmux.e.ok(&[
+            "wait",
+            &id,
+            "--force",
+            "--check",
+            "exit 75",
+            "--on-pass",
+            policy,
+        ]);
+        assert_eq!(tmux.ok(&["runs"])[0]["waiting"]["on_pass"], policy);
+        let out = tmux
+            .cmd()
+            .args(["--no-color", "--format", "pretty", "runs"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.contains("WAITING"), "{text}");
+        assert!(text.contains(&format!("pass {action}")), "{text}");
+        assert!(!text.contains('\u{1b}'), "{text}");
+    }
+}
+
+#[test]
 fn named_tmux_resume_wake_notify_rename_and_gc_keep_the_pinned_profile() {
     let tmux = Tmux::new();
     let id = tmux.launch();

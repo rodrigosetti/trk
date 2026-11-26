@@ -55,7 +55,7 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
         action,
     };
     let failure = if check.max_wakes == 0 {
-        "Failures reopen the issue for a new session; [check] max_wakes = 0 disables waking.".into()
+        "Failures reopen the issue for a new session; [check] max_wakes = 0 disables failure waking.".into()
     } else {
         format!(
             "Failures restore your claim and tools and wake your live session, up to {} times per session ([check] max_wakes); \
@@ -157,8 +157,12 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
             format!(
                 "End this work cycle with the issue not yet done: it waits for something outside this session. \
                  With `check`, a shell command that trk runs later, on a schedule, in your worktree: \
-                 exit 0 closes the issue as done; exit {CHECK_RETRY_EXIT} means not yet, check again after `interval`; \
+                 exit 0 closes the issue as done by default (`on_pass: close`); exit {CHECK_RETRY_EXIT} means not yet, check again after `interval`; \
                  any other exit or timeout records the output as a note. {failure} \
+                 With `check` and `on_pass: wake`, a pass restores the same live session's claim and tools for a final work cycle without consuming the failure wake budget. \
+                 End that cycle by closing or by waiting with `on_pass: close`; a second pass wake is refused. \
+                 If the original session is gone, delivery fails, or its restored lease expires, the issue opens with a note that the check passed and the reason is still pending. \
+                 Dependents remain blocked until you close the issue. \
                  It runs unattended under sh -c and may run more than once: make it non-interactive, non-blocking (no --watch) and safe to repeat. \
                  Without `check`, the issue waits for a human to close, reopen, or run `trk resume <ID> -m \"<your decision>\"` to continue the live session. {chat_resume} \
                  Chat resume never applies to checked waits; those require the check or a human using `trk resume`."
@@ -176,6 +180,11 @@ pub fn catalogue(config: &UserConfig) -> Vec<ToolDef> {
                         "Time between checks, e.g. 2m, 1h, 1d. Default {}.",
                         check.interval
                     )),
+                    false,
+                ),
+                (
+                    "on_pass",
+                    json!({"type": "string", "enum": ["close", "wake"], "default": "close", "description": "On check success: close (default), or wake the same live session for a final work cycle. wake requires check and cannot be repeated after a pass wake."}),
                     false,
                 ),
             ]),
@@ -285,6 +294,25 @@ mod tests {
                 wait.input_schema["properties"]["interval"]["description"],
                 "Time between checks, e.g. 2m, 1h, 1d. Default 1h."
             );
+            assert_eq!(
+                wait.input_schema["properties"]["on_pass"]["enum"],
+                json!(["close", "wake"])
+            );
+            assert_eq!(
+                wait.input_schema["properties"]["on_pass"]["default"],
+                "close"
+            );
+            for lifecycle in [
+                "on_pass: wake",
+                "same live session's claim and tools",
+                "without consuming the failure wake budget",
+                "second pass wake is refused",
+                "restored lease expires",
+                "reason is still pending",
+                "Dependents remain blocked",
+            ] {
+                assert!(wait.description.contains(lifecycle), "{lifecycle}");
+            }
             let description = &wait.description;
             assert!(!description.contains("PR"), "{description}");
             assert!(
@@ -297,7 +325,7 @@ mod tests {
                     "{description}"
                 );
                 assert!(
-                    description.contains("max_wakes = 0 disables waking"),
+                    description.contains("max_wakes = 0 disables failure waking"),
                     "{description}"
                 );
                 assert!(

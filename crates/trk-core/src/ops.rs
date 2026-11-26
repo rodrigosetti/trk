@@ -67,6 +67,8 @@ pub struct WaitOpts {
     /// Shell command run by `trk check`. `None` waits on a human.
     pub check: Option<String>,
     pub interval: Option<jiff::SignedDuration>,
+    /// Successful checks close by default, or resume the original session.
+    pub on_pass: OnPass,
     pub reason: Option<String>,
     pub force: bool,
 }
@@ -95,6 +97,10 @@ pub enum CheckResult {
     Failed,
     /// A failed check restored its waiting session's claim.
     Woken { claim: i64 },
+    /// A successful check restored its waiting session's claim.
+    PassWoken { claim: i64 },
+    /// A successful wake check reopened because its session was unavailable.
+    PassReopened,
     /// The issue changed while the check ran; nothing was recorded.
     Skipped,
 }
@@ -106,6 +112,8 @@ impl CheckResult {
             CheckResult::Retry => "retry",
             CheckResult::Failed => "failed",
             CheckResult::Woken { .. } => "woken",
+            CheckResult::PassWoken { .. } => "pass_woken",
+            CheckResult::PassReopened => "pass_reopened",
             CheckResult::Skipped => "skipped",
         }
     }
@@ -153,7 +161,8 @@ impl Ctx<'_> {
             "UPDATE issue SET state = ?2, title = ?3, description = ?4, priority = ?5, type = ?6,
                     close_reason = ?7, waiting_reason = ?8, waiting_check = ?9, check_interval = ?10,
                     next_check_at = ?11, last_check_at = ?12, last_check_exit = ?13, wait_cwd = ?14,
-                    closed_at = ?15, updated_at = ?16, wake_count = ?17, epic = ?18
+                    closed_at = ?15, updated_at = ?16, wake_count = ?17, epic = ?18,
+                    waiting_on_pass = ?19
              WHERE id = ?1",
             params![
                 i.id,
@@ -174,6 +183,7 @@ impl Ctx<'_> {
                 self.ts(),
                 i.wake_count,
                 i.epic,
+                i.waiting_on_pass.as_str(),
             ],
         )?;
         Ok(())
@@ -182,6 +192,7 @@ impl Ctx<'_> {
     fn clear_waiting(issue: &mut Issue) {
         issue.waiting_reason = None;
         issue.waiting_check = None;
+        issue.waiting_on_pass = OnPass::Close;
         issue.check_interval = None;
         issue.next_check_at = None;
         issue.last_check_at = None;
@@ -731,6 +742,23 @@ impl Ctx<'_> {
                 "trk wait {id} --check 'CMD' [--every 5m] [--reason TEXT]"
             )));
         }
+        if opts.on_pass == OnPass::Wake {
+            if check.is_none() {
+                return Err(Error::new(
+                    Code::InvalidField,
+                    "on_pass wake requires a check command",
+                )
+                .with_issue(&id));
+            }
+            if let Some(session) = self.session_claim(&id)?
+                && self.pass_woken_pending(&id, session.id)?.is_some()
+            {
+                return Err(Error::new(
+                    Code::InvalidState,
+                    "this session already woke after a successful check; close it or wait with on_pass close",
+                ).with_issue(&id));
+            }
+        }
         if let Some(d) = opts.interval
             && d.as_secs() <= 0
         {
@@ -760,6 +788,7 @@ impl Ctx<'_> {
         issue.state = State::Waiting;
         issue.waiting_reason = reason;
         issue.waiting_check = check;
+        issue.waiting_on_pass = opts.on_pass;
         issue.check_interval = interval;
         // The first check is due at once: a merge should not wait an interval.
         issue.next_check_at = issue.waiting_check.as_ref().map(|_| self.ts());
@@ -772,6 +801,7 @@ impl Ctx<'_> {
             json!({
                 "from": from, "reason": issue.waiting_reason, "check": issue.waiting_check,
                 "interval": interval, "cwd": issue.wait_cwd, "forced": forced,
+                "on_pass": issue.waiting_on_pass,
             }),
         )?;
         if let Some(c) = claim {
@@ -856,7 +886,7 @@ impl Ctx<'_> {
         issue.state = State::Claimed;
         Self::clear_waiting(&mut issue);
         self.save_issue(&issue)?;
-        self.restore_waiting_claim(id, &previous, false)?;
+        self.restore_waiting_claim(id, &previous, false, None)?;
         self.active_claim(id)?
             .ok_or_else(|| Error::new(Code::Internal, "restored claim vanished"))
     }
@@ -913,7 +943,7 @@ impl Ctx<'_> {
         issue.state = State::Claimed;
         Self::clear_waiting(&mut issue);
         self.save_issue(&issue)?;
-        let claim = self.restore_waiting_claim(&id, &previous, false)?;
+        let claim = self.restore_waiting_claim(&id, &previous, false, None)?;
         self.event(
             Some(&id),
             "resume_chat",
@@ -974,7 +1004,13 @@ impl Ctx<'_> {
     }
 
     /// Shared restoration for automatic check wakes and manual continuation.
-    fn restore_waiting_claim(&self, id: &str, previous: &Claim, by_check: bool) -> Result<i64> {
+    fn restore_waiting_claim(
+        &self,
+        id: &str,
+        previous: &Claim,
+        by_check: bool,
+        pass_woken: Option<&Value>,
+    ) -> Result<i64> {
         let lease_until = fmt_ts(self.now + self.opts.agent_lease);
         self.conn.execute(
             "INSERT INTO claim
@@ -1002,8 +1038,59 @@ impl Ctx<'_> {
         if let Some(launcher) = &previous.launcher {
             payload["launcher"] = json!(launcher);
         }
+        if let Some(pending) = pass_woken {
+            payload["pass_woken"] = pending.clone();
+        }
         self.event(Some(id), "claim", payload)?;
         Ok(claim)
+    }
+
+    /// Claim events carry the durable pass marker; restorations retain their
+    /// lineage, while an ordinary fresh claim starts a new session.
+    pub(crate) fn pass_woken_pending(&self, id: &str, claim: i64) -> Result<Option<Value>> {
+        let payload: Option<String> = self
+            .conn
+            .query_row(
+                "WITH RECURSIVE lineage(claim) AS (
+               SELECT ?2
+               UNION
+               SELECT json_extract(e.payload, '$.resumed_from')
+               FROM event e JOIN lineage l ON json_extract(e.payload, '$.claim') = l.claim
+               WHERE e.issue_id = ?1 AND e.op = 'claim'
+                 AND json_extract(e.payload, '$.resumed_from') IS NOT NULL
+             )
+             SELECT json_extract(e.payload, '$.pass_woken')
+             FROM event e JOIN lineage l ON json_extract(e.payload, '$.claim') = l.claim
+             WHERE e.issue_id = ?1 AND e.op = 'claim'
+               AND json_type(e.payload, '$.pass_woken') = 'object'
+             ORDER BY e.seq DESC LIMIT 1",
+                params![id, claim],
+                |r| r.get(0),
+            )
+            .optional()?;
+        payload
+            .map(|p| {
+                serde_json::from_str(&p).map_err(|e| {
+                    Error::new(
+                        Code::Internal,
+                        format!("invalid pass-woken claim metadata: {e}"),
+                    )
+                })
+            })
+            .transpose()
+    }
+
+    pub(crate) fn pass_pending_note(pending: &Value, why: &str) -> String {
+        let mut body = format!(
+            "The waiting check passed, but {why}; the issue is open again. Follow-up work is still pending.\n",
+        );
+        if let Some(reason) = pending["reason"].as_str() {
+            body.push_str(&format!("\nPending wait reason: {reason}\n"));
+        }
+        if let Some(check) = pending["check"].as_str() {
+            body.push_str(&format!("\nPassed check:\n\n```sh\n{check}\n```\n"));
+        }
+        body
     }
 
     // ------------------------------------------------------------------
@@ -1155,8 +1242,8 @@ impl Ctx<'_> {
 
     /// Record one run of an issue's check. The command and lifecycle revision
     /// must still match the snapshot taken before execution, even if a new
-    /// waiting cycle reused the same command. A failed check may restore only
-    /// the latest waiting claim after the caller establishes session liveness.
+    /// waiting cycle reused the same command. A check may restore only the
+    /// latest waiting claim after the caller establishes session liveness.
     pub fn check_record(
         &self,
         id: &str,
@@ -1196,6 +1283,55 @@ impl Ctx<'_> {
         }
         let reason = issue.waiting_reason.clone();
         if run.exit == Some(0) && !run.timed_out {
+            if issue.waiting_on_pass == OnPass::Wake {
+                let previous = match resume_claim {
+                    Some(claim) => self.session_claim(id)?.filter(|c| {
+                        c.id == claim
+                            && c.released_at.is_some()
+                            && c.release_reason.as_deref() == Some("waiting")
+                    }),
+                    None => None,
+                };
+                let pending = json!({"reason": reason, "check": check});
+                issue.state = if previous.is_some() {
+                    State::Claimed
+                } else {
+                    State::Open
+                };
+                Self::clear_waiting(&mut issue);
+                self.save_issue(&issue)?;
+                self.event(
+                    Some(id),
+                    "check",
+                    json!({
+                        "result": if previous.is_some() { "pass_woken" } else { "pass_reopened" },
+                        "exit": 0, "check": check, "reason": reason, "on_pass": "wake",
+                    }),
+                )?;
+                if let Some(previous) = previous {
+                    let claim = self.restore_waiting_claim(id, &previous, true, Some(&pending))?;
+                    self.note(
+                        id,
+                        "The waiting check passed; the original session has been resumed for follow-up work.",
+                        None,
+                    )?;
+                    return Ok(CheckResult::PassWoken { claim });
+                }
+                self.note(
+                    id,
+                    &Self::pass_pending_note(
+                        &pending,
+                        "the original waiting session could not be resumed",
+                    ),
+                    None,
+                )?;
+                self.event(
+                    Some(id),
+                    "reopen",
+                    json!({"from": "waiting", "by_check": true, "passed": true}),
+                )?;
+                return Ok(CheckResult::PassReopened);
+            }
             issue.state = State::Closed;
             issue.close_reason = Some("done".into());
             issue.closed_at = Some(self.ts());
@@ -1276,7 +1412,7 @@ impl Ctx<'_> {
             }),
         )?;
         if let Some(previous) = resume {
-            let claim = self.restore_waiting_claim(id, &previous, true)?;
+            let claim = self.restore_waiting_claim(id, &previous, true, None)?;
             return Ok(CheckResult::Woken { claim });
         }
         self.event(
@@ -1290,11 +1426,17 @@ impl Ctx<'_> {
     /// Reopen after delivery to a restored session failed, but only while that
     /// exact claim is still active. A session that moved on must not be changed.
     pub fn check_wake_failed(&self, id: &str, claim_id: i64) -> Result<bool> {
+        let pending = self.pass_woken_pending(id, claim_id)?;
+        let note = pending.as_ref().map(|pending| {
+            Self::pass_pending_note(pending, "delivery to the resumed session failed")
+        });
         self.restoration_failed(
             id,
             claim_id,
-            Some("The failed waiting check could not be delivered to the resumed session; the issue is open again."),
-            json!({"check_wake_failed": true}),
+            Some(note.as_deref().unwrap_or(
+                "The failed waiting check could not be delivered to the resumed session; the issue is open again.",
+            )),
+            json!({"check_wake_failed": true, "passed": pending.is_some()}),
         )
     }
 

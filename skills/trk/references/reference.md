@@ -56,8 +56,8 @@ The `epic` filter accepts curated names, including archived epics, and ordinary 
 | `epic` | optional curated epic name, or null |
 | `state`, `close_reason` | where it is |
 | `claim` | the active claim: `actor`, `claimed_at`, `lease_until`, `worktree`, `agent`, `terminal` |
-| `waiting` | while waiting: `reason`, `check`, `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit`, `cwd` |
-| `wake_count` | top-level automatic check-wake restoration count; included only when nonzero and the issue is claimed or waiting; human resume preserves it |
+| `waiting` | while waiting: `reason`, `check`, `on_pass` (`"close"` by default or `"wake"`, which requires a check), `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit`, `cwd` |
+| `wake_count` | top-level automatic failure-check-wake restoration count; included only when nonzero and the issue is claimed or waiting; human resume and successful pass wake preserve it |
 | `deps` | `blocked_by` and `blocks`, each a list of `{id, title, state, priority, epic}`; epic is the other issue's name or null |
 | `derived` | `ready`, `blocked_by` (open blockers), `due`, `progress` (`{total, closed}` blockers), `unblocks_higher_priority` |
 | `notes`, `events`, `claims` | with `--with notes,events,claims` (notes are included by default) |
@@ -82,7 +82,7 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk unclaim <ID> [-m NOTE] [--force]` | claimed → open |
 | `trk renew <ID> [--lease 30m]` | Extend a lease |
 | `trk close <ID> [-r done or abandoned] [-m NOTE] [--force] [--dry-run]` | Close from open, claimed or waiting |
-| `trk wait <ID> [-c CHECK] [--every 5m] [-r REASON] [--force] [--dry-run]` | claimed → waiting; on a waiting issue, replace its check |
+| `trk wait <ID> [-c CHECK] [--on-pass close or wake] [--every 5m] [-r REASON] [--force] [--dry-run]` | claimed → waiting; on a waiting issue, replace its settings; `wake` requires a check |
 | `trk reopen <ID> [-m NOTE]` | waiting or closed → open |
 | `trk resume <ID> -m MESSAGE` | Human-authorized waiting → claimed for the original live session, then deliver the required message |
 | `trk check [ID] [--all] [--watch [PAUSE]] [--dry-run] [--no-gc]` | Run waiting checks, one at a time, then optionally sweep closed-as-done resources |
@@ -98,6 +98,18 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk whoami`, `trk backup <PATH>` | Environment and backup |
 
 `-d` and `-c` take text, `@file`, or `@-` for stdin.
+
+Per-wait `--on-pass wake` (MCP `on_pass: "wake"`) restores the same eligible live
+session's claim with a fresh lease on check success, without consuming the failure
+wake budget. Finish the pending wait reason and explicitly close. A subsequent
+passing check closes normally; a second pass-wake request may be refused.
+Unavailable restoration, failed delivery, or restored-lease expiry opens with a
+passed-check/pending-work note; dependents stay blocked until close. The default
+`close` still sends a best-effort closure notification.
+
+Check JSON distinguishes `passed` (closed), `pass_woken` (successful continuation),
+`pass_reopened` (passed but continuation unavailable), `woken` (failure wake),
+`failed` (failure reopened), `retry` and `skipped`. Waiting JSON includes `on_pass`.
 
 Issue creation (including MCP `report_followup`) and setting a type require a project `.trk/types/<name>.toml` definition. Unknown or empty types return `invalid_field`: the core error's `detail.allowed` is serialized as `error.allowed`, listing accepted names, with a hint naming `.trk/types/`. The editor uses the same validation. `report_followup` advertises those names as an enum and includes each type's description in the field description. Existing issues whose type definition was removed remain listable, showable and editable without changing their type; leaving it unchanged in the editor is allowed, but explicitly setting an unknown type is refused. `trk agent check` reports an `[issues] default_type` with no matching type file.
 

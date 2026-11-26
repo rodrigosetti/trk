@@ -61,6 +61,7 @@ CREATE TABLE issue (
   -- waiting
   waiting_reason   TEXT,
   waiting_check    TEXT,                  -- sh command; NULL = waits on a human
+  waiting_on_pass  TEXT NOT NULL DEFAULT 'close' CHECK (waiting_on_pass IN ('close', 'wake')),
   check_interval   INTEGER,               -- seconds between checks
   next_check_at    TEXT,
   last_check_at    TEXT,

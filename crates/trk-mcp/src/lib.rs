@@ -471,6 +471,55 @@ mod tests {
     }
 
     #[test]
+    fn checked_wait_exposes_and_validates_on_pass() {
+        for on_pass in [None, Some("close"), Some("wake")] {
+            let (_dir, store, issue, server) = chat_resume_fixture(UserConfig::default());
+            let tool = server.tools().iter().find(|t| t.name == "wait").unwrap();
+            let schema = to_tool(tool);
+            assert_eq!(
+                schema.input_schema["properties"]["on_pass"]["enum"],
+                json!(["close", "wake"])
+            );
+            assert_eq!(
+                schema.input_schema["properties"]["on_pass"]["default"],
+                "close"
+            );
+            let mut args = json!({"reason": "review still pending", "check": "exit 0"});
+            if let Some(on_pass) = on_pass {
+                args["on_pass"] = json!(on_pass);
+            }
+            let (ok, out) = server.call_sync("wait", args);
+            assert!(ok, "{out}");
+            let policy = on_pass.unwrap_or("close");
+            assert_eq!(out["on_pass"], policy);
+            let shown = store
+                .read(None, |c| c.show(&issue, With::default()))
+                .unwrap();
+            assert_eq!(shown["waiting"]["on_pass"], policy);
+            let message = out["message"].as_str().unwrap();
+            assert!(
+                message.contains(if policy == "wake" {
+                    "same live session"
+                } else {
+                    "pass closes"
+                }),
+                "{message}"
+            );
+        }
+        for args in [
+            json!({"reason": "pending", "on_pass": "wake"}),
+            json!({"reason": "pending", "check": "exit 0", "on_pass": "invalid"}),
+            json!({"reason": "pending", "check": "exit 0", "on_pass": true}),
+            json!({"reason": "pending", "check": "exit 0", "on_pass": null}),
+        ] {
+            let (_dir, store, issue, server) = chat_resume_fixture(UserConfig::default());
+            let (ok, out) = server.call_sync("wait", args);
+            assert!(!ok, "{out}");
+            assert!(active_claim(&store, &issue).is_some());
+        }
+    }
+
+    #[test]
     fn wait_returns_human_resume_guidance_only_without_a_check() {
         for chat_resume in [true, false] {
             for check in [None, Some(" \n\t"), Some("exit 75")] {
@@ -795,7 +844,7 @@ mod tests {
 
     #[test]
     fn restoration_restores_the_same_mcp_sessions_tools_and_lease_renewal() {
-        for restoration in ["check", "human", "chat"] {
+        for restoration in ["check", "pass", "human", "chat"] {
             for (ending, args, expected_state) in [
                 (
                     "wait",
@@ -858,6 +907,8 @@ mod tests {
                     "wait",
                     if restoration == "chat" {
                         json!({"reason": "waiting for a human chat reply"})
+                    } else if restoration == "pass" {
+                        json!({"reason": "review still pending", "check": "exit 0", "on_pass": "wake"})
                     } else {
                         json!({"reason": "waiting for the check", "check": "exit 1"})
                     },
@@ -901,11 +952,20 @@ mod tests {
                             }
                             c.check_record(
                                 &issue,
-                                "exit 1",
+                                if restoration == "pass" {
+                                    "exit 0"
+                                } else {
+                                    "exit 1"
+                                },
                                 c.issue_revision(&issue)?,
                                 &CheckRun {
-                                    exit: Some(1),
-                                    output: "merge failed".into(),
+                                    exit: Some(if restoration == "pass" { 0 } else { 1 }),
+                                    output: if restoration == "pass" {
+                                        "check passed"
+                                    } else {
+                                        "merge failed"
+                                    }
+                                    .into(),
                                     ..Default::default()
                                 },
                                 Some(original.id),
@@ -914,7 +974,14 @@ mod tests {
                         .unwrap()
                 };
                 let restored = active_claim(&store, &issue).unwrap();
-                assert_eq!(result, CheckResult::Woken { claim: restored.id });
+                assert_eq!(
+                    result,
+                    if restoration == "pass" {
+                        CheckResult::PassWoken { claim: restored.id }
+                    } else {
+                        CheckResult::Woken { claim: restored.id }
+                    }
+                );
                 assert_ne!(restored.id, original.id);
                 assert_eq!(restored.actor, ACTOR);
                 assert!(restored.lease_until.is_some());
@@ -939,6 +1006,14 @@ mod tests {
                         note["body"],
                         format!("Session reported a human reply in chat:\n\n{message}")
                     );
+                } else if restoration == "pass" {
+                    assert_eq!(store.read(None, |c| c.issue(&issue)).unwrap().wake_count, 0);
+                    let (ok, out) = server.call_sync(
+                        "wait",
+                        json!({"reason": "must not loop", "check": "exit 0", "on_pass": "wake"}),
+                    );
+                    assert!(!ok, "{out}");
+                    assert_eq!(active_claim(&store, &issue).unwrap().id, restored.id);
                 }
 
                 // Advance only the existing server's clock: do not recreate its Session.

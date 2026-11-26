@@ -186,11 +186,28 @@ trk wait <ID> --json -r "verify and merge into base branch" -c "$local_check"
 trk wait <ID> --json -r "Which store: SQLite or Dolt?"
 ```
 
+When a passing check is only a prerequisite for more work, use per-wait
+`--on-pass wake` (MCP `on_pass: "wake"`), for example:
+
+```bash
+trk wait <ID> --json -r "PR merged; publish the release afterward" -c "$pr_check" --on-pass wake
+```
+
+The default is `--on-pass close`; `wake` requires a check. A successful wake
+restores the same eligible live session's claim and fresh lease before delivery.
+Finish the pending reason's work and explicitly close afterward. This does not
+consume `[check] max_wakes` or change `wake_count`, even with a zero failure-wake
+budget. No pass-wake loop: a subsequent passing check closes normally; a second
+pass-wake request may be refused. Unavailable restoration, failed delivery, or
+expiry of the restored claim's lease opens the issue with a note that the check
+passed but the wait reason remains pending. Dependents remain blocked until close.
+Default direct-close passes retain best-effort informational notification.
+
 The check is a shell command that `trk check` runs later, unattended, with `sh -c` in the directory the issue was claimed in:
 
 | Exit | Meaning | Result |
 | --- | --- | --- |
-| 0 | pass (PR merged) | the issue closes as done |
+| 0 | pass (PR merged) | closes as done by default; `--on-pass wake` continues the same eligible session for pending work, or reopens with a passed-check/pending-work note |
 | 75 | not yet (CI pending, awaiting review, unresolved threads, approved but not merged, unknown mergeability) | still waiting; checked again after `--every` (default 5m) |
 | anything else, or a timeout | error (base-branch conflict, failed head-commit CI, closed without merging, or query/authentication failure) | wake the original live session, otherwise reopen; keep the output in a note |
 
@@ -202,7 +219,7 @@ It may do the remaining work or only look. It may run more than once, so it must
 
 A failed check restores the original claim with a fresh lease if its nonblank terminal is confirmed live on its known local claim host, `[launcher] send` is configured, and its wake count is below `[check] max_wakes` (default `5`, also when omitted; `0` disables waking). MCP liveness is independent, not a prerequisite. Each restoration increments the persistent count, even if delivery fails. Entering or updating `wait` preserves it; a fresh explicit claim, including `--steal`, resets it to zero, but an idempotent claim by the current owner does not. The prompt includes `wake N of M` and the output to fix the failure and end again, normally with `wait`; MCP tools work once the connection is running (restart it if dormant). At the cap, the issue reopens with a note saying `wake cap of M reached` and retaining the output. A gone or unknown session or failed send also leaves it open. trk only interprets exit codes, never PRs or CI.
 
-On each wake, fix only what the check reported and end the new work cycle, normally with the same `wait`. If the same failure keeps returning, `hand_back` with the evidence instead of repeating indefinitely. While waiting, the session can still add notes and receive requests from the human.
+On each failure wake, fix only what the check reported and end the new work cycle, normally with the same `wait`. If the same failure keeps returning, `hand_back` with the evidence instead of repeating indefinitely. While waiting, the session can still add notes and receive requests from the human.
 
 While claimed or waiting with a nonzero count, issue JSON includes top-level `wake_count` and pretty `trk show` displays a `wakes` line. Otherwise the count is omitted.
 

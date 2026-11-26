@@ -77,6 +77,7 @@ pub struct Waiting {
     pub reason: Option<String>,
     /// None: a person decides.
     pub check: Option<String>,
+    pub on_pass: OnPass,
     pub interval: Option<i64>,
     pub next_check_at: Option<String>,
     pub last_check_at: Option<String>,
@@ -238,6 +239,12 @@ impl Ctx<'_> {
                 let (id, op, payload) = row.ok()?;
                 let p: Value = serde_json::from_str(&payload).ok()?;
                 let why = match (op.as_str(), p["reason"].as_str()) {
+                    ("reopen", _) if p["by_check"] == true && p["passed"] == true => {
+                        "check passed; follow-up pending"
+                    }
+                    ("release", _) if p["check_wake_failed"] == true && p["passed"] == true => {
+                        "check passed; follow-up pending"
+                    }
                     ("reopen", _) if p["by_check"] == true => "check failed; open again",
                     ("release", Some("expired")) => "lease expired; session lost",
                     ("release", _) if p["reaped"] == true => "session ended; claim released",
@@ -284,6 +291,7 @@ impl Ctx<'_> {
                     && i.next_check_at.as_deref().is_none_or(|t| t <= now.as_str()),
                 reason: i.waiting_reason.clone(),
                 check: i.waiting_check.clone(),
+                on_pass: i.waiting_on_pass,
                 interval: i.check_interval,
                 next_check_at: i.next_check_at.clone(),
                 last_check_at: i.last_check_at.clone(),

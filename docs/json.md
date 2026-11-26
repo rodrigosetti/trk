@@ -90,7 +90,7 @@ The normal issue representation contains:
 | `id`, `title`, `description`, `priority`, `type` | Authored identity and content; priorities are `P0`–`P3`, and type is required. |
 | `epic` | Optional curated epic name or null. Unknown or archived assignments return `invalid_field` with active epic names in `error.allowed`; assignment never creates one. |
 | `state`, `close_reason` | State is `open`, `claimed`, `waiting` or `closed`; close reason is `done`, `abandoned` or null. |
-| `waiting` | Null unless waiting. Otherwise an object with `reason`, `check`, `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit` and `cwd`; individual values can be null. A human wait has no check. |
+| `waiting` | Null unless waiting. Otherwise an object with `reason`, `check`, `on_pass` (`"close"` by default or `"wake"`), `interval` (seconds), `next_check_at`, `last_check_at`, `last_check_exit` and `cwd`; individual nullable values can be null. A human wait has no check; `"wake"` requires a check. |
 | `claim` | Active claim or null. Contains `actor`, `on_behalf_of`, `claimed_at`, `lease_until`, `worktree`, `host`, `agent`, `terminal`, and optional pinned `launcher`. A waiting session's released claim is not an active claim. |
 | `deps` | When requested, `blocked_by` and `blocks` arrays of `{id, title, state, priority, epic}`; `epic` is the other issue's epic name or null. List/ready and ordinary show include dependencies. |
 | `derived` | Computed read-time state: `ready`, `blocked_by` (unclosed blocker IDs), `due`, and `unblocks_higher_priority` (objects with `id` and `priority`). When blockers exist, also `progress: {total, closed}`, including closed blockers in the total. |
@@ -141,6 +141,8 @@ A normal single `trk check --json` pass returns data shaped like:
 | `result` | Outcome |
 | --- | --- |
 | `passed` | The check exited 0 without timing out; the issue closed as done. |
+| `pass_woken` | The check passed with `on_pass: "wake"`; the same live session's claim and lease were restored and the continuation message delivered. The issue remains claimed for pending work, not closed. |
+| `pass_reopened` | The check passed with `on_pass: "wake"`, but restoration or delivery was unavailable; the issue reopened with the passed result and pending wait reason recorded in a note. |
 | `retry` | The check exited 75 without timing out; the issue stays waiting and another check is scheduled. |
 | `failed` | The check failed, timed out or could not run, and the issue reopened rather than waking its previous session. |
 | `woken` | A failed check restored the waiting session's claim and delivered the wake message. |

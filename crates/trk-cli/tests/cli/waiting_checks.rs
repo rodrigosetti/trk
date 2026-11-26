@@ -1,5 +1,118 @@
 use super::*;
 
+fn pass_wait(ui: &WaitingUi, check: &str, alive: bool) -> String {
+    let id = ui.e.create(&["Post-pass work"]);
+    ui.claim(&id, "exact-origin", alive);
+    ui.e.ok(&[
+        "wait",
+        &id,
+        "--force",
+        "--check",
+        check,
+        "--on-pass",
+        "wake",
+        "--reason",
+        "verify the installed binary after landing",
+    ]);
+    id
+}
+
+#[test]
+fn passing_check_wakes_with_no_failure_budget_and_original_actor_can_close() {
+    let ui = WaitingUi::new();
+    ui.e.set_config("max_wakes = 5", "max_wakes = 0");
+    let id = pass_wait(&ui, "exit 0", true);
+    let original = ui.e.ok(&["show", &id, "--with", "claims"])["claims"][0].clone();
+    let result = ui.check(&id, "");
+    assert_eq!(result["result"], "pass_woken");
+    assert_eq!(result["state"], "claimed");
+    let issue = ui.e.ok(&["show", &id]);
+    assert_eq!(issue["claim"]["actor"], original["actor"]);
+    assert_eq!(issue["claim"]["terminal"], original["terminal"]);
+    assert!(issue.get("wake_count").is_none());
+    assert_eq!(issue["close_reason"], Value::Null);
+    let messages = ui.text("messages");
+    assert!(messages.starts_with("exact-origin\n"), "{messages}");
+    assert!(messages.contains("check-pass-wake"), "{messages}");
+    assert!(messages.contains("waiting check passed"), "{messages}");
+    assert!(
+        messages.contains("verify the installed binary after landing"),
+        "{messages}"
+    );
+    assert_eq!(ui.text("space-name"), "Reviewed title");
+    assert_eq!(ui.text("renames"), "");
+    let mut command = ui.cmd();
+    command.env("TRK_ACTOR", original["actor"].as_str().unwrap());
+    assert_eq!(resume::success(command, &["close", &id])["state"], "closed");
+}
+
+#[test]
+fn pass_woken_session_can_wait_for_another_check_without_a_wake_loop() {
+    let ui = WaitingUi::new();
+    let id = pass_wait(&ui, "exit 0", true);
+    assert_eq!(ui.check(&id, "")["result"], "pass_woken");
+    let actor = ui.e.ok(&["show", &id])["claim"]["actor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let messages = ui.text("messages");
+    let mut command = ui.cmd();
+    command.env("TRK_ACTOR", actor);
+    resume::success(command, &["wait", &id, "--check", "exit 0"]);
+    assert_eq!(ui.e.ok(&["show", &id])["waiting"]["on_pass"], "close");
+    assert_eq!(ui.check(&id, "")["result"], "passed");
+    assert_eq!(ui.e.ok(&["show", &id])["state"], "closed");
+    let after = ui.text("messages");
+    assert!(after.starts_with(&messages));
+    assert_eq!(after.matches("check-pass-wake").count(), 1, "{after}");
+    assert_eq!(ui.text("space-name"), "[closed] Reviewed title");
+}
+
+#[test]
+fn passing_check_reopens_with_pending_work_when_wake_is_unavailable_or_fails() {
+    for mode in [
+        "missing",
+        "unavailable",
+        "no-send",
+        "send-error",
+        "send-rejected",
+    ] {
+        let ui = WaitingUi::new();
+        match mode {
+            "no-send" => ui.e.set_config(
+                "send       = [\"hc\", \"send\", \"{name}\", \"{text}\"]",
+                "",
+            ),
+            "send-error" => ui.e.set_config(
+                "send       = [\"hc\",",
+                "send       = [\"missing-send-program\",",
+            ),
+            "send-rejected" => ui.e.set_config(
+                "send       = [\"hc\", \"send\", \"{name}\", \"{text}\"]",
+                "send       = [\"sh\", \"-c\", \"exit 1\"]",
+            ),
+            _ => {}
+        }
+        let id = pass_wait(&ui, "exit 0", false);
+        let result = ui.check(&id, mode);
+        assert_eq!(result["result"], "pass_reopened", "{mode}: {result}");
+        assert_eq!(result["state"], "open", "{mode}: {result}");
+        let issue = ui.e.ok(&["show", &id, "--with", "notes,claims"]);
+        assert_eq!(issue["claim"], Value::Null, "{mode}: {issue}");
+        assert_eq!(issue["close_reason"], Value::Null, "{mode}: {issue}");
+        assert!(
+            issue["notes"].as_array().unwrap().iter().any(|note| {
+                let body = note["body"].as_str().unwrap();
+                body.contains("check passed")
+                    && body.contains("verify the installed binary after landing")
+            }),
+            "{mode}: {issue}"
+        );
+        assert_eq!(ui.text("messages"), "", "{mode}");
+        assert_eq!(ui.text("renames"), "", "{mode}");
+    }
+}
+
 #[test]
 fn waiting_check_marks_only_the_origin_space_once_and_preserves_notifications() {
     let ui = WaitingUi::new();

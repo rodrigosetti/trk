@@ -18,6 +18,8 @@ pub(crate) struct CheckView {
 #[serde(tag = "result", rename_all = "snake_case")]
 pub(crate) enum CheckOutcome {
     Passed(CheckExecution),
+    PassWoken(CheckExecution),
+    PassReopened(CheckExecution),
     Retry(CheckExecution),
     Failed(CheckExecution),
     Woken(CheckExecution),
@@ -29,6 +31,8 @@ impl CheckOutcome {
     pub fn recorded(result: CheckResult, execution: CheckExecution) -> Self {
         match result {
             CheckResult::Passed => Self::Passed(execution),
+            CheckResult::PassWoken { .. } => Self::PassWoken(execution),
+            CheckResult::PassReopened => Self::PassReopened(execution),
             CheckResult::Retry => Self::Retry(execution),
             CheckResult::Failed => Self::Failed(execution),
             CheckResult::Woken { .. } => Self::Woken(execution),

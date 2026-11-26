@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::model::{Claim, Edge, Event, Link, State};
+use crate::model::{Claim, Edge, Event, Issue, Link, OnPass, State};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimView {
@@ -47,11 +47,28 @@ pub struct ClaimHistory {
 pub struct WaitingView {
     pub reason: Option<String>,
     pub check: Option<String>,
+    #[serde(default)]
+    pub on_pass: OnPass,
     pub interval: Option<i64>,
     pub next_check_at: Option<String>,
     pub last_check_at: Option<String>,
     pub last_check_exit: Option<i64>,
     pub cwd: Option<String>,
+}
+
+impl From<&Issue> for WaitingView {
+    fn from(issue: &Issue) -> Self {
+        Self {
+            reason: issue.waiting_reason.clone(),
+            check: issue.waiting_check.clone(),
+            on_pass: issue.waiting_on_pass,
+            interval: issue.check_interval,
+            next_check_at: issue.next_check_at.clone(),
+            last_check_at: issue.last_check_at.clone(),
+            last_check_exit: issue.last_check_exit,
+            cwd: issue.wait_cwd.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +137,8 @@ pub struct RunView {
     pub claim: ClaimView,
     pub issue: String,
     pub state: State,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting: Option<WaitingView>,
     pub title: String,
     pub harness: Option<String>,
     pub meta: Value,

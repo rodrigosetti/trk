@@ -39,6 +39,7 @@ fn pretty_output() {
         "{text}"
     );
     assert!(text.contains("every  5m"), "{text}");
+    assert!(text.contains("pass   closes the issue"), "{text}");
     assert!(text.contains(&format!("blocks     {b}")), "{text}");
     let out = e
         .cmd()
@@ -77,6 +78,51 @@ fn pretty_output() {
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(err.contains("error: invalid close reason 'nope'"), "{err}");
     assert!(err.contains("allowed: done, abandoned"), "{err}");
+}
+
+#[test]
+fn checked_wait_surfaces_describe_the_pass_action_without_color() {
+    for (policy, action) in [("close", "closes"), ("wake", "wakes")] {
+        let e = Env::new();
+        let id = e.create(&["Checked waiting surface"]);
+        e.ok(&["claim", &id]);
+        let waiting = e.ok(&[
+            "wait",
+            &id,
+            "--check",
+            "exit 75",
+            "--on-pass",
+            policy,
+            "-r",
+            "review pending",
+        ]);
+        assert_eq!(waiting["waiting"]["on_pass"], policy);
+        assert_eq!(
+            e.ok(&["dashboard"])["issues"][0]["waiting"]["on_pass"],
+            policy
+        );
+        for args in [
+            vec!["list", "state=waiting"],
+            vec!["list", "state=waiting", "--fields", "id,waiting"],
+            vec!["show", &id],
+        ] {
+            let out = e
+                .cmd()
+                .args(["--no-color", "--format", "pretty"])
+                .args(&args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}: {out:?}");
+            let text = String::from_utf8_lossy(&out.stdout);
+            let expected = if args[0] == "show" {
+                format!("pass   {action}")
+            } else {
+                format!("pass {action}")
+            };
+            assert!(text.contains(&expected), "{args:?}: {text}");
+            assert!(!text.contains('\u{1b}'), "{text}");
+        }
+    }
 }
 
 #[test]

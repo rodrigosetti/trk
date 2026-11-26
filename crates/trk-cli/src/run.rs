@@ -588,12 +588,18 @@ pub fn runs(env: &Env) -> Result<Out> {
     let mut t = comfy_table::Table::new();
     t.load_style(comfy_table::presets::NOTHING);
     t.set_header([
-        "ISSUE", "STATE", "AGENT", "HARNESS", "TERMINAL", "LEASE", "SESSION", "MCP", "TITLE",
+        "ISSUE", "STATE", "WAITING", "AGENT", "HARNESS", "TERMINAL", "LEASE", "SESSION", "MCP",
+        "TITLE",
     ]);
     for r in &runs {
         t.add_row([
             r.run.issue.clone(),
             r.run.state.to_string(),
+            match r.run.waiting.as_ref().filter(|w| w.check.is_some()) {
+                Some(w) if w.on_pass == trk_core::model::OnPass::Wake => "pass wakes".into(),
+                Some(_) => "pass closes".into(),
+                None => String::new(),
+            },
             r.run.claim.agent.clone().unwrap_or_default(),
             r.run.harness.clone().unwrap_or_default(),
             r.run.claim.terminal.clone().unwrap_or_default(),

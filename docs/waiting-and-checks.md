@@ -57,6 +57,26 @@ trk check --unlock        # human-only stale-lock recovery; inspect/stop old che
 trk list state=waiting    # what is waiting, on what, and when it is checked next
 ```
 
+To continue work after a successful check instead of closing immediately, set
+`--on-pass wake` on that wait (MCP: `on_pass: "wake"`):
+
+```sh
+trk wait orch-4kq -r "PR merged; publish the release afterward" -c "$pr_check" --on-pass wake
+```
+
+`--on-pass close` is the default, including when omitted; `wake` requires a check.
+On exit 0, wake restores the same eligible live session's claim with a fresh lease
+before delivering the passed-check message and pending reason. Finish that pending
+work, then explicitly close the issue. This successful continuation neither consumes
+the failure-wake budget nor changes `wake_count`, even when `[check] max_wakes = 0`.
+It is not a repeating pass-wake loop: a subsequent passing check closes normally;
+a second `on_pass: "wake"` request may be refused.
+
+If that session cannot be restored or delivery fails, the issue opens with a note
+that the check passed and the wait reason remains pending work. Expiry of the
+restored claim's lease also opens it with that pending-work note. No replacement
+session is launched. Dependents remain blocked until the issue actually closes.
+
 Human-readable check output, including `--watch`, uses cyan issue IDs and activity/waiting
 labels, green successes, yellow warnings/skips, and red failures. Status text and glyphs
 remain visible without color. Styling follows the CLI's terminal detection: `NO_COLOR`
@@ -167,7 +187,7 @@ default empty) set. Its exit code decides:
 
 | Exit | Meaning | Result |
 | --- | --- | --- |
-| 0 | pass (PR merged) | the issue closes as done |
+| 0 | pass (PR merged) | closes as done by default; `--on-pass wake` restores the original eligible session for pending work, or reopens with a passed-check/pending-work note |
 | 75 | not yet (CI pending, awaiting review, unresolved threads, approved but not merged, unknown mergeability) | still waiting; checked again after `--every` (default `[check] interval`, 5m) |
 | anything else, or a timeout | error (base-branch conflict, failed head-commit CI, closed without merging, or query/authentication failure) | wake the original live session, otherwise reopen; record the command's output in a note |
 
@@ -211,10 +231,10 @@ issue JSON includes top-level `wake_count` only in those cases.
 `trk check --json` distinguishes `woken` from `failed` (reopened); both include output.
 trk interprets only the check's exit code, not PRs or CI.
 
-A passing check still best-effort sends an informational message that the issue is
-closed. Exit 75 does not notify or restore a claim.
+A passing check with the default `on_pass: "close"` still best-effort sends an
+informational message that the issue is closed. Exit 75 does not notify or restore a claim.
 
-With the Herdr driver, a passing check also best-effort prepends `[closed] `
+With the Herdr driver, a passing check that closes the issue also best-effort prepends `[closed] `
 to the current name of the space containing the original waiting session's exact
 terminal, keeping the marker visible even when a long title is truncated. User
 renames and embedded literal `[closed]` text are preserved. An existing leading

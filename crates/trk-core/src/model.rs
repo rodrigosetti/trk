@@ -125,8 +125,26 @@ pub const DEFAULT_PRIORITY: &str = "P2";
 pub const CLOSE_REASONS: [&str; 2] = ["done", "abandoned"];
 
 /// Exit code of a waiting check that means "not yet, check again later"
-/// (`EX_TEMPFAIL`). 0 closes the issue; anything else returns it to open.
+/// (`EX_TEMPFAIL`). Exit 0 follows the wait's `OnPass` action.
 pub const CHECK_RETRY_EXIT: i32 = 75;
+
+/// What a successful checked wait does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnPass {
+    #[default]
+    Close,
+    Wake,
+}
+
+impl OnPass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Close => "close",
+            Self::Wake => "wake",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Issue {
@@ -140,6 +158,8 @@ pub struct Issue {
     pub close_reason: Option<String>,
     pub waiting_reason: Option<String>,
     pub waiting_check: Option<String>,
+    #[serde(default)]
+    pub waiting_on_pass: OnPass,
     /// Seconds between checks.
     pub check_interval: Option<i64>,
     pub next_check_at: Option<String>,

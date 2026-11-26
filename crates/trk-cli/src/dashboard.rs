@@ -779,6 +779,35 @@ mod tests {
     }
 
     #[test]
+    fn checked_wait_rows_and_details_describe_pass_actions() {
+        let (_dir, store) = sample();
+        for (policy, action) in [
+            (trk_core::model::OnPass::Close, "closes"),
+            (trk_core::model::OnPass::Wake, "wakes"),
+        ] {
+            let mut ui = ui_of(&store);
+            let index = ui
+                .snap
+                .issues
+                .iter()
+                .position(|issue| issue.waiting.is_some())
+                .unwrap();
+            ui.snap.issues[index].waiting.as_mut().unwrap().on_pass = policy;
+            ui.selected = ui.rows.iter().position(|row| *row == index).unwrap();
+            let text = screen(&mut ui, 180, 50);
+            assert!(text.contains(&format!("pass {action}")), "{text}");
+            let id = ui.issue().unwrap().id.clone();
+            ui.detail = Some((
+                id.clone(),
+                store.read(None, |c| c.dashboard_detail(&id)).unwrap(),
+            ));
+            ui.zoom = true;
+            let text = screen(&mut ui, 180, 50);
+            assert!(text.contains(&format!("pass      {action}")), "{text}");
+        }
+    }
+
+    #[test]
     fn draws_groups_with_their_details_in_the_list_and_activity() {
         let (_d, s) = sample();
         let mut ui = ui_of(&s);

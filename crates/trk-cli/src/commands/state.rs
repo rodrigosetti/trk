@@ -5,6 +5,7 @@ use crate::env::Env;
 use crate::render::Out;
 
 use super::{SHOWN, read_value, show_one, with_open};
+use trk_core::model::OnPass;
 use trk_core::ops::WaitOpts;
 
 pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
@@ -28,6 +29,7 @@ pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
         Cmd::Wait {
             id,
             check,
+            on_pass,
             every,
             reason,
             force,
@@ -36,6 +38,11 @@ pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
             let actor = env.actor()?.to_string();
             let opts = WaitOpts {
                 check: check.as_deref().map(read_value).transpose()?,
+                on_pass: match on_pass.as_str() {
+                    "wake" => OnPass::Wake,
+                    "close" => OnPass::Close,
+                    _ => unreachable!("clap validates --on-pass"),
+                },
                 interval: every
                     .map(|e| trk_core::config::parse_duration(&e))
                     .transpose()?,

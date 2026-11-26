@@ -100,9 +100,10 @@ it is not a parent/child hierarchy or an implicit blocker.
 | `claimed` | `closed` | Claimant closes as `done` or `abandoned` |
 | `open` or `waiting` | `closed` | Human closes without an active claim |
 | `waiting` | `waiting` | Check returns 75, or a human replaces its waiting settings |
-| `waiting` | `claimed` | Failed check restores its eligible live session, a human authorizes CLI resume, or the same waiting agent reports an actual human chat reply through MCP resume for an enabled no-check wait |
-| `waiting` | `open` | Failed check cannot wake its session, or restored-claim delivery fails |
+| `waiting` | `claimed` | A successful check with `on_pass: wake` or a failed check restores its eligible live session, a human authorizes CLI resume, or the same waiting agent reports an actual human chat reply through MCP resume for an enabled no-check wait |
+| `waiting` | `open` | A successful or failed check cannot wake its session, or restored-claim delivery fails |
 | `waiting` or `closed` | `open` | Human reopens |
+| `waiting` | `closed` | Check passes with default `on_pass: close`, or passes again after a successful pass wake |
 
 A human can force another actor's claimed issue through claimant-restricted
 operations; the override is recorded. Stealing a claim replaces its owner without
@@ -116,15 +117,24 @@ due immediately and subsequently scheduled at its interval. No check means the
 issue waits for a human rather than polling. The exit-code contract is deliberately
 small:
 
-- **0:** close as `done`.
+- **0:** close as `done` by default; per-wait `on_pass: wake` instead restores the
+  same eligible live session's claim with a fresh lease for the pending wait reason.
 - **75:** remain waiting and schedule another check; no history event or
   `updated_at` change is generated.
 - **Anything else, including timeout:** record the failure and output tail, then
   restore the original eligible session or reopen the issue.
 
+`on_pass` defaults to `close`; `wake` requires a check. A successful pass wake does
+not consume the failure-wake budget or change `wake_count`. The session finishes
+the pending work and explicitly closes; a subsequent passing check closes normally,
+and a second pass-wake request may be refused. Unavailable restoration or delivery
+reopens with a note that the check passed and its wait reason is still pending.
+Expiry of the restored claim's lease also opens with a pending-work note. Until
+closure, dependents remain blocked. Direct close retains best-effort notification.
+
 Automatic restoration requires a confirmed-live terminal on the known local claim
-host, the original pinned launcher's send operation, and remaining automatic wake
-budget. Terminal liveness is separate from MCP liveness: a dormant MCP connection
+host and the original pinned launcher's send operation. Failed-check restoration
+also requires remaining automatic wake budget. Terminal liveness is separate from MCP liveness: a dormant MCP connection
 does not make a terminal dead, but must reconnect with the same identity before
 using tools. Unknown or remote liveness does not authorize restoration.
 

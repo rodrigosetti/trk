@@ -1,9 +1,9 @@
 //! `trk check`: run the checks of waiting issues, one at a time.
 //!
-//! A check is a shell command an agent left behind. Exit 0 closes the issue,
-//! 75 leaves it waiting, anything else wakes its live session or returns it
-//! to open with the output as a note. Only one `trk check` runs at a time,
-//! so checks that merge never race each other.
+//! A check is a shell command an agent left behind. Exit 0 closes the issue
+//! or wakes its session for post-pass work, 75 leaves it waiting, and anything
+//! else wakes its live session or returns it to open with the output as a note.
+//! Only one `trk check` runs at a time, so checks that merge never race each other.
 
 mod restart;
 mod view;
@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use trk_core::config::parse_duration;
 use trk_core::error::{Code, Error, Result};
-use trk_core::model::{ActorId, CHECK_RETRY_EXIT, Issue, State};
+use trk_core::model::{ActorId, CHECK_RETRY_EXIT, Issue, OnPass, State};
 use trk_core::ops::{CHECK_OUTPUT_TAIL, CheckResult, CheckRun};
 use trk_core::system::{Liveness, group_liveness, hostname, process_liveness};
 
@@ -754,9 +754,10 @@ fn pass(
             },
         };
         interrupt.check()?;
-        let session = if (run.timed_out || !matches!(run.exit, Some(0 | CHECK_RETRY_EXIT)))
-            && i.wake_count < env.user.check.max_wakes
-        {
+        let pass_wake = run.exit == Some(0) && !run.timed_out && i.waiting_on_pass == OnPass::Wake;
+        let failure_wake = (run.timed_out || !matches!(run.exit, Some(0 | CHECK_RETRY_EXIT)))
+            && i.wake_count < env.user.check.max_wakes;
+        let session = if pass_wake || failure_wake {
             // Unknown liveness is not enough to restore a claim.
             crate::run::waiting_session(env, &i.id).unwrap_or(None)
         } else {
@@ -771,7 +772,28 @@ fn pass(
                 session.as_ref().map(|s| s.claim),
             )
         })?;
-        if let CheckResult::Woken { claim } = result {
+        if let CheckResult::PassWoken { claim } = result {
+            let message = format!(
+                "The waiting check passed for {}. Your claim has been restored with a fresh lease. \
+                 Complete the post-pass work, then close the issue. It is not closed yet and \
+                 dependents remain blocked. A subsequent checked wait closes on pass; it cannot \
+                 pass-wake this session again.\n\nPending work: {}\n\nCheck:\n{check}",
+                i.id,
+                i.waiting_reason
+                    .as_deref()
+                    .unwrap_or("(no reason supplied)"),
+            );
+            let delivered = session
+                .as_ref()
+                .is_some_and(|s| s.send("check-pass-wake", &actor, &message).is_ok());
+            if !delivered {
+                result = if store.write(&actor, false, |c| c.check_wake_failed(&i.id, claim))? {
+                    CheckResult::PassReopened
+                } else {
+                    CheckResult::Skipped
+                };
+            }
+        } else if let CheckResult::Woken { claim } = result {
             let wake_count = store.read(None, |c| Ok(c.issue(&i.id)?.wake_count))?;
             let reason = if run.timed_out {
                 "timed out".to_string()
@@ -848,6 +870,16 @@ fn line(v: &CheckView, r: &Renderer) -> String {
             "{} {id}  {}  {title}",
             r.ready("✓"),
             r.ready("passed → closed")
+        ),
+        CheckOutcome::PassWoken(_) => format!(
+            "{} {id}  {}  {title}",
+            r.ready("✓"),
+            r.ready("passed → claimed, session woken for post-pass work")
+        ),
+        CheckOutcome::PassReopened(_) => format!(
+            "{} {id}  {}  {title}",
+            r.warning("!"),
+            r.warning("passed → open, post-pass work pending")
         ),
         CheckOutcome::Retry(run) => format!(
             "{} {id}  {}  {title}",

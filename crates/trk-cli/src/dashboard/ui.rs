@@ -10,7 +10,7 @@ use serde_json::Value;
 use trk_core::State;
 use trk_core::config::fmt_duration;
 use trk_core::dashboard::{DashIssue, Dashboard, Detail, Group};
-use trk_core::model::{Edge, Event, parse_ts};
+use trk_core::model::{Edge, Event, OnPass, parse_ts};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Text the person is typing in the footer.
@@ -329,11 +329,17 @@ fn row_info(i: &DashIssue, now: jiff::Timestamp) -> String {
             }
         }
         Group::Waiting => match i.waiting.as_ref() {
-            Some(w) if w.due => "check due".into(),
-            Some(w) => match w.next_check_at.as_deref() {
-                Some(t) => format!("check {}", relative(t, now)),
-                None => "check".into(),
-            },
+            Some(w) => {
+                let pass = match w.on_pass {
+                    OnPass::Close => "pass closes",
+                    OnPass::Wake => "pass wakes",
+                };
+                match w.next_check_at.as_deref() {
+                    _ if w.due => format!("check due · {pass}"),
+                    Some(t) => format!("check {} · {pass}", relative(t, now)),
+                    None => format!("check · {pass}"),
+                }
+            }
             None => String::new(),
         },
         Group::Blocked => {
@@ -807,6 +813,13 @@ fn detail_lines(i: &DashIssue, detail: Option<&Detail>, ui: &Ui) -> Vec<Line<'st
         match &w.check {
             None => out.push(field("check", "none: a person decides (x close, o reopen)")),
             Some(check) => {
+                out.push(field(
+                    "pass",
+                    match w.on_pass {
+                        OnPass::Close => "closes the issue",
+                        OnPass::Wake => "wakes the same session",
+                    },
+                ));
                 let mut lines = check.lines();
                 out.push(Line::from(vec![
                     Span::styled(format!("  {:<10}", "check"), dim()),

@@ -124,15 +124,7 @@ impl Ctx<'_> {
             wake_count: (issue.wake_count > 0
                 && matches!(issue.state, State::Waiting | State::Claimed))
             .then_some(issue.wake_count),
-            waiting: (issue.state == State::Waiting).then(|| WaitingView {
-                reason: issue.waiting_reason.clone(),
-                check: issue.waiting_check.clone(),
-                interval: issue.check_interval,
-                next_check_at: issue.next_check_at.clone(),
-                last_check_at: issue.last_check_at.clone(),
-                last_check_exit: issue.last_check_exit,
-                cwd: issue.wait_cwd.clone(),
-            }),
+            waiting: (issue.state == State::Waiting).then(|| WaitingView::from(issue)),
             claim: claim.map(ClaimView::from),
             deps: with.deps.then_some(Dependencies {
                 blocked_by: blockers,
@@ -254,10 +246,16 @@ impl Ctx<'_> {
             } else {
                 State::Claimed
             };
+            let waiting = if state == State::Waiting {
+                Some(WaitingView::from(&self.issue(&issue)?))
+            } else {
+                None
+            };
             out.push(RunView {
                 claim: ClaimView::from(c),
                 issue,
                 state,
+                waiting,
                 title,
                 harness,
                 meta: serde_json::from_str(&meta).unwrap_or(json!({})),

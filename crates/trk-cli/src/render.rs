@@ -460,6 +460,15 @@ impl Renderer {
                     for l in lines {
                         s.push_str(&format!("         {l}\n"));
                     }
+                    s.push_str(&format!(
+                        "  {}   {}\n",
+                        self.dim("pass"),
+                        if w["on_pass"] == "wake" {
+                            "wakes the same session"
+                        } else {
+                            "closes the issue"
+                        }
+                    ));
                     if let Some(cwd) = w["cwd"].as_str() {
                         s.push_str(&format!("  {}     {cwd}\n", self.dim("in")));
                     }
@@ -773,11 +782,18 @@ fn state_glyph(state: &str) -> &'static str {
 /// One line for a waiting issue: what it waits for and when it is checked next.
 fn waiting_summary(w: &Value) -> String {
     let reason = w["reason"].as_str().map(|r| short(r, 40));
-    let when = match (w["check"].as_str(), w["next_check_at"].as_str()) {
+    let mut when = match (w["check"].as_str(), w["next_check_at"].as_str()) {
         (Some(_), Some(t)) => format!("check {}", until(t)),
         (Some(_), None) => "check due".to_string(),
         (None, _) => "needs a human".to_string(),
     };
+    if w["check"].is_string() {
+        when.push_str(if w["on_pass"] == "wake" {
+            " · pass wakes"
+        } else {
+            " · pass closes"
+        });
+    }
     match reason {
         Some(r) => format!("{r} · {when}"),
         None => when,

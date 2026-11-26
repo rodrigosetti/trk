@@ -16,7 +16,7 @@ use crate::model::*;
 pub const ISSUE_COLS: &str = "i.id, i.state, i.title, i.description, \
      i.priority, i.type, i.close_reason, i.waiting_reason, i.waiting_check, i.check_interval, \
      i.next_check_at, i.last_check_at, i.last_check_exit, i.wait_cwd, i.created_by, i.created_at, \
-     i.updated_at, i.closed_at, i.wake_count, i.epic";
+     i.updated_at, i.closed_at, i.wake_count, i.epic, i.waiting_on_pass";
 
 #[derive(Debug, Clone)]
 pub struct StoreOpts {
@@ -280,7 +280,7 @@ fn migration_backup(conn: &Connection, path: &Path) -> Result<PathBuf> {
     Ok(backup)
 }
 
-fn migrations() -> [M<'static>; 6] {
+fn migrations() -> [M<'static>; 7] {
     [
         M::up(include_str!("schema_v1.sql")),
         M::up(include_str!("resume_chat.sql")).foreign_key_check(),
@@ -288,6 +288,9 @@ fn migrations() -> [M<'static>; 6] {
         M::up(include_str!("gc.sql")).foreign_key_check(),
         M::up(include_str!("gc_sessions.sql")),
         M::up(include_str!("drop_inbox.sql")).foreign_key_check(),
+        M::up(
+            "ALTER TABLE issue ADD COLUMN waiting_on_pass TEXT NOT NULL DEFAULT 'close' CHECK (waiting_on_pass IN ('close', 'wake'));",
+        ),
     ]
 }
 
@@ -390,6 +393,13 @@ impl<'a> Ctx<'a> {
                 "UPDATE issue SET state = 'open', updated_at = ?2 WHERE id = ?1",
                 params![issue_id, self.ts()],
             )?;
+            if let Some(pending) = self.pass_woken_pending(issue_id, *claim_id)? {
+                self.event(
+                    Some(issue_id),
+                    "note",
+                    json!({"body": Self::pass_pending_note(&pending, "the resumed session's lease expired")}),
+                )?;
+            }
             self.event(
                 Some(issue_id),
                 "release",
@@ -637,6 +647,20 @@ pub fn row_to_issue(r: &rusqlite::Row) -> rusqlite::Result<Issue> {
         closed_at: r.get(17)?,
         wake_count: r.get(18)?,
         epic: r.get(19)?,
+        waiting_on_pass: {
+            let action: String = r.get(20)?;
+            match action.as_str() {
+                "close" => OnPass::Close,
+                "wake" => OnPass::Wake,
+                _ => {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        20,
+                        rusqlite::types::Type::Text,
+                        format!("unknown on_pass action '{action}'").into(),
+                    ));
+                }
+            }
+        },
     })
 }
 
@@ -681,6 +705,50 @@ mod tests {
     use super::*;
     use crate::ops::{ClaimOpts, NewIssue};
     use crate::view::With;
+
+    #[test]
+    fn on_pass_migration_preserves_legacy_waits_and_defaults_to_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let mut conn = Connection::open(&path).unwrap();
+        let steps = migrations();
+        Migrations::from_slice(&steps[..6])
+            .to_latest(&mut conn)
+            .unwrap();
+        seed_legacy_database(&conn);
+        conn.execute(
+            "UPDATE issue SET state = 'waiting', waiting_reason = 'land the branch',
+             waiting_check = 'true', check_interval = 300 WHERE id = 'trk-old'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut store = Store::open(&path, StoreOpts::default()).unwrap();
+        let issue = store.read(None, |c| c.issue("trk-old")).unwrap();
+        assert_eq!(issue.waiting_on_pass, OnPass::Close);
+        assert_eq!(issue.waiting_reason.as_deref(), Some("land the branch"));
+        assert_eq!(
+            store
+                .read(None, |c| c.show("trk-old", With::default()))
+                .unwrap()["waiting"]["on_pass"],
+            "close",
+        );
+        assert_eq!(
+            store
+                .write("human:alice@example.com", false, |c| c.check_record(
+                    "trk-old",
+                    "true",
+                    c.issue_revision("trk-old")?,
+                    &crate::ops::CheckRun {
+                        exit: Some(0),
+                        ..Default::default()
+                    },
+                    None,
+                ))
+                .unwrap(),
+            crate::ops::CheckResult::Passed,
+        );
+    }
 
     fn seed_legacy_database(conn: &Connection) {
         conn.execute_batch(
@@ -1036,28 +1104,19 @@ mod tests {
             .to_latest(&mut conn)
             .unwrap();
         seed_legacy_database(&conn);
-        let mut store = Store {
-            conn,
-            opts: StoreOpts::default(),
-        };
-        store
-            .write(
-                "agent:omp:7b9a08b0-1429-432b-bd07-a094f9016f3f",
-                false,
-                |c| {
-                    c.claim("trk-old", crate::ops::ClaimOpts::default())?;
-                    c.close("trk-old", "done", None, false)
-                },
-            )
-            .unwrap();
-        store
-            .conn
-            .execute(
-                "UPDATE issue SET gc_collected_at = '2026-11-20T10:00:00Z' WHERE id = 'trk-old'",
-                [],
-            )
-            .unwrap();
-        drop(store);
+        conn.execute_batch(
+            "INSERT INTO harness(name) VALUES ('omp');
+             INSERT INTO actor(id, kind, harness, first_seen)
+             VALUES ('agent:omp:legacy', 'agent', 'omp', '2026-11-20T10:00:00Z');
+             INSERT INTO claim(issue_id, actor, claimed_at, released_at, release_reason)
+             VALUES ('trk-old', 'agent:omp:legacy', '2026-11-20T10:00:00Z',
+                     '2026-11-20T10:00:00Z', 'closed');
+             UPDATE issue SET state = 'closed', close_reason = 'done',
+                    closed_at = '2026-11-20T10:00:00Z',
+                    gc_collected_at = '2026-11-20T10:00:00Z' WHERE id = 'trk-old';",
+        )
+        .unwrap();
+        drop(conn);
         let store = Store::open(&path, StoreOpts::default()).unwrap();
         let completed = || {
             store
