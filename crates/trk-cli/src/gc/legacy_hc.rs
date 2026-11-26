@@ -70,7 +70,10 @@ pub(super) fn recover(
     let addresses = match recovery.inventory.get_or_insert_with(inventory) {
         Ok(addresses) => addresses,
         Err(reason) => {
-            return Ok(Resource::new("skipped", format!("legacy hc recovery: {reason}")));
+            return Ok(Resource::new(
+                "skipped",
+                format!("legacy hc recovery: {reason}"),
+            ));
         }
     };
     let resource = match collect(env, claim, terminal, dry_run, addresses) {

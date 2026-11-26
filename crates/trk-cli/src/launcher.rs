@@ -9,6 +9,14 @@ use trk_core::error::{Code, Error, Result};
 
 use crate::env::Env;
 
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StartOutput {
+    #[default]
+    Line,
+    Json,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Launcher {
@@ -21,6 +29,8 @@ pub struct Launcher {
     pub driver: Option<String>,
     pub available: Option<Vec<String>>,
     pub start: Option<Vec<String>>,
+    #[serde(default)]
+    pub start_output: StartOutput,
     pub attach: Option<Vec<String>>,
     pub send: Option<Vec<String>>,
     pub exists: Option<Vec<String>>,
@@ -179,6 +189,36 @@ impl Launcher {
 
     pub fn is_herdr(&self) -> bool {
         self.driver.as_deref() == Some("herdr")
+    }
+
+    pub fn start_address(&self, stdout: &str) -> Result<Option<String>> {
+        match self.start_output {
+            StartOutput::Line => Ok(stdout
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)),
+            StartOutput::Json => {
+                #[derive(Deserialize)]
+                struct Address {
+                    address: String,
+                }
+                let parsed: Address = serde_json::from_str(stdout).map_err(|error| {
+                    Error::new(
+                        Code::Internal,
+                        format!("launcher start returned invalid JSON address: {error}"),
+                    )
+                })?;
+                if parsed.address.trim().is_empty() {
+                    return Err(Error::new(
+                        Code::Internal,
+                        "launcher start returned an empty JSON address",
+                    ));
+                }
+                Ok(Some(parsed.address))
+            }
+        }
     }
 
     pub fn operation(

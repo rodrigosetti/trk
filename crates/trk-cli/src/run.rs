@@ -2,7 +2,10 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use trk_agent::harness::{self, LaunchInput};
@@ -99,6 +102,47 @@ fn trk_bin() -> String {
         .and_then(|p| std::fs::canonicalize(p).ok())
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "trk".into())
+}
+
+/// Keep terminal ownership unchanged, but allow trk to clean up after interruption.
+fn foreground_status(shell_command: &str) -> std::io::Result<ExitStatus> {
+    struct Signals(Vec<signal_hook::SigId>);
+    impl Drop for Signals {
+        fn drop(&mut self) {
+            for handler in self.0.drain(..) {
+                signal_hook::low_level::unregister(handler);
+            }
+        }
+    }
+
+    let signal = Arc::new(AtomicUsize::new(0));
+    let mut handlers = Signals(Vec::with_capacity(3));
+    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        handlers.0.push(signal_hook::flag::register_usize(
+            sig,
+            Arc::clone(&signal),
+            sig as usize,
+        )?);
+    }
+    let mut child = Command::new("sh").arg("-c").arg(shell_command).spawn()?;
+    let mut interrupted = None;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        let sig = signal.load(Ordering::Relaxed);
+        if sig != 0 && interrupted.is_none() {
+            // The launch command execs the harness. It may already have received
+            // the terminal's signal; forwarding also covers signals sent only to trk.
+            unsafe { libc::kill(child.id() as libc::pid_t, sig as libc::c_int) };
+            interrupted = Some(Instant::now());
+        }
+        if interrupted.is_some_and(|at| at.elapsed() >= Duration::from_secs(2)) {
+            child.kill()?;
+            return child.wait();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
@@ -351,16 +395,29 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
 
     // 6. Start.
     if a.fg {
-        let st = Command::new("sh")
-            .arg("-c")
-            .arg(&spec.shell_command)
-            .status()
+        let st = foreground_status(&spec.shell_command)
             .inspect_err(|error| undo(&mut store, &format!("launch failed: {error}")))?;
+        let released = store.write(&actor, false, |c| {
+            if c.active_claim(&id)?
+                .is_some_and(|claim| claim.actor == actor)
+            {
+                c.unclaim(
+                    &id,
+                    false,
+                    Some(&format!("foreground session exited ({st})")),
+                )?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })?;
+        let message = if released {
+            "Its claim was released."
+        } else {
+            "No active claim belonging to this session remains."
+        };
         return Ok(Out::Text(
-            format!(
-                "{} exited ({}). Its claim stays until the lease expires or `trk reap`.",
-                hname, st
-            ),
+            format!("{hname} exited ({st}). {message}"),
             json!({"issue": id, "actor": actor, "exit_code": st.code()}),
         ));
     }
@@ -398,15 +455,14 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
                 );
             }
         };
-        if let Some(address) = out
-            .stdout
-            .lines()
-            .next()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-        {
-            store.write(&actor, false, |c| c.bind_terminal(&id, address))?;
-            terminal = address.to_owned();
+        let address = l.start_address(&out.stdout).map_err(|error| {
+            error.with_issue(&id).with_hint(
+                "claim retained to avoid a duplicate launch; inspect the launcher before unclaiming",
+            )
+        })?;
+        if let Some(address) = address {
+            store.write(&actor, false, |c| c.bind_terminal(&id, &address))?;
+            terminal = address;
             vars.insert("name", terminal.clone());
         }
         (out.text, None)

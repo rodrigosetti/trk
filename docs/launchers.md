@@ -15,8 +15,15 @@ Profiles accept optional `available`, `start`, `attach`, `send`, `exists`, `focu
 `close` and `rename` argv arrays. Missing operations are skipped. Entries remain
 separate arguments, with substitutions `{name}` (session address), `{cwd}`,
 `{shell_command}` (launch command including directory and environment), `{text}`
-and `{title}`. Start's first stdout line replaces the generated session name;
-empty stdout retains it. Stderr is diagnostics, never a session address.
+and `{title}`. By default (`start_output = "line"`), start's first stdout line
+replaces the generated session name; empty stdout retains it. With
+`start_output = "json"`, stdout must be a JSON object with a nonempty string
+`address`; an invalid response retains the claim and reports an error to avoid
+launching a duplicate session. Stderr is diagnostics, never a session address.
+The hc seed uses `hc run --json --bg` and `start_output = "json"` to bind the
+terminal object's address. Existing configs are preserved on install: add
+`start_output = "json"` under `[launcher.hc]` and `--json` to its `hc run` argv
+when upgrading; custom profiles keep their existing contract unless opted in.
 The tmux seed requests a stable session ID so rename does not break later operations.
 Retry settings on `[launcher]` apply to profiles unless overridden there.
 

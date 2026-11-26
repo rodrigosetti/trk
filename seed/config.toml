@@ -62,8 +62,9 @@ links = []
 # Commands are argv arrays, not shell strings. Placeholders: {name}, {cwd},
 # {shell_command} (cd + env + harness argv), {text}, {title}.
 # Every operation is optional; missing operations are skipped. A missing
-# available probe means usable. Start's first stdout line is the session address;
-# empty stdout keeps the generated name. Stderr is diagnostics, never an address.
+# available probe means usable. By default, start's first stdout line is the
+# session address; empty stdout keeps the generated name. start_output = "json"
+# instead reads the JSON object's address. Stderr is diagnostics, never an address.
 [launcher]
 use = ["herdr", "hc", "tmux"]
 # Seconds to wait before sending the briefing to harnesses that take it by `send`.
@@ -92,7 +93,9 @@ name = "trk-{id}"
 name_max = 32
 name_chars = "a-z0-9_-"
 available = ["hc", "ls"]
-start = ["hc", "run", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
+# hc --bg returns a terminal object; bind its address, not the JSON text.
+start_output = "json"
+start = ["hc", "run", "--json", "--bg", "--no-parent", "--name", "{name}", "--cwd", "{cwd}", "--", "sh", "-c", "{shell_command}"]
 attach = ["hc", "attach", "{name}"]
 send = ["hc", "send", "{name}", "{text}"]
 

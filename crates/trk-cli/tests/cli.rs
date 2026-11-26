@@ -55,6 +55,9 @@ mod check_output;
 #[path = "cli/epics.rs"]
 mod epics;
 
+#[path = "cli/run_foreground.rs"]
+mod run_foreground;
+
 fn local_host() -> String {
     trk_core::system::hostname().unwrap().to_owned()
 }
@@ -3160,8 +3163,9 @@ fn types_without_worktrees_run_and_check_in_the_project_root() {
                 .trim(),
             root.to_str().unwrap()
         );
-        let claim = e.ok(&["show", &id])["claim"].clone();
-        assert!(claim["worktree"].is_null());
+        let issue = e.ok(&["show", &id]);
+        assert_eq!(issue["state"], "open");
+        assert!(issue["claim"].is_null());
         assert!(!e.trk_dir().join("worktrees").join(&id).exists());
         let branch = StdCommand::new("git")
             .current_dir(&root)
@@ -3173,7 +3177,10 @@ fn types_without_worktrees_run_and_check_in_the_project_root() {
         let exclude = std::fs::read_to_string(root.join(".git/info/exclude")).unwrap();
         assert!(exclude.contains("/.omp/mcp.json"));
 
-        let actor = claim["actor"].as_str().unwrap();
+        let spec = e.ok(&["run", &id, "--harness", "cwd-proof", "--print"]);
+        let claim = e.ok(&["show", &id])["claim"].clone();
+        assert!(claim["worktree"].is_null());
+        let actor = spec["actor"].as_str().unwrap();
         e.ok(&[
             "--as",
             actor,
