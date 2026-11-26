@@ -204,22 +204,22 @@ fn migrate_selection(
     mut run: impl FnMut(&[&str]) -> std::io::Result<std::process::Output>,
 ) -> Result<()> {
     let legacy = |name: &str| matches!(name, "main-trk" | "main-trk-tabs");
-    if let Ok(status) = run(&["status"]) {
-        if status.status.success() {
-            let status: Value = serde_json::from_slice(&status.stdout)
-                .map_err(|e| bad_args(format!("invalid Herdr status: {e}")))?;
-            if status["layout"].as_str().is_some_and(legacy) {
-                let switched = run(&["do", "layout.switch", "--name", "trk"])?;
-                if !switched.status.success() {
-                    return Err(herdr(format!(
-                        "cannot migrate active Herdr layout: {}",
-                        String::from_utf8_lossy(&switched.stderr)
-                    )));
-                }
+    if let Ok(status) = run(&["status"])
+        && status.status.success()
+    {
+        let status: Value = serde_json::from_slice(&status.stdout)
+            .map_err(|e| bad_args(format!("invalid Herdr status: {e}")))?;
+        if status["layout"].as_str().is_some_and(legacy) {
+            let switched = run(&["do", "layout.switch", "--name", "trk"])?;
+            if !switched.status.success() {
+                return Err(herdr(format!(
+                    "cannot migrate active Herdr layout: {}",
+                    String::from_utf8_lossy(&switched.stderr)
+                )));
             }
-            // The running app owns shared.json; never rewrite its snapshot.
-            return Ok(());
         }
+        // The running app owns shared.json; never rewrite its snapshot.
+        return Ok(());
     }
     let shared_path = app.join("shared.json");
     if shared_path.exists() {
