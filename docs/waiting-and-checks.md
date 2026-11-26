@@ -311,6 +311,12 @@ use physical time, independently of the issue clock (`TRK_NOW`).
 `trk whoami` shows `check_running.pid`, `.host`, `.started_at` and `.pgid`.
 A different/unknown host or unavailable process information prevents automatic takeover.
 
+Queue cleanup makes three attempts with 100ms then 200ms backoff (in addition to
+SQLite's busy timeout). If ownership still cannot be released, `--watch` exits
+non-zero instead of advertising a healthy watcher that cannot run checks. A later
+pass can reclaim this process's own local lock only when no recorded check group
+survives; a surviving or uncertain group retains ownership and stops the watcher.
+
 For a stale lock that cannot recover automatically (for example, after a hostname change),
 a **human** can run `trk check --unlock`. First inspect the recorded holder and verify
 on the owning host that both the runner and its check group have stopped. Never unlock

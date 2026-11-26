@@ -55,7 +55,7 @@ struct Lock<'a> {
     actor: String,
     pid: i64,
     child: Option<Child>,
-    released: bool,
+    release_attempted: bool,
 }
 
 impl Lock<'_> {
@@ -109,24 +109,50 @@ impl Lock<'_> {
     }
 
     fn release(&mut self) -> Result<()> {
-        self.finish()?;
-        self.env
-            .store()?
-            .write(&self.actor, false, |c| c.check_lock_release(self.pid))?;
-        self.released = true;
-        Ok(())
+        self.release_attempted = true;
+        let mut backoff = Duration::from_millis(100);
+        for attempt in 0..3 {
+            let result = (|| {
+                self.finish()?;
+                self.env
+                    .store()?
+                    .write(&self.actor, false, |c| c.check_lock_release(self.pid))
+            })();
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error) if attempt < 2 => {
+                    eprintln!("trk check: retrying check queue cleanup in {backoff:?}: {error}");
+                    std::thread::sleep(backoff);
+                    backoff *= 2;
+                }
+                Err(error) => {
+                    return Err(Error::new(
+                        Code::Internal,
+                        format!("could not release check queue ownership: {error}"),
+                    )
+                    .with_detail("check_lock_release_failed", true)
+                    .with_hint(
+                        "stop the runner; ownership is retained until its check group is gone",
+                    ));
+                }
+            }
+        }
+        unreachable!()
     }
 }
 
 impl Drop for Lock<'_> {
     fn drop(&mut self) {
-        if !self.released {
-            let _ = self.release();
+        if !self.release_attempted
+            && let Err(error) = self.release()
+        {
+            eprintln!("trk check: {error}");
         }
     }
 }
 
-/// Take the lock only when neither the previous runner nor its group survives.
+/// Take the lock only when the previous runner and its group are gone, or this
+/// serial runner owns an abandoned row with no surviving group.
 /// Unknown hosts or liveness failures conservatively retain ownership.
 fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, Value>> {
     let pid = i64::from(std::process::id());
@@ -138,7 +164,7 @@ fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, V
         // waiting for an external command, even during stale-lock recovery.
         if let Some((p, h, started, pgid)) = &previous {
             let here = host.is_some() && h.as_deref() == host;
-            if !here || holder_alive(*p, started) || pgid.is_some_and(group_alive) {
+            if !here || (*p != pid && holder_alive(*p, started)) || pgid.is_some_and(group_alive) {
                 return Ok(Err(json!({
                     "pid": p, "host": h, "started_at": started, "pgid": pgid,
                 })));
@@ -157,7 +183,7 @@ fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, V
                 actor: actor.to_string(),
                 pid,
                 child: None,
-                released: false,
+                release_attempted: false,
             }));
         }
     }
@@ -171,9 +197,9 @@ pub(crate) fn with_queue_lock<T>(env: &Env, f: impl FnOnce() -> Result<T>) -> Re
             .with_detail("holder", holder)
             .with_hint("wait for the in-flight check and retry `trk resume`; for a stale holder, ask a human to inspect it and run `trk check --unlock`")
     })?;
-    let result = f()?;
+    let result = f();
     lock.release()?;
-    Ok(result)
+    result
 }
 
 /// Serialize GC with checks, not with unrelated database writers. Previews
@@ -205,9 +231,9 @@ pub(crate) fn with_gc_lock<T>(
         return f();
     }
     let mut lock = lock(env, &actor)?.map_err(busy)?;
-    let result = f()?;
+    let result = f();
     lock.release()?;
-    Ok(result)
+    result
 }
 
 /// Where a check runs and what it sees.
@@ -603,20 +629,43 @@ fn pass(
     executable: &Executable,
     completed: &[CheckView],
 ) -> Result<std::result::Result<Pass, Value>> {
-    let actor = env.actor()?.to_string();
-    let timeout = env.check_timeout()?;
-    let mut store = env.store()?;
     // Snapshot the queue only after ownership: a resume may have completed
     // between an earlier snapshot and lock acquisition.
     let mut queue_lock = if a.dry_run {
         None
     } else {
         interrupt.check()?;
-        match lock(env, &actor)? {
+        match lock(env, env.actor()?)? {
             Ok(l) => Some(l),
             Err(holder) => return Ok(Err(holder)),
         }
     };
+    let result = pass_locked(
+        env,
+        a,
+        interrupt,
+        executable,
+        completed,
+        queue_lock.as_mut(),
+    );
+    if let Some(lock) = queue_lock.as_mut() {
+        lock.release()?;
+    }
+    result
+}
+
+/// Ownership cleanup runs in `pass` even when execution or recording fails.
+fn pass_locked(
+    env: &Env,
+    a: &CheckArgs,
+    interrupt: &Interrupt,
+    executable: &Executable,
+    completed: &[CheckView],
+    mut queue_lock: Option<&mut Lock<'_>>,
+) -> Result<std::result::Result<Pass, Value>> {
+    let actor = env.actor()?.to_string();
+    let timeout = env.check_timeout()?;
+    let mut store = env.store()?;
     if queue_lock.is_some() {
         clean_check_logs(env)?;
     }
@@ -816,7 +865,6 @@ fn pass(
         });
     }
     let gc = sweep(env, a);
-    lock.release()?;
     Ok(Ok(Pass { results: out, gc }))
 }
 
@@ -887,6 +935,14 @@ fn line(v: &CheckView, r: &Renderer) -> String {
 }
 
 fn busy_text(h: &Value) -> String {
+    if h["pid"].as_i64() == Some(i64::from(std::process::id()))
+        && hostname().is_some_and(|host| h["host"].as_str() == Some(host))
+    {
+        return format!(
+            "check queue ownership is retained by this runner (pid {}, pgid {}); its check process group may still be running. Stop this runner and inspect the group before recovery",
+            h["pid"], h["pgid"],
+        );
+    }
     format!(
         "check queue is busy (pid {}{}, since {}); nothing done. For a stale holder, ask a human to inspect it and run `trk check --unlock`",
         h["pid"],
@@ -976,8 +1032,21 @@ pub fn check(
                     }
                     completed.extend(pass.results);
                 }
-                Ok(Err(holder)) => eprintln!("{}", renderer.warning(&busy_text(&holder))),
-                Err(e) => eprintln!("{} {}", renderer.failure("error:"), e.message()),
+                Ok(Err(holder)) => {
+                    if holder["pid"].as_i64() == Some(i64::from(std::process::id()))
+                        && hostname().is_some_and(|host| holder["host"].as_str() == Some(host))
+                    {
+                        return Err(Error::new(Code::InvalidState, busy_text(&holder)));
+                    }
+                    eprintln!("{}", renderer.warning(&busy_text(&holder)));
+                }
+                Err(e) => {
+                    if matches!(&e, Error::Coded(error) if error.detail.get("check_lock_release_failed") == Some(&Value::Bool(true)))
+                    {
+                        return Err(e);
+                    }
+                    eprintln!("{} {}", renderer.failure("error:"), e.message());
+                }
             }
             let until = Instant::now() + pause;
             while Instant::now() < until {

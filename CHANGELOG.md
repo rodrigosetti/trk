@@ -49,6 +49,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Herdr issue rows now indent beneath rendered epic subheaders, including **No epic**, while preserving shared responsive columns; grouping off and entirely unassigned state groups remain flat.
 - Human unclaim permission errors now include the issue-specific `trk unclaim <ID> --force` recovery command; Herdr shows CLI error hints in a wrapping status footer.
 - Check queue recovery distinguishes recycled PIDs from live runners, retains surviving process-group protection, and offers audited human-only `trk check --unlock` recovery for stale or changed-host locks.
+- Check watchers retry failed queue cleanup with bounded backoff, exit non-zero if ownership cannot be released, and recover their own abandoned local lock only after its check process group is gone.
 - Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
 - The Herdr dashboard's wide list/details split now starts at 50/50 instead of a fixed list width, retaining user resizing and pane minimums.
 - Restored CI Clippy checks with narrowly scoped argument-count expectations on GC helpers, preserving cleanup safety gates and opt-in legacy recovery behavior.
