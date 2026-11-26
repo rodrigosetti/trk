@@ -275,4 +275,3 @@ fn check_shell_exit_cleans_up_surviving_descendants_before_release() {
     assert_eq!(e.ok(&["check", "--all"])["results"][0]["result"], "retry");
     assert!(e.repo().join("check-second").exists());
 }
-

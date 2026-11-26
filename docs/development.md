@@ -79,6 +79,9 @@ Before installing the release, users should finish active sessions and follow th
 
 ## Notes on the implementation
 
+- **CLI layout**: `crates/trk-cli/src/main.rs` owns arguments and process orchestration; `src/commands/` holds command implementations. Integration fixtures live in `tests/cli.rs`, with topic modules under `tests/cli/`.
+- **Read models**: `trk-core::view` exposes typed issue, claim, derived-state and run views. Serialize at presentation boundaries (`Ctx::show` retains its JSON interface); run decisions use typed fields. `trk-cli/src/check/view.rs` defines the serde check-result variants shared by rendering and restart handoff.
+
 - **Harness names**: the Claude Code profile is `claude-code`, matching `agent:claude-code:<id>`.
   A harness is registered the first time one of its sessions acts.
 - **omp** (verified live): reads `<worktree>/.omp/mcp.json` and shows MCP server instructions to the

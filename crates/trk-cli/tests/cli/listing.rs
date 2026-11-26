@@ -107,4 +107,3 @@ fn default_list_and_ready_tables_show_issue_type() {
         }
     }
 }
-

@@ -13,7 +13,7 @@ use trk_core::error::{Code, Error, Result};
 use trk_core::model::{ActorId, Claim, State};
 use trk_core::ops::ClaimOpts;
 use trk_core::system::{Liveness, hostname, process_liveness};
-use trk_core::view::With;
+use trk_core::view::{ClaimView, IssueView, McpStatus, RunView, With};
 
 use crate::env::{Env, git};
 use crate::render::Out;
@@ -148,11 +148,19 @@ fn foreground_status(shell_command: &str) -> std::io::Result<ExitStatus> {
 pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let human = env.actor()?.to_string();
     let mut store = env.store()?;
-    let issue = if let Some(id) = a.id.as_deref() {
+    let IssueView {
+        id,
+        title,
+        state,
+        claim,
+        derived,
+        issue_type,
+        ..
+    } = if let Some(id) = a.id.as_deref() {
         store.read(Some(&human), |c| {
             let id = c.resolve_id(id)?;
-            c.show(
-                &id,
+            c.issue_view(
+                &c.issue(&id)?,
                 With {
                     deps: true,
                     ..Default::default()
@@ -170,38 +178,32 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
                 )
             })?
     };
-    let id = issue["id"].as_str().unwrap_or_default().to_string();
 
     // 1. Ready, agent and harness.
-    if issue["derived"]["ready"].as_bool() != Some(true) {
-        if let Some(c) = issue["claim"]["actor"].as_str() {
-            return Err(
-                Error::new(Code::ClaimedByOther, format!("{id} is claimed by {c}"))
-                    .with_issue(&id)
-                    .with_hint(format!("see `trk runs`; `trk attach {id}` to take over")),
-            );
+    if !derived.ready {
+        if let Some(c) = &claim {
+            return Err(Error::new(
+                Code::ClaimedByOther,
+                format!("{id} is claimed by {}", c.actor),
+            )
+            .with_issue(&id)
+            .with_hint(format!("see `trk runs`; `trk attach {id}` to take over")));
         }
-        if let Some(b) = issue["derived"]["blocked_by"]
-            .as_array()
-            .filter(|b| !b.is_empty())
-        {
+        let b = &derived.blocked_by;
+        if !b.is_empty() {
             return Err(Error::new(Code::Blocked, format!("{id} is blocked"))
                 .with_issue(&id)
-                .with_detail("blocked_by", Value::Array(b.clone())));
+                .with_detail("blocked_by", json!(b)));
         }
-        let state = issue["state"].as_str().unwrap_or("");
         let mut e =
             Error::new(Code::InvalidState, format!("{id} is {state}, not ready")).with_issue(&id);
-        if state != "open" {
+        if state != State::Open {
             e = e.with_hint(format!("trk reopen {id}"));
         }
         return Err(e);
     }
     let routing_config = trk_agent::routing::RoutingConfig::new(&env.config);
-    let routing = routing_config.resolve(
-        issue["type"].as_str().unwrap_or_default(),
-        a.agent.as_deref(),
-    )?;
+    let routing = routing_config.resolve(&issue_type, a.agent.as_deref())?;
     let resolved = routing_config.load(&routing)?;
     let agent = resolved.agent;
     let agent_name = agent.name.clone();
@@ -426,7 +428,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     vars.insert("name", terminal.clone());
     vars.insert("cwd", cwd_s.clone());
     vars.insert("shell_command", spec.shell_command.clone());
-    let title = issue["title"].as_str().unwrap_or(&id);
+    let title = title.as_str();
     vars.insert("title", title.to_owned());
     let (output, placement) = if l.is_herdr() {
         let (address, placement) = crate::herdr::start(title, &cwd_s, &spec.shell_command)
@@ -500,11 +502,12 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
 
 /// Liveness of a run's MCP server: Some(true) alive, Some(false) gone, None unknown.
 pub fn mcp_alive(meta: &Value) -> Option<bool> {
-    if meta["mcp_exited_at"].is_string() {
+    let meta = McpStatus::from(meta);
+    if meta.exited_at.is_some() {
         return Some(false);
     }
-    let pid = meta["mcp_pid"].as_i64()?;
-    let host = meta["mcp_host"].as_str();
+    let pid = meta.pid?;
+    let host = meta.host;
     if host.is_some() && host != hostname() {
         return None;
     }
@@ -526,30 +529,45 @@ pub fn session_alive(
     launcher.exists(terminal)
 }
 
-fn claim_session_alive(env: &Env, claim: &Value) -> Result<Option<bool>> {
-    let Some(terminal) = claim["terminal"]
-        .as_str()
+fn claim_session_alive(env: &Env, claim: &ClaimView) -> Result<Option<bool>> {
+    let Some(terminal) = claim
+        .terminal
+        .as_deref()
         .filter(|name| !name.trim().is_empty())
     else {
         return Ok(None);
     };
-    let Some(launcher) = launcher::for_claim(env, claim["launcher"].as_str())? else {
+    let Some(launcher) = launcher::for_claim(env, claim.launcher.as_deref())? else {
         return Ok(None);
     };
     Ok(session_alive(
         &launcher,
-        claim["host"].as_str(),
+        claim.host.as_deref(),
         Some(terminal),
     ))
 }
 
+#[derive(serde::Serialize)]
+struct RunStatus {
+    #[serde(flatten)]
+    run: RunView,
+    mcp_alive: Option<bool>,
+    session_alive: Option<bool>,
+}
+
 pub fn runs(env: &Env) -> Result<Out> {
     let store = env.store()?;
-    let mut runs = store.read(None, |c| c.runs())?;
-    for r in &mut runs {
-        r["mcp_alive"] = json!(mcp_alive(&r["meta"]));
-        r["session_alive"] = json!(claim_session_alive(env, r)?);
-    }
+    let runs = store
+        .read(None, |c| c.runs())?
+        .into_iter()
+        .map(|run| {
+            Ok(RunStatus {
+                mcp_alive: mcp_alive(&run.meta),
+                session_alive: claim_session_alive(env, &run.claim)?,
+                run,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let mut t = comfy_table::Table::new();
     t.load_style(comfy_table::presets::NOTHING);
     t.set_header([
@@ -557,24 +575,24 @@ pub fn runs(env: &Env) -> Result<Out> {
     ]);
     for r in &runs {
         t.add_row([
-            r["issue"].as_str().unwrap_or("").to_string(),
-            r["state"].as_str().unwrap_or("").to_string(),
-            r["agent"].as_str().unwrap_or("").to_string(),
-            r["harness"].as_str().unwrap_or("").to_string(),
-            r["terminal"].as_str().unwrap_or("").to_string(),
-            r["lease_until"].as_str().unwrap_or("").to_string(),
-            match r["session_alive"].as_bool() {
+            r.run.issue.clone(),
+            r.run.state.to_string(),
+            r.run.claim.agent.clone().unwrap_or_default(),
+            r.run.harness.clone().unwrap_or_default(),
+            r.run.claim.terminal.clone().unwrap_or_default(),
+            r.run.claim.lease_until.clone().unwrap_or_default(),
+            match r.session_alive {
                 Some(true) => "live".into(),
                 Some(false) => "ended".into(),
                 None => "?".into(),
             },
-            match r["mcp_alive"].as_bool() {
+            match r.mcp_alive {
                 Some(true) => "up".into(),
-                Some(false) if r["session_alive"] == true => "dormant".into(),
+                Some(false) if r.session_alive == Some(true) => "dormant".into(),
                 Some(false) => "stopped".into(),
                 None => "?".into(),
             },
-            r["title"].as_str().unwrap_or("").to_string(),
+            r.run.title.clone(),
         ]);
     }
     let text = if runs.is_empty() {
@@ -582,7 +600,7 @@ pub fn runs(env: &Env) -> Result<Out> {
     } else {
         t.to_string()
     };
-    Ok(Out::Text(text, Value::Array(runs)))
+    Ok(Out::Text(text, json!(runs)))
 }
 
 fn terminal_of(env: &Env, id: &str) -> Result<(String, Claim, Launcher)> {
@@ -830,32 +848,30 @@ pub fn reap(env: &Env) -> Result<Out> {
     let runs = store.read(None, |c| c.runs())?;
     let mut reaped = vec![];
     for r in runs {
-        if r["state"] != "claimed" || claim_session_alive(env, &r)? != Some(false) {
+        if r.state != State::Claimed || claim_session_alive(env, &r.claim)? != Some(false) {
             continue;
         }
-        let id = r["issue"].as_str().unwrap_or_default().to_string();
+        let id = r.issue;
         let why = format!(
             "Session of {} ended: its terminal {} is gone. Claim released by trk reap.",
-            r["actor"].as_str().unwrap_or(""),
-            r["terminal"].as_str().unwrap_or(""),
+            r.claim.actor,
+            r.claim.terminal.as_deref().unwrap_or(""),
         );
         store.write(&actor, false, |c| c.reap(&id, &why))?;
-        reaped.push(json!({"issue": id, "actor": r["actor"], "note": why}));
+        reaped.push((id, r.claim.actor, why));
     }
     let text = if reaped.is_empty() {
         "nothing to reap".to_string()
     } else {
         reaped
             .iter()
-            .map(|r| {
-                format!(
-                    "released {} ({})",
-                    r["issue"].as_str().unwrap_or(""),
-                    r["actor"].as_str().unwrap_or("")
-                )
-            })
+            .map(|(issue, actor, _)| format!("released {issue} ({actor})"))
             .collect::<Vec<_>>()
             .join("\n")
     };
-    Ok(Out::Text(text, Value::Array(reaped)))
+    let data = reaped
+        .into_iter()
+        .map(|(issue, actor, note)| json!({"issue": issue, "actor": actor, "note": note}))
+        .collect();
+    Ok(Out::Text(text, Value::Array(data)))
 }

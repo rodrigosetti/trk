@@ -385,4 +385,3 @@ fn terminal_liveness_controls_dormant_mcp_wakes_and_reap() {
         }
     }
 }
-

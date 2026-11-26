@@ -19,7 +19,8 @@ pub(super) fn run(g: &Global, cmd: crate::Cmd) -> Result<Out> {
         preset,
         from,
         list_presets,
-    } = cmd else {
+    } = cmd
+    else {
         unreachable!()
     };
     if list_presets {

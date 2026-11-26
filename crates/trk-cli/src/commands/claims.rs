@@ -4,8 +4,8 @@ use crate::Cmd;
 use crate::env::Env;
 use crate::render::Out;
 
-use trk_core::ops::ClaimOpts;
 use super::{show_one, with_open};
+use trk_core::ops::ClaimOpts;
 
 pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
     match cmd {
@@ -74,4 +74,3 @@ pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
         _ => unreachable!(),
     }
 }
-

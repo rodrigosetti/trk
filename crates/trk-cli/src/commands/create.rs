@@ -4,12 +4,12 @@ use crate::Cmd;
 use crate::env::Env;
 use crate::render::Out;
 
+use super::{SHOWN, read_value};
+use crate::{editor, run};
 use serde_json::Value;
 use trk_core::error::Error;
 use trk_core::model::DEFAULT_PRIORITY;
 use trk_core::ops::NewIssue;
-use crate::{editor, run};
-use super::{SHOWN, read_value};
 
 pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
     match cmd {

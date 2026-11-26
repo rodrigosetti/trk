@@ -4,10 +4,10 @@ use crate::Cmd;
 use crate::env::Env;
 use crate::render::Out;
 
+use super::{SHOWN, read_value};
+use crate::editor;
 use trk_core::error::bad_args;
 use trk_core::ops::Edit;
-use crate::editor;
-use super::{SHOWN, read_value};
 
 pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
     match cmd {

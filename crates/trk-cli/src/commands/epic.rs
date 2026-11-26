@@ -1,10 +1,10 @@
 use serde_json::json;
 use trk_core::error::Result;
 
+use super::read_value;
 use crate::EpicCmd;
 use crate::env::Env;
 use crate::render::{Out, Renderer};
-use super::read_value;
 
 pub(super) fn run(env: &Env, cmd: EpicCmd, r: &Renderer) -> Result<Out> {
     let mut store = env.store()?;

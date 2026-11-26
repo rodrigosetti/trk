@@ -4,9 +4,9 @@ use crate::Cmd;
 use crate::env::Env;
 use crate::render::Out;
 
-use serde_json::json;
-use crate::DepCmd;
 use super::with_open;
+use crate::DepCmd;
+use serde_json::json;
 
 pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
     match cmd {
@@ -74,4 +74,3 @@ pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
         _ => unreachable!(),
     }
 }
-

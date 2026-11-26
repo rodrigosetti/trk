@@ -689,4 +689,3 @@ fn gc_collects_historical_worktrees_after_the_type_opts_out() {
     assert!(fixture.e.repo().is_dir());
     assert_eq!(fixture.closed_spaces(), ["history"]);
 }
-

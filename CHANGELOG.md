@@ -26,6 +26,10 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Explicitly curated epics with create/list/rename/archive commands, cascading names, optional issue assignment and clearing in CLI/editor, archived-assignment validation, complete timeline events, and forward database migration.
 - Agent epic context: briefings and templates expose membership and active epic descriptions; MCP follow-ups can select existing active epics, with no epic-management tools. Interactive skill guidance covers explicit epic curation and omitting assignments when none fits.
 
+### Changed
+
+- Split CLI command implementations and integration tests into topic modules; run decisions and check-result handoffs now use typed serde views without changing CLI output or JSON.
+
 ### Fixed
 
 - Waiting checks now retain only a bounded 4096-byte stdout/stderr tail, mark truncated output in JSON and notes, avoid per-check log files on all exit paths, and remove legacy logs whose owner PID is gone.

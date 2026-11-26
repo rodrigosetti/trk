@@ -3,12 +3,15 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::error::Result;
 use crate::model::*;
 use crate::query;
 use crate::store::{CLAIM_COLS, Ctx, ISSUE_COLS, SESSION_CLAIM_FILTER, row_to_claim, row_to_issue};
+
+mod types;
+pub use types::*;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct With {
@@ -67,17 +70,13 @@ impl Ctx<'_> {
         value
     }
 
-    fn edge_json(e: &Edge) -> Value {
-        json!({"id": e.id, "title": e.title, "state": e.state, "priority": e.priority, "epic": e.epic})
-    }
-
     /// `ready`, `blocked_by`, `due`, blocker progress, and the open issues of
     /// higher priority this one holds up.
-    pub fn derived(&self, issue: &Issue, blockers: &[Edge], blocks: &[Edge]) -> Value {
-        let blocked_by: Vec<&str> = blockers
+    pub fn derived(&self, issue: &Issue, blockers: &[Edge], blocks: &[Edge]) -> Derived {
+        let blocked_by: Vec<String> = blockers
             .iter()
             .filter(|b| b.state != State::Closed)
-            .map(|b| b.id.as_str())
+            .map(|b| b.id.clone())
             .collect();
         let ready = issue.state == State::Open && blocked_by.is_empty();
         let due = issue.state == State::Waiting
@@ -87,104 +86,91 @@ impl Ctx<'_> {
                 .as_deref()
                 .is_none_or(|t| t <= self.ts().as_str());
         let mine = rank(&issue.priority);
-        let unblocks: Vec<Value> = blocks
+        let unblocks = blocks
             .iter()
             .filter(|b| b.state != State::Closed && rank(&b.priority) < mine)
-            .map(|b| json!({"id": b.id, "priority": b.priority}))
+            .map(|b| Unblocks {
+                id: b.id.clone(),
+                priority: b.priority.clone(),
+            })
             .collect();
-        let mut d = json!({
-            "ready": ready,
-            "blocked_by": blocked_by,
-            "due": due,
-            "unblocks_higher_priority": unblocks,
-        });
-        if !blockers.is_empty() {
-            let closed = blockers.iter().filter(|b| b.state == State::Closed).count();
-            d["progress"] = json!({"total": blockers.len(), "closed": closed});
+        Derived {
+            ready,
+            blocked_by,
+            due,
+            unblocks_higher_priority: unblocks,
+            progress: (!blockers.is_empty()).then(|| Progress {
+                total: blockers.len(),
+                closed: blockers.iter().filter(|b| b.state == State::Closed).count(),
+            }),
         }
-        d
     }
 
     /// The issue object: the shape `show --json` emits.
-    pub fn issue_json(&self, issue: &Issue, with: With) -> Result<Value> {
+    pub fn issue_view(&self, issue: &Issue, with: With) -> Result<IssueView> {
         let claim = self.active_claim(&issue.id)?;
-        let mut o = Map::new();
-        o.insert("id".into(), json!(issue.id));
-        o.insert("title".into(), json!(issue.title));
-        o.insert("description".into(), json!(issue.description));
-        o.insert("state".into(), json!(issue.state));
-        o.insert("priority".into(), json!(issue.priority));
-        o.insert("type".into(), json!(issue.issue_type));
-        o.insert("epic".into(), json!(issue.epic));
-        o.insert("close_reason".into(), json!(issue.close_reason));
-        if issue.wake_count > 0 && matches!(issue.state, State::Waiting | State::Claimed) {
-            o.insert("wake_count".into(), json!(issue.wake_count));
-        }
-        let waiting = (issue.state == State::Waiting).then(|| {
-            json!({
-                "reason": issue.waiting_reason,
-                "check": issue.waiting_check,
-                "interval": issue.check_interval,
-                "next_check_at": issue.next_check_at,
-                "last_check_at": issue.last_check_at,
-                "last_check_exit": issue.last_check_exit,
-                "cwd": issue.wait_cwd,
-            })
-        });
-        o.insert("waiting".into(), json!(waiting));
-        o.insert(
-            "claim".into(),
-            claim
-                .as_ref()
-                .map(|c| self.claim_json(c))
-                .unwrap_or(Value::Null),
-        );
         let blocks = self.edges(&issue.id, true)?;
         let blockers = self.edges(&issue.id, false)?;
-        if with.deps {
-            o.insert(
-                "deps".into(),
-                json!({
-                    "blocked_by": blockers.iter().map(Self::edge_json).collect::<Vec<_>>(),
-                    "blocks": blocks.iter().map(Self::edge_json).collect::<Vec<_>>(),
-                }),
-            );
-        }
-        let links = self.links(&issue.id)?;
-        if !links.is_empty() {
-            o.insert("links".into(), json!(links));
-        }
-        o.insert("derived".into(), self.derived(issue, &blockers, &blocks));
-        o.insert("created_by".into(), json!(issue.created_by));
-        o.insert("created_at".into(), json!(issue.created_at));
-        o.insert("updated_at".into(), json!(issue.updated_at));
-        o.insert("closed_at".into(), json!(issue.closed_at));
-        if with.notes {
-            o.insert("notes".into(), json!(self.notes(&issue.id)?));
-        }
-        if with.events {
-            o.insert("events".into(), json!(self.events(&issue.id)?));
-        }
-        if with.claims {
-            let cl: Vec<Value> = self
-                .claims(&issue.id)?
-                .iter()
-                .map(|c| {
-                    let mut v = self.claim_json(c);
-                    v["released_at"] = json!(c.released_at);
-                    v["release_reason"] = json!(c.release_reason);
-                    v
+        let derived = self.derived(issue, &blockers, &blocks);
+        Ok(IssueView {
+            id: issue.id.clone(),
+            title: issue.title.clone(),
+            description: issue.description.clone(),
+            state: issue.state,
+            priority: issue.priority.clone(),
+            issue_type: issue.issue_type.clone(),
+            epic: issue.epic.clone(),
+            close_reason: issue.close_reason.clone(),
+            wake_count: (issue.wake_count > 0
+                && matches!(issue.state, State::Waiting | State::Claimed))
+            .then_some(issue.wake_count),
+            waiting: (issue.state == State::Waiting).then(|| WaitingView {
+                reason: issue.waiting_reason.clone(),
+                check: issue.waiting_check.clone(),
+                interval: issue.check_interval,
+                next_check_at: issue.next_check_at.clone(),
+                last_check_at: issue.last_check_at.clone(),
+                last_check_exit: issue.last_check_exit,
+                cwd: issue.wait_cwd.clone(),
+            }),
+            claim: claim.map(ClaimView::from),
+            deps: with.deps.then_some(Dependencies {
+                blocked_by: blockers,
+                blocks,
+            }),
+            links: self.links(&issue.id)?,
+            derived,
+            created_by: issue.created_by.clone(),
+            created_at: issue.created_at.clone(),
+            updated_at: issue.updated_at.clone(),
+            closed_at: issue.closed_at.clone(),
+            notes: with.notes.then(|| self.notes(&issue.id)).transpose()?,
+            events: with.events.then(|| self.events(&issue.id)).transpose()?,
+            claims: with
+                .claims
+                .then(|| -> Result<_> {
+                    Ok(self
+                        .claims(&issue.id)?
+                        .into_iter()
+                        .map(|mut claim| {
+                            let released_at = claim.released_at.take();
+                            let release_reason = claim.release_reason.take();
+                            ClaimHistory {
+                                claim: ClaimView::from(claim),
+                                released_at,
+                                release_reason,
+                            }
+                        })
+                        .collect())
                 })
-                .collect();
-            o.insert("claims".into(), json!(cl));
-        }
-        Ok(Value::Object(o))
+                .transpose()?,
+        })
     }
 
     pub fn show(&self, id: &str, with: With) -> Result<Value> {
         let id = self.resolve_id(id)?;
         let issue = self.issue(&id)?;
-        self.issue_json(&issue, with)
+        Ok(json!(self.issue_view(&issue, with)?))
     }
 
     pub fn notes(&self, id: &str) -> Result<Vec<Value>> {
@@ -205,7 +191,12 @@ impl Ctx<'_> {
     }
 
     /// `trk list`: issues matching the query.
-    pub fn list(&self, q: &str, sort: Option<&str>, limit: Option<usize>) -> Result<Vec<Value>> {
+    pub fn list(
+        &self,
+        q: &str,
+        sort: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<IssueView>> {
         let terms = query::parse(q)?;
         let compiled = query::compile(&terms, self)?;
         let mut sql = format!(
@@ -224,7 +215,7 @@ impl Ctx<'_> {
         drop(st);
         let mut out = vec![];
         for i in &issues {
-            out.push(self.issue_json(
+            out.push(self.issue_view(
                 i,
                 With {
                     deps: true,
@@ -242,7 +233,7 @@ impl Ctx<'_> {
     }
 
     /// Active and waiting agent sessions with their terminal and claim metadata.
-    pub fn runs(&self) -> Result<Vec<Value>> {
+    pub fn runs(&self) -> Result<Vec<RunView>> {
         let mut st = self.conn.prepare(&format!(
             "SELECT {CLAIM_COLS}, a.harness, a.meta, i.title
              FROM claim c JOIN actor a ON a.id = c.actor JOIN issue i ON i.id = c.issue_id
@@ -257,18 +248,21 @@ impl Ctx<'_> {
         })?;
         let mut out = vec![];
         for row in rows {
-            let (c, harness, meta, title) = row?;
-            let mut v = self.claim_json(&c);
-            v["issue"] = json!(c.issue_id);
-            v["state"] = json!(if c.released_at.is_some() {
-                "waiting"
+            let (mut c, harness, meta, title) = row?;
+            let issue = std::mem::take(&mut c.issue_id);
+            let state = if c.released_at.is_some() {
+                State::Waiting
             } else {
-                "claimed"
+                State::Claimed
+            };
+            out.push(RunView {
+                claim: ClaimView::from(c),
+                issue,
+                state,
+                title,
+                harness,
+                meta: serde_json::from_str(&meta).unwrap_or(json!({})),
             });
-            v["title"] = json!(title);
-            v["harness"] = json!(harness);
-            v["meta"] = serde_json::from_str(&meta).unwrap_or(json!({}));
-            out.push(v);
         }
         Ok(out)
     }

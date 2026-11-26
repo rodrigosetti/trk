@@ -277,4 +277,3 @@ fn waiting_check_ui_and_message_failures_are_independent_and_nonfatal() {
         assert_eq!(!ui.text("messages").is_empty(), notified, "{mode}");
     }
 }
-

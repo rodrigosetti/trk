@@ -36,4 +36,3 @@ pub(super) fn run(env: &Env, cmd: Cmd) -> Result<Out> {
         _ => unreachable!(),
     }
 }
-

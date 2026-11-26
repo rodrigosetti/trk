@@ -89,8 +89,8 @@ fn record(s: &mut Store, id: &str, check: &str, r: &CheckRun) -> CheckResult {
 fn ids(s: &Store, q: &str) -> Vec<String> {
     s.read(Some(HUMAN), |c| c.list(q, None, None))
         .unwrap()
-        .iter()
-        .map(|i| i["id"].as_str().unwrap().to_string())
+        .into_iter()
+        .map(|i| i.id)
         .collect()
 }
 
@@ -445,8 +445,8 @@ fn waiting_session_permissions_end_when_waiting_ends() {
             Code::NotPermitted
         );
         let runs = s.read(None, |c| c.runs()).unwrap();
-        assert_eq!(runs[0]["actor"], AGENT);
-        assert_eq!(runs[0]["state"], "waiting");
+        assert_eq!(runs[0].claim.actor, AGENT);
+        assert_eq!(runs[0].state, State::Waiting);
         match transition {
             "close" => s
                 .write(HUMAN, false, |c| c.close(&id, "done", None, false))
@@ -507,8 +507,8 @@ fn only_the_latest_session_can_act_when_waiting_again() {
     );
     let runs = s.read(None, |c| c.runs()).unwrap();
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0]["actor"], AGENT2);
-    assert_eq!(runs[0]["state"], "waiting");
+    assert_eq!(runs[0].claim.actor, AGENT2);
+    assert_eq!(runs[0].state, State::Waiting);
     assert_eq!(
         s.read(None, |c| c.session_claim(&id))
             .unwrap()
@@ -662,8 +662,11 @@ fn a_failed_check_restores_the_waiting_session_with_a_fresh_claim() {
     assert_eq!(active.terminal, original.terminal);
     assert_eq!(active.launcher, original.launcher);
     assert_eq!(
-        s.read(None, |c| c.runs()).unwrap()[0]["launcher"],
-        "local-terminal"
+        s.read(None, |c| c.runs()).unwrap()[0]
+            .claim
+            .launcher
+            .as_deref(),
+        Some("local-terminal")
     );
     assert_eq!(active.claimed_at, "2026-11-20T13:00:00Z");
     assert_eq!(active.lease_until.as_deref(), Some("2026-11-20T13:30:00Z"));
@@ -1479,8 +1482,8 @@ fn queries_and_sorts_use_type_not_issue_agent() {
     assert_eq!(ids(&s, "type=change"), std::slice::from_ref(&default));
     assert_eq!(ids(&s, "type=review"), std::slice::from_ref(&custom));
     let sorted = s.read(None, |c| c.list("", Some("-type"), None)).unwrap();
-    assert_eq!(sorted[0]["id"], custom);
-    assert_eq!(sorted[1]["id"], default);
+    assert_eq!(sorted[0].id, custom);
+    assert_eq!(sorted[1].id, default);
     assert_eq!(
         s.read(None, |c| c.list("agent=implementer", None, None))
             .unwrap_err()

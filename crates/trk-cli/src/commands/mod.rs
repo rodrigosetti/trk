@@ -15,13 +15,12 @@ mod state;
 
 use std::io::Read;
 
-use serde_json::Value;
 use trk_core::error::{Result, bad_args};
 use trk_core::view::With;
 
-use crate::{AgentCmd, Cmd, Global, HerdrCmd, check, dashboard, gc, herdr_ui, run};
 use crate::env::Env;
 use crate::render::{Out, Renderer};
+use crate::{AgentCmd, Cmd, Global, HerdrCmd, check, dashboard, gc, herdr_ui, run};
 
 pub(super) use mcp::serve as mcp;
 
@@ -59,7 +58,12 @@ fn show_one(env: &Env, store: &trk_core::Store, id: &str) -> Result<Out> {
     ))
 }
 
-pub(super) fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer) -> Result<Out> {
+pub(super) fn dispatch(
+    g: &Global,
+    cmd: Cmd,
+    completed: Vec<check::CheckView>,
+    r: &Renderer,
+) -> Result<Out> {
     if matches!(cmd, Cmd::Install { .. }) {
         return install::run(g, cmd);
     }
@@ -81,7 +85,9 @@ pub(super) fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer
     let env = Env::new(g)?;
     match cmd {
         Cmd::Install { .. } => unreachable!(),
-        Cmd::Herdr { cmd: HerdrCmd::Open { split, space } } => herdr::open(&env, split, space),
+        Cmd::Herdr {
+            cmd: HerdrCmd::Open { split, space },
+        } => herdr::open(&env, split, space),
         Cmd::Herdr { .. } => unreachable!(),
         Cmd::List { .. } | Cmd::Ready { .. } => list::run(&env, cmd),
         Cmd::Show { .. } => show::run(&env, cmd),

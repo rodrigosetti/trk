@@ -138,4 +138,3 @@ fn gc_revalidates_later_planned_issues_before_removing_their_resources() {
         }
     }
 }
-

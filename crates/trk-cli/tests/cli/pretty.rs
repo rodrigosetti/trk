@@ -132,4 +132,3 @@ fn pretty_priority_and_state_labels_are_readable_without_color() {
     assert!(!json.stdout.contains(&0x1b));
     serde_json::from_slice::<Value>(&json.stdout).unwrap();
 }
-

@@ -451,4 +451,3 @@ fn check_gc_config(fixture: &GcEnv, settings: &str) {
     assert!(text.lines().any(|line| line.trim() == "[check]"));
     std::fs::write(path, lines.join("\n") + "\n").unwrap();
 }
-

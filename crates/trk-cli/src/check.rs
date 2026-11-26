@@ -6,6 +6,10 @@
 //! so checks that merge never race each other.
 
 mod restart;
+mod view;
+
+pub(crate) use view::CheckView;
+use view::{CheckExecution, CheckOutcome, CheckPreview};
 
 use restart::Executable;
 pub(crate) use restart::resume;
@@ -487,7 +491,7 @@ fn run_check(
 
 #[derive(Default)]
 struct Pass {
-    results: Vec<Value>,
+    results: Vec<CheckView>,
     gc: Option<Value>,
 }
 
@@ -591,7 +595,7 @@ fn pass(
     a: &CheckArgs,
     interrupt: &Interrupt,
     executable: &Executable,
-    completed: &[Value],
+    completed: &[CheckView],
 ) -> Result<std::result::Result<Pass, Value>> {
     let actor = env.actor()?.to_string();
     let timeout = env.check_timeout()?;
@@ -616,7 +620,7 @@ fn pass(
                 let id = c.resolve_id(id)?;
                 c.issue(&id)
             })?;
-            if completed.iter().any(|r| r["issue"] == issue.id) {
+            if completed.iter().any(|r| r.issue == issue.id) {
                 return Ok(Ok(Pass::default()));
             }
             if issue.state != State::Waiting || issue.waiting_check.is_none() {
@@ -641,18 +645,22 @@ fn pass(
     };
     let queue: Vec<_> = queue
         .into_iter()
-        .filter(|i| !completed.iter().any(|r| r["issue"] == i.id))
+        .filter(|i| !completed.iter().any(|r| r.issue == i.id))
         .collect();
     if a.dry_run {
         let mut out = vec![];
         for i in &queue {
             let p = place(env, i);
-            out.push(json!({
-                "issue": i.id, "title": i.title, "result": "would_run",
-                "check": i.waiting_check, "reason": i.waiting_reason,
-                "cwd": p.as_ref().ok().map(|p| p.cwd.clone()),
-                "problem": p.err(),
-            }));
+            out.push(CheckView {
+                issue: i.id.clone(),
+                title: i.title.clone(),
+                outcome: CheckOutcome::WouldRun(CheckPreview {
+                    check: i.waiting_check.clone(),
+                    reason: i.waiting_reason.clone(),
+                    cwd: p.as_ref().ok().map(|p| p.cwd.clone()),
+                    problem: p.err(),
+                }),
+            });
         }
         return Ok(Ok(Pass {
             results: out,
@@ -758,76 +766,81 @@ fn pass(
             let _ = crate::run::notify_waiting_session(env, &i.id, &message, true);
         }
         let now = store.read(None, |c| c.issue(&i.id))?;
-        let mut v = json!({
-            "issue": i.id, "title": i.title, "result": result.as_str(),
-            "exit": run.exit, "timed_out": run.timed_out,
-            "duration_ms": started.elapsed().as_millis() as u64,
-            "state": now.state, "next_check_at": now.next_check_at,
+        out.push(CheckView {
+            issue: i.id.clone(),
+            title: i.title.clone(),
+            outcome: CheckOutcome::recorded(
+                result,
+                CheckExecution {
+                    exit: run.exit,
+                    timed_out: run.timed_out,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    state: now.state,
+                    next_check_at: now.next_check_at,
+                    output: matches!(result, CheckResult::Failed | CheckResult::Woken { .. })
+                        .then(|| run.output.trim_end().to_owned()),
+                },
+            ),
         });
-        if matches!(result, CheckResult::Failed | CheckResult::Woken { .. }) {
-            v["output"] = json!(run.output.trim_end());
-        }
-        out.push(v);
     }
     let gc = sweep(env, a);
     lock.release()?;
     Ok(Ok(Pass { results: out, gc }))
 }
 
-fn line(v: &Value, r: &Renderer) -> String {
-    let id = r.issue_id(v["issue"].as_str().unwrap_or(""));
-    let title = v["title"].as_str().unwrap_or("");
-    match v["result"].as_str().unwrap_or("") {
-        "passed" => format!(
+fn line(v: &CheckView, r: &Renderer) -> String {
+    let id = r.issue_id(&v.issue);
+    let title = &v.title;
+    match &v.outcome {
+        CheckOutcome::Passed(_) => format!(
             "{} {id}  {}  {title}",
             r.ready("✓"),
             r.ready("passed → closed")
         ),
-        "retry" => format!(
+        CheckOutcome::Retry(run) => format!(
             "{} {id}  {}  {title}",
             r.activity("◷"),
             r.activity(&format!(
                 "not yet (exit {CHECK_RETRY_EXIT}), next {}",
-                v["next_check_at"].as_str().map(until).unwrap_or_default()
+                run.next_check_at.as_deref().map(until).unwrap_or_default()
             ))
         ),
-        "failed" | "woken" => format!(
+        CheckOutcome::Failed(run) | CheckOutcome::Woken(run) => format!(
             "{} {id}  {} → {}, output in a note  {title}",
             r.failure("✗"),
-            r.failure(&if v["timed_out"].as_bool() == Some(true) {
+            r.failure(&if run.timed_out {
                 "timed out".to_string()
             } else {
-                match v["exit"].as_i64() {
+                match run.exit {
                     Some(c) => format!("failed (exit {c})"),
                     None => "could not run".to_string(),
                 }
             }),
-            if v["result"] == "woken" {
+            if matches!(&v.outcome, CheckOutcome::Woken(_)) {
                 "claimed, session woken"
             } else {
                 "open"
             }
         ),
-        "skipped" => format!(
+        CheckOutcome::Skipped(_) => format!(
             "{} {id}  {}  {title}",
             r.warning("-"),
             r.warning("changed while checking or delivering its wake")
         ),
-        "would_run" => {
+        CheckOutcome::WouldRun(preview) => {
             let mut s = format!(
                 "{id}  {title}\n    {}  {}",
                 r.activity("check"),
-                v["check"].as_str().unwrap_or("")
+                preview.check.as_deref().unwrap_or("")
             );
-            if let Some(c) = v["cwd"].as_str() {
-                s.push_str(&format!("\n    {}     {c}", r.activity("in")));
+            if let Some(c) = &preview.cwd {
+                s.push_str(&format!("\n    {}     {}", r.activity("in"), c.display()));
             }
-            if let Some(p) = v["problem"].as_str() {
+            if let Some(p) = &preview.problem {
                 s.push_str(&format!("\n    {} {p}", r.failure("✗")));
             }
             s
         }
-        other => format!("{id}  {other}"),
     }
 }
 
@@ -846,7 +859,7 @@ fn busy_text(h: &Value) -> String {
 pub fn check(
     env: &Env,
     a: CheckArgs,
-    mut completed: Vec<Value>,
+    mut completed: Vec<CheckView>,
     renderer: &Renderer,
 ) -> Result<Out> {
     let executable = Executable::new()?;

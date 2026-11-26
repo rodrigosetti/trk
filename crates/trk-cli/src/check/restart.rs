@@ -9,7 +9,7 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
-use serde_json::Value;
+use super::CheckView;
 use trk_core::error::Result;
 
 use crate::env::Env;
@@ -19,7 +19,7 @@ const HANDOFF: &str = "_TRK_CHECK_RESTART";
 /// Called first in main, before any threads or environment readers exist.
 /// The private handoff variable is restored to its original (possibly non-UTF8)
 /// value before parsing arguments or spawning subprocesses.
-pub(crate) fn resume() -> std::io::Result<Vec<Value>> {
+pub(crate) fn resume() -> std::io::Result<Vec<CheckView>> {
     let Some(value) = std::env::var_os(HANDOFF) else {
         return Ok(vec![]);
     };
@@ -41,7 +41,7 @@ pub(crate) fn resume() -> std::io::Result<Vec<Value>> {
     // SAFETY: this descriptor was transferred by Executable::restart, not
     // borrowed from another Rust owner; exec discarded the previous owners.
     let file = unsafe { File::from_raw_fd(fd) };
-    let (original, results): (Option<Vec<u8>>, Vec<Value>) = serde_json::from_reader(file)?;
+    let (original, results): (Option<Vec<u8>>, Vec<CheckView>) = serde_json::from_reader(file)?;
     // SAFETY: main calls this before any other work, while single-threaded.
     unsafe {
         match original {
@@ -93,7 +93,7 @@ impl Executable {
         Ok(Self::identity(&current) != self.identity)
     }
 
-    pub(super) fn restart(&self, env: &Env, results: &[Value]) -> Result<()> {
+    pub(super) fn restart(&self, env: &Env, results: &[CheckView]) -> Result<()> {
         // Never abandon durable ownership if a pass's cleanup/release failed.
         if env
             .store()?

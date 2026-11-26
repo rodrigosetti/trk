@@ -148,4 +148,3 @@ fn errors_and_exit_codes() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["ok"], false);
 }
-

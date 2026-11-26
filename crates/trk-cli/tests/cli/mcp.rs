@@ -331,4 +331,3 @@ fn mcp_server_over_stdio() {
     assert_eq!(f["type"], "research");
     assert_eq!(f["events"][0]["payload"]["followup_of"], json!(id));
 }
-

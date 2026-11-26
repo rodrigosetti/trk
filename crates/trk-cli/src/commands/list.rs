@@ -61,5 +61,9 @@ fn list(
     let items = store.read(env.actor.as_deref(), |c| {
         c.list(q.trim(), sort.as_deref(), limit)
     })?;
+    let items = items
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<_, _>>()?;
     Ok(Out::Issues { items, fields })
 }

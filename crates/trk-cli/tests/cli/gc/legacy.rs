@@ -266,4 +266,3 @@ fn gc_legacy_hc_failed_identity_probe_or_removal_never_records_success() {
         assert_eq!(fixture.notes(&id), notes);
     }
 }
-
