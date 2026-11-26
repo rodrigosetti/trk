@@ -25,6 +25,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Semantic terminal colors for `trk check` and `--watch`: highlighted issue IDs, check activity, successes, waiting/retries, warnings, and failures, respecting existing color-disable and JSON behavior.
 - Explicitly curated epics with create/list/rename/archive commands, cascading names, optional issue assignment and clearing in CLI/editor, archived-assignment validation, complete timeline events, and forward database migration.
 - Agent epic context: briefings and templates expose membership and active epic descriptions; MCP follow-ups can select existing active epics, with no epic-management tools. Interactive skill guidance covers explicit epic curation and omitting assignments when none fits.
+- Automatic consistent database snapshots before schema migrations, a stderr notice with the backup path, and retention of five automatic snapshots without pruning manual backups.
 
 ### Fixed
 

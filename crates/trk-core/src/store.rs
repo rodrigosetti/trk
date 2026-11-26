@@ -4,7 +4,7 @@
 //! leases, validate, check claims, write rows, append events, commit. Reads
 //! use deferred transactions.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use rusqlite_migration::{M, MigrationDefinitionError, Migrations};
@@ -171,6 +171,19 @@ impl Store {
 }
 
 fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<()> {
+    let database_version: u32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let needs_backup = (database_version as usize) < migrations.len()
+        && (database_version != 0
+            || conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?);
+    let backup = if needs_backup {
+        Some(migration_backup(conn, path)?)
+    } else {
+        None
+    };
     match Migrations::from_slice(migrations).to_latest(conn) {
         Err(rusqlite_migration::Error::MigrationDefinition(
             MigrationDefinitionError::DatabaseTooFarAhead,
@@ -198,8 +211,73 @@ fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<(
                  the database.",
             ))
         }
-        result => result.map_err(Into::into),
+        result => {
+            result?;
+            if let Some(backup) = backup {
+                eprintln!(
+                    "trk: migrated database from version {database_version} to {}; backup: {:?}",
+                    migrations.len(),
+                    backup
+                );
+            }
+            Ok(())
+        }
     }
+}
+
+const AUTOMATIC_BACKUP_LIMIT: usize = 5;
+
+fn migration_backup(conn: &Connection, path: &Path) -> Result<PathBuf> {
+    let directory = path.with_file_name("backups");
+    std::fs::create_dir_all(&directory)?;
+    let prefix = format!(
+        "{}.migration-",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    );
+    let backup = directory.join(format!(
+        "{prefix}{:020}-{:016x}.db",
+        jiff::Timestamp::now().as_nanosecond(),
+        rand::random::<u64>()
+    ));
+    conn.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])?;
+
+    // Only our timestamp/random names are eligible; manual backups stay intact.
+    let mut automatic = Vec::new();
+    for entry in std::fs::read_dir(&directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some((timestamp, random)) = name
+            .strip_prefix(&prefix)
+            .and_then(|name| name.strip_suffix(".db"))
+            .and_then(|name| name.split_once('-'))
+        else {
+            continue;
+        };
+        if timestamp.len() == 20
+            && timestamp.bytes().all(|b| b.is_ascii_digit())
+            && random.len() == 16
+            && random.bytes().all(|b| b.is_ascii_hexdigit())
+            && entry.file_type()?.is_file()
+        {
+            automatic.push(entry.path());
+        }
+    }
+    automatic.sort_unstable();
+    let mut remaining = automatic.len();
+    for old in &automatic {
+        if remaining <= AUTOMATIC_BACKUP_LIMIT {
+            break;
+        }
+        // Even if the clock moved backwards, keep the snapshot for this attempt.
+        if old != &backup {
+            std::fs::remove_file(old)?;
+            remaining -= 1;
+        }
+    }
+    Ok(backup)
 }
 
 fn migrations() -> [M<'static>; 4] {
@@ -628,6 +706,142 @@ mod tests {
         assert!(!path.exists());
         Store::install(&path, StoreOpts::default()).unwrap();
         Store::open(&path, StoreOpts::default()).unwrap();
+        assert!(!path.with_file_name("backups").exists());
+    }
+
+    #[test]
+    fn failed_migration_preserves_database_and_backup() {
+        for version in [0, 1] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("trk.db");
+            let mut conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+            conn.execute_batch(
+                "CREATE TABLE existing(value TEXT);
+                 INSERT INTO existing VALUES ('preserved');",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", version).unwrap();
+            let broken = [
+                M::up("CREATE TABLE existing(value TEXT);"),
+                M::up(
+                    "UPDATE existing SET value = 'lost';
+                     CREATE TABLE partial(value TEXT);
+                     INSERT INTO missing VALUES (1);",
+                ),
+            ];
+            assert!(migrate(&mut conn, &path, &broken).is_err());
+            let backups: Vec<_> = std::fs::read_dir(dir.path().join("backups"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(backups.len(), 1);
+            let backup = Connection::open(&backups[0]).unwrap();
+            for database in [&conn, &backup] {
+                assert_eq!(
+                    database
+                        .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+                        .unwrap(),
+                    version
+                );
+                assert_eq!(
+                    database
+                        .query_row("SELECT value FROM existing", [], |r| r.get::<_, String>(0))
+                        .unwrap(),
+                    "preserved"
+                );
+                assert_eq!(
+                    database
+                        .query_row(
+                            "SELECT count(*) FROM sqlite_schema WHERE name = 'partial'",
+                            [],
+                            |r| r.get::<_, u32>(0),
+                        )
+                        .unwrap(),
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn backup_failure_prevents_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let mut conn = Connection::open(&path).unwrap();
+        let steps = [
+            M::up("CREATE TABLE existing(value TEXT);"),
+            M::up("ALTER TABLE existing ADD COLUMN added TEXT;"),
+        ];
+        Migrations::from_slice(&steps[..1])
+            .to_latest(&mut conn)
+            .unwrap();
+        std::fs::write(dir.path().join("backups"), "not a directory").unwrap();
+        assert!(migrate(&mut conn, &path, &steps).is_err());
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+        assert!(conn.prepare("SELECT added FROM existing").is_err());
+    }
+
+    #[test]
+    fn migration_prunes_only_automatic_backups_and_keeps_current_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let mut conn = Connection::open(&path).unwrap();
+        let steps = [
+            M::up("CREATE TABLE existing(value TEXT);"),
+            M::up("ALTER TABLE existing ADD COLUMN added TEXT;"),
+        ];
+        Migrations::from_slice(&steps[..1])
+            .to_latest(&mut conn)
+            .unwrap();
+        let directory = dir.path().join("backups");
+        std::fs::create_dir(&directory).unwrap();
+        let manual = directory.join("manual.db");
+        let unrelated =
+            directory.join("other.db.migration-00000000000000000000-0000000000000000.db");
+        let malformed = directory.join("trk.db.migration-keep.db");
+        for path in [&manual, &unrelated, &malformed] {
+            std::fs::write(path, "keep").unwrap();
+        }
+        // Future timestamps exercise retention when the system clock goes backwards.
+        let old: Vec<_> = (0..7)
+            .map(|i| {
+                directory.join(format!(
+                    "trk.db.migration-9000000000000000000{i}-0000000000000000.db"
+                ))
+            })
+            .collect();
+        for path in &old {
+            std::fs::write(path, "old automatic backup").unwrap();
+        }
+        migrate(&mut conn, &path, &steps).unwrap();
+        for (index, path) in old.iter().enumerate() {
+            assert_eq!(path.exists(), index >= 3);
+        }
+        for path in [&manual, &unrelated, &malformed] {
+            assert_eq!(std::fs::read_to_string(path).unwrap(), "keep");
+        }
+        let entries: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(entries.len(), AUTOMATIC_BACKUP_LIMIT + 3);
+        let current = entries
+            .iter()
+            .find(|path| !old.contains(path) && ![&manual, &unrelated, &malformed].contains(path))
+            .unwrap();
+        let backup = Connection::open(current).unwrap();
+        assert_eq!(
+            backup
+                .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+        assert!(backup.prepare("SELECT added FROM existing").is_err());
     }
 
     #[test]
@@ -649,6 +863,30 @@ mod tests {
         let before = store.read(None, |c| c.events(&id)).unwrap();
         drop(store);
         let mut store = Store::open(&path, StoreOpts::default()).unwrap();
+        let backups: Vec<_> = std::fs::read_dir(dir.path().join("backups"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(backups.len(), 1);
+        let backup = Store {
+            conn: Connection::open(&backups[0]).unwrap(),
+            opts: StoreOpts::default(),
+        };
+        assert_eq!(
+            backup
+                .conn
+                .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(backup.read(None, |c| c.events(&id)).unwrap(), before);
+        assert_eq!(
+            store
+                .conn
+                .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+                .unwrap(),
+            migrations().len() as u32
+        );
         assert_eq!(store.read(None, |c| c.events(&id)).unwrap(), before);
         let inbox = store.write(human, false, |c| c.take_inbox(&id)).unwrap();
         assert_eq!(inbox[0]["body"], "preserved searchable reply");
