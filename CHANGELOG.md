@@ -30,6 +30,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 
 - Fixed Herdr Run confirmations silently refusing to launch after an earlier command completed across a project or fixed-tab context change; pending commands no longer arm another confirmation.
 - Launcher templates now expand placeholders only once, preserving literal placeholders in issue content and preventing re-expansion from corrupting shell quoting.
+- GC and automatic sweeps now remove historical local session directories with symlink-safe boundaries and report a fourth `session_dir` resource. New session directories and generated harness files use owner-only permissions; previously completed agent issues are requeued once for session-file cleanup.
 - Brighter, larger Herdr state and epic headings in dark and light themes, with every top-level state heading in ALL CAPS and smaller counts preserving the hierarchy.
 - Restored GC classification of historical claim paths: local primary-checkout claims own no disposable Git resources, and absent outside-root paths are reported as absent. Existing outside-root worktrees and branches held by stale Git registrations remain protected.
 - Herdr issue rows now indent beneath rendered epic subheaders, including **No epic**, while preserving shared responsive columns; grouping off and entirely unassigned state groups remain flat.
@@ -37,7 +38,6 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
 - The Herdr dashboard's wide list/details split now starts at 50/50 instead of a fixed list width, retaining user resizing and pane minimums.
 - Restored CI Clippy checks with narrowly scoped argument-count expectations on GC helpers, preserving cleanup safety gates and opt-in legacy recovery behavior.
-- GC and automatic sweeps now remove historical local session directories with symlink-safe boundaries and report a fourth `session_dir` resource. New session directories and generated harness files use owner-only permissions; previously completed agent issues are requeued once for session-file cleanup.
 
 ### Beta compatibility and upgrades
 
