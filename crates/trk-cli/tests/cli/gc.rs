@@ -1044,9 +1044,11 @@ fn gc_worktreeless_run_never_collects_a_coincidentally_named_branch() {
         .assert()
         .success();
     let claim = fixture.e.ok(&["show", &id])["claim"].clone();
-    let session_dir = fixture.e.trk_dir().join("sessions").join(
-        claim["actor"].as_str().unwrap().rsplit(':').next().unwrap(),
-    );
+    let session_dir = fixture
+        .e
+        .trk_dir()
+        .join("sessions")
+        .join(claim["actor"].as_str().unwrap().rsplit(':').next().unwrap());
     assert_eq!(claim["worktree"], Value::Null);
     assert!(!fixture.e.trk_dir().join("worktrees").join(&id).exists());
     assert!(!fixture.branch_exists(&id));
