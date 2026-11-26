@@ -28,6 +28,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 
 ### Fixed
 
+- Waiting checks now retain only a bounded 4096-byte stdout/stderr tail, mark truncated output in JSON and notes, avoid per-check log files on all exit paths, and remove legacy logs whose owner PID is gone.
 - Fixed Herdr Run confirmations silently refusing to launch after an earlier command completed across a project or fixed-tab context change; pending commands no longer arm another confirmation.
 - Launcher templates now expand placeholders only once, preserving literal placeholders in issue content and preventing re-expansion from corrupting shell quoting.
 - Brighter, larger Herdr state and epic headings in dark and light themes, with every top-level state heading in ALL CAPS and smaller counts preserving the hierarchy.
@@ -38,6 +39,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - The Herdr dashboard's wide list/details split now starts at 50/50 instead of a fixed list width, retaining user resizing and pane minimums.
 - Restored CI Clippy checks with narrowly scoped argument-count expectations on GC helpers, preserving cleanup safety gates and opt-in legacy recovery behavior.
 - Unified local PID probes without subprocesses; permission-denied processes count as alive. Hostname detection now uses a cached system call and treats unavailable or empty names as unknown.
+- Fixed Clippy's collapsible status check in Herdr layout migration without changing status parsing or offline fallback.
 
 ### Beta compatibility and upgrades
 

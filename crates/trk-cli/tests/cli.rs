@@ -49,6 +49,9 @@ mod type_guidance;
 #[path = "cli/check_colors.rs"]
 mod check_colors;
 
+#[path = "cli/check_output.rs"]
+mod check_output;
+
 #[path = "cli/epics.rs"]
 mod epics;
 
@@ -852,6 +855,14 @@ fn check_interruption(signal: &str) {
     assert_eq!(after["notes"], before["notes"]);
     assert_eq!(e.ok(&["log", &id]), log_before);
     assert_eq!(e.ok(&["whoami"])["check_running"], Value::Null);
+    assert!(
+        !e.trk_dir().join("checks").exists()
+            || std::fs::read_dir(e.trk_dir().join("checks"))
+                .unwrap()
+                .next()
+                .is_none(),
+        "interrupted check left a log behind"
+    );
 
     e.ok(&[
         "wait",

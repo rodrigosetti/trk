@@ -10,8 +10,10 @@ mod restart;
 use restart::Executable;
 pub(crate) use restart::resume;
 
-use std::collections::HashSet;
-use std::io::Write;
+use std::collections::{HashSet, VecDeque};
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -301,6 +303,104 @@ impl Drop for Interrupt {
     }
 }
 
+/// Old runners wrote these files. Only remove recognized logs whose owner is
+/// definitely gone; the caller holds the queue lock, so no check can race us.
+fn clean_check_logs(env: &Env) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(env.checks_dir()) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".log"))
+            .and_then(|name| name.rsplit_once('-'))
+            .and_then(|(_, pid)| pid.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        if !runner_alive(pid) && entry.file_type()?.is_file() {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+/// Drain output without blocking timeout/signal handling or growing a file.
+struct CheckOutput {
+    reader: UnixStream,
+    tail: VecDeque<u8>,
+    truncated: bool,
+    eof: bool,
+}
+
+impl CheckOutput {
+    /// Limit each drain so a continuously writing child cannot starve the
+    /// runner. After group cleanup this also bounds reads from escaped writers.
+    fn drain(&mut self) -> std::io::Result<bool> {
+        let mut buf = [0; CHECK_OUTPUT_TAIL];
+        for _ in 0..128 {
+            let n = match self.reader.read(&mut buf) {
+                Ok(0) => {
+                    self.eof = true;
+                    return Ok(false);
+                }
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(true),
+                Err(e) => return Err(e),
+            };
+            let discard = (self.tail.len() + n).saturating_sub(CHECK_OUTPUT_TAIL);
+            self.truncated |= discard > 0;
+            self.tail.drain(..discard);
+            self.tail.extend(&buf[..n]);
+        }
+        Ok(true)
+    }
+
+    fn wait(&self) -> std::io::Result<()> {
+        if self.eof {
+            std::thread::sleep(Duration::from_millis(50));
+            return Ok(());
+        }
+        let mut fd = libc::pollfd {
+            fd: self.reader.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: fd points to one initialized pollfd for the duration of poll.
+        if unsafe { libc::poll(&mut fd, 1, 50) } < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() != std::io::ErrorKind::Interrupted {
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(mut self, suffix: &str) -> String {
+        const TRUNCATED: &str = "[trk] output truncated; showing tail\n";
+        let text = String::from_utf8_lossy(self.tail.make_contiguous());
+        // Lossy UTF-8 decoding and the timeout diagnostic must fit the same
+        // budget as the captured bytes, including the truncation marker.
+        let truncated = self.truncated || text.len() + suffix.len() > CHECK_OUTPUT_TAIL;
+        let marker = if truncated { TRUNCATED } else { "" };
+        let budget = CHECK_OUTPUT_TAIL - marker.len() - suffix.len();
+        let mut start = text.len().saturating_sub(budget);
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        let mut output = String::with_capacity(marker.len() + text.len() - start + suffix.len());
+        output.push_str(marker);
+        output.push_str(&text[start..]);
+        output.push_str(suffix);
+        output
+    }
+}
+
 /// Run `sh -c check` in its own process group, with stdout and stderr
 /// captured together, for at most `timeout`.
 fn run_check(
@@ -312,11 +412,15 @@ fn run_check(
     lock: &mut Lock<'_>,
     interrupt: &Interrupt,
 ) -> std::io::Result<CheckRun> {
-    let dir = env.checks_dir();
-    std::fs::create_dir_all(&dir)?;
-    let log = dir.join(format!("{}-{}.log", issue.id, std::process::id()));
-    let out = std::fs::File::create(&log)?;
-    let err = out.try_clone()?;
+    let (reader, writer) = UnixStream::pair()?;
+    reader.set_nonblocking(true)?;
+    let mut output = CheckOutput {
+        reader,
+        tail: VecDeque::with_capacity(CHECK_OUTPUT_TAIL),
+        truncated: false,
+        eof: false,
+    };
+    let err = writer.try_clone()?;
     let mut cmd = Command::new("sh");
     // The gate prevents a crash between spawn and durable group registration
     // from leaving an untracked command running. EOF means do not execute.
@@ -328,8 +432,8 @@ fn run_check(
     ])
     .current_dir(&p.cwd)
     .stdin(Stdio::piped())
-    .stdout(out)
-    .stderr(err)
+    .stdout(OwnedFd::from(writer))
+    .stderr(OwnedFd::from(err))
     .env("TRK_ISSUE", &issue.id)
     .env("TRK_WORKTREE", &p.cwd)
     .env("TRK_BRANCH", &p.branch)
@@ -345,10 +449,12 @@ fn run_check(
     };
     interrupt.check()?;
     lock.start(&mut cmd)?;
+    drop(cmd);
     let started = Instant::now();
     let mut timed_out = false;
     let status = loop {
         interrupt.check()?;
+        let busy = output.drain()?;
         if let Some(st) = lock.child.as_mut().unwrap().try_wait()? {
             break Some(st);
         }
@@ -356,23 +462,26 @@ fn run_check(
             timed_out = true;
             break None;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        if !busy {
+            output.wait()?;
+        }
     };
     // Also stop background descendants after a successful shell exit.
     lock.finish()?;
     interrupt.check()?;
-    let mut output = String::from_utf8_lossy(&std::fs::read(&log)?).to_string();
-    let _ = std::fs::remove_file(&log);
-    if timed_out {
-        output.push_str(&format!(
+    output.drain()?;
+    let diagnostic = if timed_out {
+        format!(
             "\n[trk] killed after {}s: the check timeout ([check] timeout in config.toml)\n",
             timeout.as_secs()
-        ));
-    }
+        )
+    } else {
+        String::new()
+    };
     Ok(CheckRun {
         exit: status.and_then(|s| s.code()),
         timed_out,
-        output,
+        output: output.finish(&diagnostic),
     })
 }
 
@@ -498,6 +607,9 @@ fn pass(
             Err(holder) => return Ok(Err(holder)),
         }
     };
+    if queue_lock.is_some() {
+        clean_check_logs(env)?;
+    }
     let queue: Vec<Issue> = match &a.id {
         Some(id) => {
             let issue = store.read(None, |c| {
