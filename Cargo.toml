@@ -23,7 +23,8 @@ rand = "0.10"
 uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
 minijinja = "3.1"
-rmcp = { version = "3.11", features = ["server", "transport-io"] }
+# Upstream chrono opt-out (PR #1474); return to crates.io once released.
+rmcp = { version = "3.11", git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "9043cdfa8694d83bf506c2f3eb0313ec173edd7e", default-features = false, features = ["base64", "macros", "server", "transport-io"] }
 tokio = { version = "1", features = ["rt", "macros", "io-std", "time"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 anstream = "1.0"

@@ -166,10 +166,31 @@ esac
             .unwrap();
     }
 
+    fn session_claim(&self, id: &str, session: &str, host: &str) -> PathBuf {
+        let actor = format!("agent:omp:{session}");
+        self.store_at("2026-11-20T10:00:00Z")
+            .write(&actor, false, |context| {
+                context.claim(
+                    id,
+                    trk_core::ops::ClaimOpts {
+                        host: Some(host.into()),
+                        on_behalf_of: Some("human:alice@example.com".into()),
+                        ..Default::default()
+                    },
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let path = self.e.trk_dir().join("sessions").join(session);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("mcp.json"), "secret").unwrap();
+        path.canonicalize().unwrap()
+    }
+
     fn close_at(&self, id: &str, reason: &str, now: &str) {
         self.store_at(now)
             .write("human:alice@example.com", false, |context| {
-                context.close(id, reason, None, false)
+                context.close(id, reason, None, true)
             })
             .unwrap();
     }

@@ -53,6 +53,7 @@ trk check --watch         # keep doing that; leave it running in a spare termina
 trk check orch-4kq        # run one now
 trk check --dry-run       # preview checks and eligible cleanup without changing anything
 trk check --no-gc         # run checks without automatic cleanup (also works with --watch)
+trk check --unlock        # human-only stale-lock recovery; inspect/stop old checks first
 trk list state=waiting    # what is waiting, on what, and when it is checked next
 ```
 
@@ -106,7 +107,8 @@ completed the request. `trk send` only delivers text; it does not restore a wait
 
 CLI resume refuses agent actors with `not_permitted`; agents must request human
 authorization for this path, never impersonate a human. Empty messages return `bad_args`.
-A busy check queue returns `invalid_state`: retry after it finishes; do not clear its lock.
+A busy check queue returns `invalid_state`: retry after it finishes. For a stale holder,
+use the human-only recovery procedure below, never clear a potentially running check.
 A gone or unknown terminal/session (including a remote or unknown host), missing
 terminal or missing send configuration also returns `invalid_state`. A human can instead run
 `trk reopen orch-4kq -m "Restart with the decision"` then `trk run orch-4kq`.
@@ -251,10 +253,26 @@ recording a partial result. Checks must not detach from their process group.
 
 After SIGKILL or a runner crash, a new runner reports busy while the previous runner
 or any live member of its recorded group survives. Once both are gone, it recovers
-automatically; zombie processes do not block recovery. `trk whoami` shows
-`check_running.pid`, `.host` and `.pgid`. A different/unknown host or unavailable
-process information prevents automatic takeover. Inspect/stop surviving checks on
-the owning host before retrying; never delete the lock while a check can still run.
+automatically; zombie group members do not block recovery. A recycled PID is not a
+runner: elapsed process time from `ps` must establish that it started after the lock's
+`started_at`. Ambiguous/subsecond timing or failed probes retain ownership. Lock timestamps
+use physical time, independently of the issue clock (`TRK_NOW`).
+`trk whoami` shows `check_running.pid`, `.host`, `.started_at` and `.pgid`.
+A different/unknown host or unavailable process information prevents automatic takeover.
+
+For a stale lock that cannot recover automatically (for example, after a hostname change),
+a **human** can run `trk check --unlock`. First inspect the recorded holder and verify
+on the owning host that both the runner and its check group have stopped. Never unlock
+while a check can still run: unknown/remote hosts cannot be verified locally, so this
+command trusts the human's inspection. It refuses a possibly live local runner or group,
+and refuses agent actors with `not_permitted`; agents must ask the human, not impersonate one.
+Unlock cannot be combined with an issue ID, `--all`, `--watch`, `--dry-run` or `--no-gc`.
+It runs no checks and performs no GC. It displays the cleared holder and records a global
+`note` in `trk log`, attributed to the human, with `payload.check_unlock` containing the
+holder's PID, host, timestamp and process group. JSON returns `unlocked` and `holder`.
+A changed holder is refused rather than clearing a new lock; an already unlocked queue
+returns `unlocked: false` without an audit event. Retry the original check, resume or GC
+command after recovery.
 
 A check is written by an agent and runs later, unattended, as you. `trk show` always prints it in
 full, and `trk check --dry-run` shows the queue before anything runs.

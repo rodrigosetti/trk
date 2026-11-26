@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use trk_core::config::parse_duration;
 use trk_core::error::{Code, Error, Result};
-use trk_core::model::{CHECK_RETRY_EXIT, Issue, State};
+use trk_core::model::{ActorId, CHECK_RETRY_EXIT, Issue, State};
 use trk_core::ops::{CHECK_OUTPUT_TAIL, CheckResult, CheckRun};
 use trk_core::system::{Liveness, group_liveness, hostname, process_liveness};
 
@@ -42,6 +42,7 @@ pub struct CheckArgs {
     pub watch: Option<Option<String>>,
     pub dry_run: bool,
     pub no_gc: bool,
+    pub unlock: bool,
 }
 
 const WATCH_PAUSE: &str = "30s";
@@ -136,7 +137,7 @@ fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, V
         // waiting for an external command, even during stale-lock recovery.
         if let Some((p, h, started, pgid)) = &previous {
             let here = host.is_some() && h.as_deref() == host;
-            if !here || runner_alive(*p) || pgid.is_some_and(group_alive) {
+            if !here || holder_alive(*p, started) || pgid.is_some_and(group_alive) {
                 return Ok(Err(json!({
                     "pid": p, "host": h, "started_at": started, "pgid": pgid,
                 })));
@@ -167,7 +168,7 @@ pub(crate) fn with_queue_lock<T>(env: &Env, f: impl FnOnce() -> Result<T>) -> Re
     let mut lock = lock(env, &actor)?.map_err(|holder| {
         Error::new(Code::InvalidState, "check queue is busy; resume refused")
             .with_detail("holder", holder)
-            .with_hint("wait for the in-flight check and retry `trk resume`")
+            .with_hint("wait for the in-flight check and retry `trk resume`; for a stale holder, ask a human to inspect it and run `trk check --unlock`")
     })?;
     let result = f()?;
     lock.release()?;
@@ -185,7 +186,7 @@ pub(crate) fn with_gc_lock<T>(
     let busy = |holder| {
         Error::new(Code::InvalidState, "check queue is busy; gc refused")
             .with_detail("holder", holder)
-            .with_hint("wait for the in-flight check and retry `trk gc`")
+            .with_hint("wait for the in-flight check and retry `trk gc`; for a stale holder, ask a human to inspect it and run `trk check --unlock`")
     };
     if dry_run {
         let host = hostname();
@@ -193,7 +194,7 @@ pub(crate) fn with_gc_lock<T>(
         if let Some((pid, holder_host, started, pgid)) = previous
             && (host.is_none()
                 || holder_host.as_deref() != host
-                || runner_alive(pid)
+                || holder_alive(pid, &started)
                 || pgid.is_some_and(group_alive))
         {
             return Err(busy(json!({
@@ -243,6 +244,57 @@ fn kill_group(pgid: u32, signal: i32) {
 fn runner_alive(pid: i64) -> bool {
     // Unknown liveness cannot establish that it is safe to take the lock.
     process_liveness(pid) != Liveness::Gone
+}
+
+fn holder_alive(pid: i64, started: &str) -> bool {
+    match process_liveness(pid) {
+        Liveness::Gone => return false,
+        Liveness::Unknown => return true,
+        Liveness::Alive => {}
+    }
+    // ps elapsed time is portable across macOS/Linux and avoids local-time
+    // ambiguity in lstart. Sample before ps and subtract another second for its
+    // rounding: only a process definitely newer than the lock proves PID reuse.
+    let observed = jiff::Timestamp::now().as_second();
+    let reused = || -> Option<bool> {
+        let locked = started.parse::<jiff::Timestamp>().ok()?.as_second();
+        let out = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "etime="])
+            .env("LC_ALL", "C")
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = std::str::from_utf8(&out.stdout).ok()?.trim();
+        let (days, clock) = match text.split_once('-') {
+            Some((days, clock)) => (days.parse::<i64>().ok()?, clock),
+            None => (0, text),
+        };
+        let mut fields = clock.rsplit(':');
+        let seconds = fields.next()?.parse::<i64>().ok()?;
+        let minutes = fields.next()?.parse::<i64>().ok()?;
+        let hours = fields
+            .next()
+            .map(str::parse::<i64>)
+            .transpose()
+            .ok()?
+            .unwrap_or(0);
+        if fields.next().is_some()
+            || days < 0
+            || hours < 0
+            || !(0..60).contains(&minutes)
+            || !(0..60).contains(&seconds)
+        {
+            return None;
+        }
+        let elapsed = days
+            .checked_mul(86400)?
+            .checked_add(hours.checked_mul(3600)?)?
+            .checked_add(minutes * 60 + seconds)?;
+        Some(observed.checked_sub(elapsed)?.checked_sub(1)? > locked)
+    };
+    !reused().unwrap_or(false)
 }
 
 fn group_alive(pgid: i64) -> bool {
@@ -534,7 +586,7 @@ fn gc_lines(gc: Option<&Value>, seen_skips: &mut HashSet<String>, r: &Renderer) 
     if let Some(issues) = gc["issues"].as_array() {
         for issue in issues {
             let id = issue["id"].as_str().unwrap_or_default();
-            let removed: Vec<_> = ["session", "worktree", "branch"]
+            let removed: Vec<_> = ["session", "session_dir", "worktree", "branch"]
                 .into_iter()
                 .filter(|resource| issue[*resource]["status"] == "removed")
                 .collect();
@@ -551,7 +603,7 @@ fn gc_lines(gc: Option<&Value>, seen_skips: &mut HashSet<String>, r: &Renderer) 
                 ));
             }
             if !seen_skips.contains(id) {
-                let reasons = ["session", "worktree", "branch"]
+                let reasons = ["session", "session_dir", "worktree", "branch"]
                     .into_iter()
                     .filter(|resource| issue[*resource]["status"] == "skipped")
                     .map(|resource| {
@@ -846,7 +898,7 @@ fn line(v: &CheckView, r: &Renderer) -> String {
 
 fn busy_text(h: &Value) -> String {
     format!(
-        "another `trk check` is running (pid {}{}, since {}); nothing done",
+        "check queue is busy (pid {}{}, since {}); nothing done. For a stale holder, ask a human to inspect it and run `trk check --unlock`",
         h["pid"],
         h["host"]
             .as_str()
@@ -856,12 +908,61 @@ fn busy_text(h: &Value) -> String {
     )
 }
 
+fn unlock(env: &Env) -> Result<Out> {
+    let actor = env.actor()?;
+    if ActorId::parse(actor)?.is_agent() {
+        return Err(Error::new(
+            Code::NotPermitted,
+            "only a human may unlock the check queue",
+        )
+        .with_hint("ask the human to inspect the holder and run `trk check --unlock`"));
+    }
+    let mut store = env.store()?;
+    let holder = store.read(None, |c| c.check_lock())?;
+    if let Some((pid, host, started, pgid)) = &holder
+        && hostname().is_some_and(|here| host.as_deref() == Some(here))
+        && (holder_alive(*pid, started) || pgid.is_some_and(group_alive))
+    {
+        return Err(Error::new(
+            Code::InvalidState,
+            "check queue holder may still be running; unlock refused",
+        )
+        .with_detail(
+            "holder",
+            json!({
+                "pid": pid, "host": host, "started_at": started, "pgid": pgid,
+            }),
+        )
+        .with_hint("stop the runner and its check process group before unlocking"));
+    }
+    let unlocked = store.write(actor, false, |c| c.check_lock_unlock(holder.as_ref()))?;
+    let holder = holder.map(|(pid, host, started, pgid)| {
+        json!({
+            "pid": pid, "host": host, "started_at": started, "pgid": pgid,
+        })
+    });
+    let text = match &holder {
+        Some(h) => format!(
+            "unlocked check queue (pid {}, host {}, since {}, pgid {})",
+            h["pid"], h["host"], h["started_at"], h["pgid"],
+        ),
+        None => "check queue is not locked; nothing done".to_string(),
+    };
+    Ok(Out::Text(
+        text,
+        json!({"unlocked": unlocked, "holder": holder}),
+    ))
+}
+
 pub fn check(
     env: &Env,
     a: CheckArgs,
     mut completed: Vec<CheckView>,
     renderer: &Renderer,
 ) -> Result<Out> {
+    if a.unlock {
+        return unlock(env);
+    }
     let executable = Executable::new()?;
     let interrupt = Interrupt::new()?;
     let mut seen_skips = HashSet::new();

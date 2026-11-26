@@ -275,6 +275,9 @@ enum Cmd {
         /// Skip automatic closed-issue cleanup for this run or watch loop
         #[arg(long)]
         no_gc: bool,
+        /// Human-only recovery after verifying that the old checks have stopped
+        #[arg(long, conflicts_with_all = ["id", "all", "watch", "dry_run", "no_gc"])]
+        unlock: bool,
     },
     /// Append a note (text, or - / nothing for stdin)
     Note {
