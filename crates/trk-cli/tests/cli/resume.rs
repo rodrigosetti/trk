@@ -15,7 +15,7 @@ pub(super) fn success(command: Command, args: &[&str]) -> Value {
     let (code, value) = response(command, args);
     assert_eq!(code, 0, "{args:?}: {value:#}");
     assert_eq!(value["ok"], true, "{args:?}: {value:#}");
-    assert_eq!(value["schema_version"], 4);
+    assert_eq!(value["schema_version"], 5);
     value["data"].clone()
 }
 

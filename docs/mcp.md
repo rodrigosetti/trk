@@ -83,7 +83,6 @@ the issue remains waiting:
 
 - Read the task.
 - Call `add_note`, `link` and `report_followup`, if included.
-- Receive inbox messages, if inbox delivery is enabled.
 - Report an actual human chat reply through `resume`, if included and the wait has
   no check with `[wait] chat_resume` enabled.
 
@@ -154,21 +153,13 @@ MCP error flag. Transport/internal task failures can be MCP protocol errors.
 A failed tool call does not terminate the stdio server or yield a CLI exit code.
 Server startup failures go to stderr and exit 1; stdout belongs to MCP.
 
-## Task resource and inbox
+## Task resource
 
 The server advertises `trk://task` with MIME type `application/json`. Reading it
 returns the issue with dependencies and notes, without a claim requirement. It
 is independent of `trk_tools.include`, and is not byte-for-byte identical to
-`get_task`: the tool adds `routing`, and only tool calls deliver inbox messages.
+`get_task`: the tool adds `routing`.
 Unknown resource URIs return an MCP resource-not-found error.
-
-With `inbox = true` in the agent definition, a human's
-`trk note <ID> --to-agent "message"` is attached once as `messages_for_you` to the
-owning active or waiting session's next processed tool result, including a domain
-error result. Each message has `seq`, `from`, `at` and `body`. Delivery marks it
-consumed; the note remains in the issue history. Old or unrelated sessions cannot
-consume it. Unknown tool calls and store-open failures return before inbox
-processing, and resource reads do not consume messages.
 
 Implementation: [tool schemas](https://github.com/rodrigosetti/trk/blob/main/crates/trk-agent/src/tools.rs),
 [tool execution](https://github.com/rodrigosetti/trk/blob/main/crates/trk-agent/src/exec.rs),

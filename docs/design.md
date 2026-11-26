@@ -268,7 +268,6 @@ and subsequent migrations define the current database:
 | `link` | Current issue URLs and labels; changes remain in events |
 | `claim` | All claims, including released claims and pinned launcher identity |
 | `event` | Append-only attributed history with JSON payloads |
-| `inbox` | Delivery bookkeeping for notes addressed to a session |
 | `check_lock` | Serialized queue owner and active process group |
 | `search` | FTS5 index of titles, descriptions and notes |
 

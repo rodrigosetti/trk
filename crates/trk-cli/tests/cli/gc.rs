@@ -407,7 +407,7 @@ fn gc_success(mut command: Command, args: &[&str]) -> Value {
     });
     assert!(output.status.success(), "{args:?}: {value:#}");
     assert_eq!(value["ok"], true, "{value:#}");
-    assert_eq!(value["schema_version"], 4);
+    assert_eq!(value["schema_version"], 5);
     assert!(value["data"]["dry_run"].is_boolean(), "{value:#}");
     assert!(value["data"]["issues"].is_array(), "{value:#}");
     value["data"].clone()

@@ -503,7 +503,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
         sent = ok;
     }
     let mut text = format!(
-        "Started {agent_name} ({hname}) on {id} in terminal {terminal}\n  actor    {actor}\n  cwd      {cwd_s}\n  attach   trk attach {id}\n  steer    trk send {id} \"…\"  or  trk note {id} --to-agent \"…\"",
+        "Started {agent_name} ({hname}) on {id} in terminal {terminal}\n  actor    {actor}\n  cwd      {cwd_s}\n  attach   trk attach {id}\n  steer    trk send {id} \"…\"",
     );
     if let Some(placement) = &placement {
         text.push_str(&format!("\n  ui       {}", placement.description()));

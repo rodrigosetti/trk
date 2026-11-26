@@ -86,7 +86,7 @@ Pretty `trk show` displays the same nonzero count as a `wakes` line while claime
 | `trk reopen <ID> [-m NOTE]` | waiting or closed → open |
 | `trk resume <ID> -m MESSAGE` | Human-authorized waiting → claimed for the original live session, then deliver the required message |
 | `trk check [ID] [--all] [--watch [PAUSE]] [--dry-run] [--no-gc]` | Run waiting checks, one at a time, then optionally sweep closed-as-done resources |
-| `trk note <ID> [TEXT or -] [--amends SEQ] [--to-agent]` | Append a note |
+| `trk note <ID> [TEXT or -] [--amends SEQ]` | Append a note |
 | `trk dep add or rm <BLOCKER> <BLOCKED>` | Blocker edges |
 | `trk link <ID> <URL> [-l LABEL]`, `trk unlink <ID> <URL>` | Attach or remove an http(s) address the dashboard opens (a pull request, a preview) |
 | `trk log [ID]` | Issue timeline, or all project events including epic changes without an ID |
@@ -146,7 +146,7 @@ Keep legacy definitions until migrating issues with `trk edit <ID> --type change
 or custom equivalents, considering blocker dependencies. Remove legacy reviewer/review
 prompts only when unused.
 
-`trk attach <ID>` interactively takes over the same terminal as `send`; suggest it to the user rather than running it. Active claims take precedence even without a terminal. With no active claim, `send`, `attach` and inbox delivery use the latest claim only if released with reason `waiting` and the issue is still waiting. That session may add notes and report follow-ups; lifecycle changes require a restored claim. For an enabled no-check wait, it can report an actual unmarked human chat reply through MCP `resume` to restore its claim. Once the issue closes, reopens or is claimed again, the old session loses this access.
+`trk attach <ID>` interactively takes over the same terminal as `send`; suggest it to the user rather than running it. Active claims take precedence even without a terminal. With no active claim, `send` and `attach` use the latest claim only if released with reason `waiting` and the issue is still waiting. That session may add notes and report follow-ups; lifecycle changes require a restored claim. For an enabled no-check wait, it can report an actual unmarked human chat reply through MCP `resume` to restore its claim. Once the issue closes, reopens or is claimed again, the old session loses this access.
 
 `[run] base` in `.trk/config.toml` selects the base branch. When writing a new config,
 `trk install` detects the branch named by `origin/HEAD`, then the current branch of the

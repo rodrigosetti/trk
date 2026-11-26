@@ -6,7 +6,6 @@ trk run orch-4kq                 # claim as agent:<harness>:<uuid>, create the w
 trk runs                         # active and waiting sessions: terminal/session and separate MCP liveness
 trk dashboard                    # live full-screen overview of all of this; ? lists the keys
 trk attach orch-4kq              # take over the terminal
-trk note orch-4kq --to-agent "Also update the docs"   # delivered with the agent's next tool result
 trk send orch-4kq "Wrap up and finish"                # typed into the session
 trk reap                         # release active claims whose local terminal is confirmed gone, with a note
 trk run orch-4kq --dry-run       # print the launch spec; claims nothing
@@ -90,7 +89,7 @@ advertises the active choices, but exposes no epic-management tools.
 
 Leaving an issue waiting releases the claim, not the terminal. While the issue stays
 waiting, the actor of its latest claim released with reason `waiting` can still call
-`add_note`, `link` and `report_followup`, and receive `--to-agent` notes with its next tool result.
+`add_note`, `link` and `report_followup`.
 It cannot call `wait`, `close` or `hand_back` again without a claim. `trk send` and
 `trk attach` use that waiting session's terminal when there is no active claim; an
 active claim always takes precedence, even if it has no terminal. `trk runs` marks

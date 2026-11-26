@@ -284,14 +284,13 @@ trk run --json                            # start the first ready issue
 trk run <ID> --dry-run --json             # preview: agent, harness, worktree, briefing
 trk run <ID> --json                       # claim and start the agent in its own terminal
 trk runs --json                           # active/waiting sessions: terminal/session and separate MCP liveness
-trk note <ID> --to-agent "Also update the docs" --json   # delivered with its next tool result
 trk send <ID> "Wrap up and finish" --json                # typed into its terminal
 trk reap --json                           # release active claims whose local terminal is confirmed gone
 ```
 
 Only ready issues can be run. A session releases its claim by closing, waiting or handing back; a failed check wakes its original live session, otherwise reopens the issue with notes telling the next session why. Do not run `trk attach`: it takes over the terminal interactively, so suggest it to the user instead.
 
-The waiting session is the actor of the latest claim released with reason `waiting`, only while the issue is still waiting. It can keep notes, file follow-ups and receive `--to-agent` messages, but cannot `wait`, `close` or `hand_back` again until its claim is restored by an eligible resume or wake. `send` and `attach` use its terminal when no active claim exists; an active claim always wins, even without a terminal. `runs` marks it with `state: "waiting"`; its lease is historical and `reap` skips it. Closing, reopening or a replacement claim ends the old session's access.
+The waiting session is the actor of the latest claim released with reason `waiting`, only while the issue is still waiting. It can keep notes and file follow-ups, but cannot `wait`, `close` or `hand_back` again until its claim is restored by an eligible resume or wake. `send` and `attach` use its terminal when no active claim exists; an active claim always wins, even without a terminal. `runs` marks it with `state: "waiting"`; its lease is historical and `reap` skips it. Closing, reopening or a replacement claim ends the old session's access.
 
 CLI session liveness requires a known claim host matching this machine and a nonblank terminal. Herdr discovers exact terminals. Other named profiles can configure optional `exists` argv using `{name}`, for example `exists = ["tmux", "has-session", "-t", "{name}"]`: exit 0 means live, nonzero means gone, and command errors or a missing/empty operation mean unknown. Unknown sessions are not automatically woken, CLI-resumed or reaped; failed checks reopen instead. Automatic wakes and CLI resume require the claim's named profile and its `send`; MCP chat resume performs neither liveness probing nor delivery.
 

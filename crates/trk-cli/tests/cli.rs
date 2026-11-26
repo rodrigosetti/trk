@@ -261,7 +261,7 @@ send       = ["hc", "send", "{name}", "{text}"]
         let (code, v) = self.run(args);
         assert_eq!(code, 0, "{args:?} failed: {v:#}");
         assert_eq!(v["ok"], true);
-        assert_eq!(v["schema_version"], 4);
+        assert_eq!(v["schema_version"], 5);
         v["data"].clone()
     }
 

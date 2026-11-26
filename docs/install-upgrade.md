@@ -96,6 +96,21 @@ keeps existing configuration files, and lists files that differ from the seed.
 For `config.toml`, only harness-profile differences count as drift, not project identity
 or formatting. `--force` rewrites supplied files but still does not prune other files.
 
+Any command that opens an older database (including `trk list`) applies pending schema
+migrations. Before changing an existing schema, trk creates a consistent `VACUUM INTO`
+snapshot in `.trk/backups/` (or `backups/` beside a custom database). A successful
+migration prints one stderr line with the old/new SQLite versions and the backup path;
+JSON stdout is unchanged. New empty databases and already-current schemas create no
+automatic backup or notice.
+
+Automatic snapshots are named `trk.db.migration-<timestamp>-<random>.db`. trk retains
+the five newest automatic snapshots for that database, always preserving the current
+attempt's snapshot even if the clock moved backwards. Manual backups are not pruned.
+If creating or pruning backups fails, migration does not start. Failed migrations
+roll back schema/data changes and leave their pre-migration snapshot in place.
+These database-only snapshots do not replace backing up configuration and other `.trk/`
+files. To inspect an old snapshot without migrating it, use SQLite directly, not trk.
+
 To adopt the new built-in types and landing workflow:
 
 1. Install the chosen preset to add `types/change.toml` and the other missing resources.

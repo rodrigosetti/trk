@@ -25,6 +25,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Semantic terminal colors for `trk check` and `--watch`: highlighted issue IDs, check activity, successes, waiting/retries, warnings, and failures, respecting existing color-disable and JSON behavior.
 - Explicitly curated epics with create/list/rename/archive commands, cascading names, optional issue assignment and clearing in CLI/editor, archived-assignment validation, complete timeline events, and forward database migration.
 - Agent epic context: briefings and templates expose membership and active epic descriptions; MCP follow-ups can select existing active epics, with no epic-management tools. Interactive skill guidance covers explicit epic curation and omitting assignments when none fits.
+- Automatic consistent database snapshots before schema migrations, a stderr notice with the backup path, and retention of five automatic snapshots without pruning manual backups.
 
 ### Changed
 
@@ -48,6 +49,11 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Unified local PID probes without subprocesses; permission-denied processes count as alive. Hostname detection now uses a cached system call and treats unavailable or empty names as unknown.
 - Fixed Clippy's collapsible status check in Herdr layout migration without changing status parsing or offline fallback.
 - Removed transitive unmaintained `chrono` by pinning rmcp's upstream opt-out change and retaining the existing non-chrono MCP features; MCP tests pass on Rust 1.89.
+
+### Removed
+
+- Removed the agent inbox: `trk note --to-agent`, MCP `messages_for_you`, the agent `inbox` setting, and both dashboards' note-to-agent actions. Use `trk send` for live steering or Resume to authorize continuation.
+- Output schema version 5 removes `to_agent` from note JSON and history markers; old note events remain ordinary notes. The database migration drops the inbox table. Remove `inbox` from existing `.trk/agents/*.toml` before starting sessions.
 
 ### Beta compatibility and upgrades
 

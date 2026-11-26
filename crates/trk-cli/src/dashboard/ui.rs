@@ -17,7 +17,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
     Note,
-    NoteToAgent,
     Send,
     Resume { id: String },
 }
@@ -238,14 +237,7 @@ pub fn describe(e: &Event) -> String {
         "close" => format!("closed ({})", reason.unwrap_or("done")),
         "reopen" if p["by_check"] == true => "open again after a failed check".into(),
         "reopen" => "reopened".into(),
-        "note" => {
-            let to = if p["to_agent"] == true {
-                " to agent"
-            } else {
-                ""
-            };
-            format!("note{to}: {}", first_line(p["body"].as_str().unwrap_or("")))
-        }
+        "note" => format!("note: {}", first_line(p["body"].as_str().unwrap_or(""))),
         "set" => match p["changes"].as_object() {
             Some(c) => format!(
                 "changed {}",
@@ -893,24 +885,14 @@ fn detail_lines(i: &DashIssue, detail: Option<&Detail>, ui: &Ui) -> Vec<Line<'st
             if nth > 0 {
                 out.push(Line::default());
             }
-            out.push(Line::from(vec![
-                Span::styled(
-                    format!(
-                        "  {} · {}",
-                        relative(n["at"].as_str().unwrap_or(""), now),
-                        short_actor(n["actor"].as_str().unwrap_or(""))
-                    ),
-                    Style::new().fg(Color::Yellow),
+            out.push(Line::from(Span::styled(
+                format!(
+                    "  {} · {}",
+                    relative(n["at"].as_str().unwrap_or(""), now),
+                    short_actor(n["actor"].as_str().unwrap_or(""))
                 ),
-                Span::styled(
-                    if n["to_agent"] == true {
-                        " · to agent"
-                    } else {
-                        ""
-                    },
-                    dim(),
-                ),
-            ]));
+                Style::new().fg(Color::Yellow),
+            )));
             markdown(n["body"].as_str().unwrap_or(""), &mut out);
         }
     }
@@ -1036,7 +1018,6 @@ fn footer(frame: &mut Frame, area: Rect, ui: &Ui) {
         Mode::Input { kind, text } => Some(prompt(
             match kind {
                 Input::Note => "note",
-                Input::NoteToAgent => "note to agent",
                 Input::Send => "send text only",
                 Input::Resume { .. } => "resume + send (Enter submit · Esc cancel)",
             },
@@ -1113,7 +1094,7 @@ const HELP: &[(&str, &str)] = &[
         "resume waiting: restore original ownership + send instructions",
     ),
     ("l", "open the issue's first link in the browser"),
-    ("m  M", "add a note; M queues it for the agent"),
+    ("m", "add a note"),
     ("x", "close as done or abandoned"),
     ("o", "reopen a waiting issue"),
     ("u", "unclaim: release the claim, open again"),

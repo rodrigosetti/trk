@@ -3,7 +3,6 @@ description = "Performs a service operation and records the outcome with evidenc
 
 instructions = "prompts/operator.instructions.md.j2"
 briefing     = "prompts/briefing.md.j2"
-inbox        = true
 
 # Extend with project cloud or observability MCP servers, e.g.:
 # [[mcp]]

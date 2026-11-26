@@ -247,7 +247,7 @@ fn claim_close_and_claimant_rules() {
     assert_eq!(e.code(), Code::ClaimedByOther);
     // Agents write only to what they claim.
     let e = s
-        .write(AGENT2, false, |c| c.note(&id, "hi", None, false))
+        .write(AGENT2, false, |c| c.note(&id, "hi", None))
         .unwrap_err();
     assert_eq!(e.code(), Code::NotPermitted);
     // A human needs --force to close someone else's claim.
@@ -379,10 +379,8 @@ fn waiting_releases_the_claim_and_keeps_the_worktree() {
     assert_eq!(v["derived"]["due"], true);
     assert_eq!(ids(&s, "due"), vec![id.clone()]);
     // The waiting session may keep notes without reclaiming the issue.
-    s.write(AGENT, false, |c| {
-        c.note(&id, "review addressed", None, false)
-    })
-    .unwrap();
+    s.write(AGENT, false, |c| c.note(&id, "review addressed", None))
+        .unwrap();
     assert!(s.read(None, |c| c.active_claim(&id)).unwrap().is_none());
     // A waiting issue cannot be claimed; a human changes its check in place.
     let e = s
@@ -409,7 +407,7 @@ fn waiting_session_permissions_end_when_waiting_ends() {
         };
         s.write(AGENT, false, |c| c.create(follow())).unwrap();
         assert_eq!(
-            s.write(AGENT2, false, |c| c.note(&id, "not mine", None, false))
+            s.write(AGENT2, false, |c| c.note(&id, "not mine", None))
                 .unwrap_err()
                 .code(),
             Code::NotPermitted
@@ -465,7 +463,7 @@ fn waiting_session_permissions_end_when_waiting_ends() {
         assert!(s.read(None, |c| c.session_claim(&id)).unwrap().is_none());
         assert!(s.read(None, |c| c.runs()).unwrap().is_empty());
         assert_eq!(
-            s.write(AGENT, false, |c| c.note(&id, "too late", None, false))
+            s.write(AGENT, false, |c| c.note(&id, "too late", None))
                 .unwrap_err()
                 .code(),
             Code::NotPermitted
@@ -495,12 +493,10 @@ fn only_the_latest_session_can_act_when_waiting_again() {
         AGENT2
     );
     wait(&mut s, AGENT2, &id, None, Some("second review"));
-    s.write(AGENT2, false, |c| {
-        c.note(&id, "current session", None, false)
-    })
-    .unwrap();
+    s.write(AGENT2, false, |c| c.note(&id, "current session", None))
+        .unwrap();
     assert_eq!(
-        s.write(AGENT, false, |c| c.note(&id, "old session", None, false))
+        s.write(AGENT, false, |c| c.note(&id, "old session", None))
             .unwrap_err()
             .code(),
         Code::NotPermitted
@@ -707,7 +703,7 @@ fn a_failed_check_restores_the_waiting_session_with_a_fresh_claim() {
     assert_eq!(recent[2].payload["launcher"], "local-terminal");
     assert!(!events.iter().any(|e| e.op == "reopen"));
     // The original actor can immediately work on the issue again.
-    s.write(AGENT, false, |c| c.note(&id, "resolving", None, false))
+    s.write(AGENT, false, |c| c.note(&id, "resolving", None))
         .unwrap();
 }
 
@@ -1352,29 +1348,22 @@ fn agents_file_follow_ups_only_from_issues_they_claim() {
 }
 
 #[test]
-fn notes_search_and_inbox() {
+fn notes_search_and_amendments() {
     let (_d, mut s) = setup();
     let id = create(&mut s, "Leases for claims");
     let seq = s
-        .write(HUMAN, false, |c| {
-            c.note(&id, "consider a heartbeat", None, true)
-        })
+        .write(HUMAN, false, |c| c.note(&id, "consider a heartbeat", None))
         .unwrap();
-    s.write(HUMAN, false, |c| {
-        c.note(&id, "typo fixed", Some(seq), false)
-    })
-    .unwrap();
+    s.write(HUMAN, false, |c| c.note(&id, "typo fixed", Some(seq)))
+        .unwrap();
     assert_eq!(ids(&s, "text~heartbeat"), vec![id.clone()]);
     assert_eq!(ids(&s, "text~leases"), vec![id.clone()]);
     assert!(ids(&s, "text~nothing").is_empty());
-    claim(&mut s, AGENT, &id);
-    let inbox = s.write(AGENT, false, |c| c.take_inbox(&id)).unwrap();
-    assert_eq!(inbox.len(), 1);
-    assert!(
-        s.write(AGENT, false, |c| c.take_inbox(&id))
-            .unwrap()
-            .is_empty()
-    );
+    let notes = s.read(None, |c| c.notes(&id)).unwrap();
+    assert_eq!(notes.len(), 2);
+    assert_eq!(notes[0]["body"], "consider a heartbeat");
+    assert_eq!(notes[1]["amends"], seq);
+    assert!(notes.iter().all(|note| note.get("to_agent").is_none()));
     // The event log is append-only.
     assert!(s.conn().execute("DELETE FROM event", []).is_err());
     assert!(s.conn().execute("DELETE FROM issue", []).is_err());

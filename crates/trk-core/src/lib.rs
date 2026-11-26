@@ -18,4 +18,4 @@ pub use model::State;
 pub use store::{Ctx, Store, StoreOpts};
 
 /// The version of the JSON output format.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;

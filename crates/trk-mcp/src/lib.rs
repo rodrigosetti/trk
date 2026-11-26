@@ -17,7 +17,6 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Value, json};
-use trk_agent::agent::AgentDef;
 use trk_agent::exec::{Session, call, error_json};
 use trk_agent::tools::ToolDef;
 use trk_core::config::{ConfigDir, UserConfig};
@@ -40,7 +39,6 @@ struct Inner {
     db: PathBuf,
     opts: StoreOpts,
     session: Session,
-    agent: AgentDef,
     tools: Vec<ToolDef>,
     instructions: String,
     routing: trk_agent::routing::Routing,
@@ -143,7 +141,6 @@ impl TrkServer {
                     issue,
                     actor: args.actor,
                 },
-                agent,
                 tools,
                 instructions,
                 routing,
@@ -178,23 +175,6 @@ impl TrkServer {
         };
         if ok && name == "get_task" {
             out["routing"] = json!(self.inner.routing);
-        }
-        if self.inner.agent.inbox {
-            let msgs = store.write(&self.inner.session.actor, false, |c| {
-                if c.session_claim(&self.inner.session.issue)?
-                    .is_some_and(|cl| cl.actor == c.actor_str())
-                {
-                    c.take_inbox(&self.inner.session.issue)
-                } else {
-                    Ok(vec![])
-                }
-            });
-            if let Ok(msgs) = msgs
-                && !msgs.is_empty()
-                && let Value::Object(m) = &mut out
-            {
-                m.insert("messages_for_you".into(), json!(msgs));
-            }
         }
         (ok, out)
     }

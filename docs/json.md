@@ -18,7 +18,7 @@ A successful `--json` command writes one JSON document to stdout:
 ```json
 {
   "ok": true,
-  "schema_version": 4,
+  "schema_version": 5,
   "data": [
     {"id": "orch-4kq", "state": "open", "type": "code-change"}
   ]
@@ -27,12 +27,13 @@ A successful `--json` command writes one JSON document to stdout:
 
 This example could be produced by
 `trk list --fields id,state,type --json`. The current output schema version is
-**4**, independent of the installed binary's version or the SQLite migration
+**5**, independent of the installed binary's version or the SQLite migration
 version. Within an output schema version, keys are only added; removing or
 renaming keys requires a version bump. Version 3 replaced the old issue `agent`
 field with required `type`; version 4 removed issue `project` and `repo` because a
-database contains one project. Consumers should tolerate additional keys, test
-`ok`, and handle optional fields rather than infer success from the data shape.
+database contains one project. Version 5 simplifies note objects to the fields
+listed below. Consumers should tolerate additional keys, test `ok`, and handle
+optional fields rather than infer success from the data shape.
 
 The type of `data` depends on the command:
 
@@ -100,7 +101,7 @@ Additional fields depend on context:
 - `links` appears only when nonempty; each entry has `url` and an optional `label`.
 - `wake_count` appears when positive and the issue is waiting or claimed.
 - `show --with notes,events,claims` adds the requested arrays (`--with all` adds
-  all three). Notes have `seq`, `actor`, `at`, `body`, `amends`, `to_agent`.
+  all three). Notes have `seq`, `actor`, `at`, `body`, `amends`.
   Events use the timeline shape above. Historical claims add `released_at` and
   `release_reason` to the claim shape.
 - `show` adds `routing` for a known issue type, including the resolved worktree
@@ -168,7 +169,7 @@ After CLI argument parsing, command errors in JSON and JSONL modes are written t
 ```json
 {
   "ok": false,
-  "schema_version": 4,
+  "schema_version": 5,
   "error": {
     "code": "blocked",
     "message": "orch-9xa is blocked by orch-4kq",

@@ -719,12 +719,7 @@ impl Renderer {
                 self.issue_id(p["blocked"].as_str().unwrap_or(""))
             ),
             "note" => format!(
-                "note{}: {}",
-                if p["to_agent"].as_bool() == Some(true) {
-                    " (to agent)"
-                } else {
-                    ""
-                },
+                "note: {}",
                 short(
                     p["body"]
                         .as_str()

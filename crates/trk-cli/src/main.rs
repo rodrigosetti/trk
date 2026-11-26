@@ -285,9 +285,6 @@ enum Cmd {
         text: Option<String>,
         #[arg(long)]
         amends: Option<i64>,
-        /// Also queue it for the agent's inbox
-        #[arg(long)]
-        to_agent: bool,
     },
     /// Add or remove a blocks edge: BLOCKER blocks BLOCKED
     Dep {
