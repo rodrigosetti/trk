@@ -48,7 +48,12 @@ fn project_workflow(relative: &str, external: bool) {
     let mut text = std::fs::read_to_string(&config).unwrap();
     text = text.replace("links = []", "links = [\".claude/skills/trk\"]");
     if external {
-        let outside = e.dir.path().canonicalize().unwrap().join("external-worktrees");
+        let outside = e
+            .dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("external-worktrees");
         text = text.replace(
             "worktrees = \".trk/worktrees\"",
             &format!("worktrees = {:?}", outside.to_str().unwrap()),

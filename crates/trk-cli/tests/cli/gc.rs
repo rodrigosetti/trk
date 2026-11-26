@@ -1440,7 +1440,9 @@ fn gc_legacy_hc_removes_verified_finished_sessions_without_rewriting_claims() {
         let claim_id: i64 = fixture
             .store_at("2026-11-20T10:00:00Z")
             .conn()
-            .query_row("SELECT id FROM claim WHERE issue_id = ?1", [&id], |row| row.get(0))
+            .query_row("SELECT id FROM claim WHERE issue_id = ?1", [&id], |row| {
+                row.get(0)
+            })
             .unwrap();
 
         let data = fixture.run(&["gc", &id, "--legacy-hc"]);
@@ -1455,7 +1457,10 @@ fn gc_legacy_hc_removes_verified_finished_sessions_without_rewriting_claims() {
         assert_eq!(receipts[0]["terminal"], "legacy-address");
         assert_eq!(receipts[0]["host"], fixture.host);
         assert_eq!(receipts[0]["backend"], "hc");
-        assert_eq!(fixture.e.ok(&["show", &id, "--with", "claims"])["claims"], claims);
+        assert_eq!(
+            fixture.e.ok(&["show", &id, "--with", "claims"])["claims"],
+            claims
+        );
         let notes = fixture.notes(&id);
 
         let data = fixture.run(&["gc", &id]);
@@ -1567,7 +1572,9 @@ fn gc_legacy_hc_preserves_foreign_caller_and_protected_terminals() {
             let protected = fixture.e.create(&["Protected session"]);
             fixture.legacy_claim(&protected, "legacy-address", &fixture.host, None);
             if gate == "waiting" {
-                fixture.e.ok(&["wait", &protected, "--reason", "human decision"]);
+                fixture
+                    .e
+                    .ok(&["wait", &protected, "--reason", "human decision"]);
             }
         }
         let notes = fixture.notes(&id);
@@ -1603,7 +1610,8 @@ fn gc_legacy_hc_previews_verified_sessions_and_matches_recorded_worktree() {
     let fixture = GcEnv::new();
     let id = fixture.e.create(&["Historical worktree session"]);
     let path = fixture.worktree(&id);
-    fixture.store_at("2026-11-20T10:00:00Z")
+    fixture
+        .store_at("2026-11-20T10:00:00Z")
         .write("human:alice@example.com", false, |context| {
             context.claim(
                 &id,
@@ -1620,7 +1628,11 @@ fn gc_legacy_hc_previews_verified_sessions_and_matches_recorded_worktree() {
     fixture.close_at(&id, "done", "2026-11-20T10:00:00Z");
     let mut record = fixture.hc_record();
     record["cwd"] = json!(path);
-    record["argv"] = json!(["/bin/sh", "-c", "env\tTRK_ACTOR=human:alice@example.com trk"]);
+    record["argv"] = json!([
+        "/bin/sh",
+        "-c",
+        "env\tTRK_ACTOR=human:alice@example.com trk"
+    ]);
     fixture.fake_hc(r#"{"terminals":[{"address":"legacy-address"}]}"#, &record);
     let notes = fixture.notes(&id);
     let claims = fixture.e.ok(&["show", &id, "--with", "claims"])["claims"].clone();
@@ -1631,12 +1643,21 @@ fn gc_legacy_hc_previews_verified_sessions_and_matches_recorded_worktree() {
     assert!(!fixture.hc_calls().contains("rm "));
     assert_eq!(fixture.notes(&id), notes);
     assert!(fixture.legacy_receipts(&id).is_empty());
-    assert_eq!(fixture.e.ok(&["show", &id, "--with", "claims"])["claims"], claims);
+    assert_eq!(
+        fixture.e.ok(&["show", &id, "--with", "claims"])["claims"],
+        claims
+    );
 
     let data = fixture.run(&["gc", &id, "--legacy-hc"]);
     gc_status(gc_issue(&data, &id), "session", "removed");
     assert_eq!(fixture.legacy_receipts(&id).len(), 1);
-    assert_eq!(fixture.hc_calls().matches("rm legacy-address --json").count(), 1);
+    assert_eq!(
+        fixture
+            .hc_calls()
+            .matches("rm legacy-address --json")
+            .count(),
+        1
+    );
 }
 
 #[test]
