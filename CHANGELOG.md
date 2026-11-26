@@ -42,6 +42,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Restored CI Clippy checks with narrowly scoped argument-count expectations on GC helpers, preserving cleanup safety gates and opt-in legacy recovery behavior.
 - Unified local PID probes without subprocesses; permission-denied processes count as alive. Hostname detection now uses a cached system call and treats unavailable or empty names as unknown.
 - Fixed Clippy's collapsible status check in Herdr layout migration without changing status parsing or offline fallback.
+- Removed transitive unmaintained `chrono` by pinning rmcp's upstream opt-out change and retaining the existing non-chrono MCP features; MCP tests pass on Rust 1.89.
 
 ### Beta compatibility and upgrades
 

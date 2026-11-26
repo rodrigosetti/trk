@@ -27,9 +27,16 @@ cargo deny --locked --all-features check advisories --warn unmaintained
 ```
 
 Known vulnerabilities fail CI. Unmaintained-only advisories remain warnings:
-they report maintenance risk, not a known vulnerability (currently including
-transitive `chrono` through `rmcp` and `schemars`). This is an advisory check,
-not a license policy check.
+they report maintenance risk, not a known vulnerability. This is an advisory
+check, not a license policy check.
+
+`rmcp` is pinned to revision `9043cdfa8694d83bf506c2f3eb0313ec173edd7e` from
+[upstream PR #1474](https://github.com/modelcontextprotocol/rust-sdk/pull/1474),
+which makes its unmaintained `chrono` dependency optional. Default features are
+disabled; `base64`, `macros`, `server`, and `transport-io` retain the previous MCP
+feature set without `chrono`. The revision uses `jiff` internally and preserves
+timestamp and timeout formatting. Return to a crates.io release containing that
+change when available, retaining the explicit feature selection.
 
 Rust dependency builds (including bundled SQLite) are cached by OS, toolchain,
 and Cargo manifests/lockfile; only `main` runs save caches, while pull requests
