@@ -38,6 +38,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
 - The Herdr dashboard's wide list/details split now starts at 50/50 instead of a fixed list width, retaining user resizing and pane minimums.
 - Restored CI Clippy checks with narrowly scoped argument-count expectations on GC helpers, preserving cleanup safety gates and opt-in legacy recovery behavior.
+- Fixed Clippy's collapsible status check in Herdr layout migration without changing status parsing or offline fallback.
 
 ### Beta compatibility and upgrades
 
