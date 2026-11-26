@@ -28,13 +28,13 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 
 ### Fixed
 
-- Check queue recovery distinguishes recycled PIDs from live runners, retains surviving process-group protection, and offers audited human-only `trk check --unlock` recovery for stale or changed-host locks.
 - Fixed Herdr Run confirmations silently refusing to launch after an earlier command completed across a project or fixed-tab context change; pending commands no longer arm another confirmation.
 - Launcher templates now expand placeholders only once, preserving literal placeholders in issue content and preventing re-expansion from corrupting shell quoting.
 - Brighter, larger Herdr state and epic headings in dark and light themes, with every top-level state heading in ALL CAPS and smaller counts preserving the hierarchy.
 - Restored GC classification of historical claim paths: local primary-checkout claims own no disposable Git resources, and absent outside-root paths are reported as absent. Existing outside-root worktrees and branches held by stale Git registrations remain protected.
 - Herdr issue rows now indent beneath rendered epic subheaders, including **No epic**, while preserving shared responsive columns; grouping off and entirely unassigned state groups remain flat.
 - Human unclaim permission errors now include the issue-specific `trk unclaim <ID> --force` recovery command; Herdr shows CLI error hints in a wrapping status footer.
+- Check queue recovery distinguishes recycled PIDs from live runners, retains surviving process-group protection, and offers audited human-only `trk check --unlock` recovery for stale or changed-host locks.
 - Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
 - The Herdr dashboard's wide list/details split now starts at 50/50 instead of a fixed list width, retaining user resizing and pane minimums.
 - Restored CI Clippy checks with narrowly scoped argument-count expectations on GC helpers, preserving cleanup safety gates and opt-in legacy recovery behavior.

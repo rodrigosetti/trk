@@ -130,7 +130,7 @@ fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, V
         // waiting for an external command, even during stale-lock recovery.
         if let Some((p, h, started, pgid)) = &previous {
             let here = host.is_some() && *h == host;
-            if !here || runner_alive(*p, started) || pgid.is_some_and(group_alive) {
+            if !here || holder_alive(*p, started) || pgid.is_some_and(group_alive) {
                 return Ok(Err(json!({
                     "pid": p, "host": h, "started_at": started, "pgid": pgid,
                 })));
@@ -187,7 +187,7 @@ pub(crate) fn with_gc_lock<T>(
         if let Some((pid, holder_host, started, pgid)) = previous
             && (host.is_none()
                 || holder_host != host
-                || runner_alive(pid, &started)
+                || holder_alive(pid, &started)
                 || pgid.is_some_and(group_alive))
         {
             return Err(busy(json!({
@@ -241,14 +241,22 @@ fn process_exists(pid: i32) -> bool {
         || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
-fn runner_alive(pid: i64, started: &str) -> bool {
+/// PID-only liveness for resources that do not record a holder timestamp.
+fn runner_alive(pid: i64) -> bool {
+    match i32::try_from(pid) {
+        Ok(pid) if pid > 0 => process_exists(pid),
+        _ => true,
+    }
+}
+
+fn holder_alive(pid: i64, started: &str) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
         return true;
     };
     if pid <= 0 {
         return true;
     }
-    if !process_exists(pid) {
+    if !runner_alive(i64::from(pid)) {
         return false;
     }
     // ps elapsed time is portable across macOS/Linux and avoids local-time
@@ -802,7 +810,7 @@ fn unlock(env: &Env) -> Result<Out> {
     let holder = store.read(None, |c| c.check_lock())?;
     if let Some((pid, host, started, pgid)) = &holder
         && hostname().is_some_and(|here| host.as_ref() == Some(&here))
-        && (runner_alive(*pid, started) || pgid.is_some_and(group_alive))
+        && (holder_alive(*pid, started) || pgid.is_some_and(group_alive))
     {
         return Err(Error::new(
             Code::InvalidState,
