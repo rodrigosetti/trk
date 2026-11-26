@@ -101,7 +101,10 @@ fn check_colors_terminal_results_and_plain_payloads() {
         text.contains("\x1b[31m") && text.contains("failed (exit 3)"),
         "{text:?}"
     );
-    assert!(!text.contains("child-"), "subprocess output leaked: {text:?}");
+    assert!(
+        !text.contains("child-"),
+        "subprocess output leaked: {text:?}"
+    );
 
     let command = "printf 'uncolored payload'; exit 75";
     e.ok(&["wait", &retry, "--check", command]);

@@ -215,14 +215,7 @@ pub fn mark_closed(terminal: &str) -> Result<(), String> {
     if closed_name != name {
         command(
             "herdr-app",
-            &[
-                "do",
-                "space.rename",
-                "--id",
-                id,
-                "--name",
-                closed_name,
-            ],
+            &["do", "space.rename", "--id", id, "--name", closed_name],
         )?;
     }
     Ok(())
