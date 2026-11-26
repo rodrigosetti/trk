@@ -98,8 +98,9 @@ fn project_workflow(relative: &str, external: bool) {
     // No TRK_DIR: discovery must map the session's path to the primary project,
     // including when a root project exists and when worktrees live outside it.
     let shown = success(e.cmd(), &cwd, &["show", id]);
-    assert_eq!(shown["claim"]["worktree"], json!(worktree));
-    let actor = shown["claim"]["actor"].as_str().unwrap();
+    assert_eq!(shown["state"], "open");
+    assert!(shown["claim"].is_null());
+    let actor = launched["actor"].as_str().unwrap();
     let observed = trk
         .join("sessions")
         .join(actor.rsplit(':').next().unwrap())
@@ -126,6 +127,8 @@ fn project_workflow(relative: &str, external: bool) {
         id,
         if relative.is_empty() { "." } else { relative },
     );
+    let claim = success(e.cmd(), &cwd, &["--as", actor, "claim", id]);
+    assert_eq!(claim["claim"]["worktree"], json!(worktree));
     success(
         e.cmd(),
         &cwd,

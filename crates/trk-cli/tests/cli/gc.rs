@@ -59,9 +59,7 @@ esac
         )
         .unwrap();
         std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let output = StdCommand::new("hostname").output().unwrap();
-        assert!(output.status.success());
-        let host = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+        let host = local_host();
         Self { e, bin, host }
     }
 

@@ -213,13 +213,9 @@ impl TrkServer {
     }
 
     fn record_started(&self) {
-        let host = std::process::Command::new("hostname")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
         self.patch_meta(json!({
             "mcp_pid": std::process::id(),
-            "mcp_host": host,
+            "mcp_host": trk_core::system::hostname(),
             "mcp_started_at": trk_core::model::fmt_ts(jiff::Timestamp::now()),
             "mcp_exited_at": null,
         }));
