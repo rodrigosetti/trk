@@ -15,6 +15,7 @@ expression: snap
   "waiting": {
     "reason": "merge into main",
     "check": "true",
+    "on_pass": "close",
     "interval": 120,
     "next_check_at": "<ts>",
     "last_check_at": null,
@@ -150,7 +151,8 @@ expression: snap
         "check": "true",
         "interval": 120,
         "cwd": "<path>",
-        "forced": false
+        "forced": false,
+        "on_pass": "close"
       }
     },
     {
