@@ -37,6 +37,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
 - The Herdr dashboard's wide list/details split now starts at 50/50 instead of a fixed list width, retaining user resizing and pane minimums.
 - Restored CI Clippy checks with narrowly scoped argument-count expectations on GC helpers, preserving cleanup safety gates and opt-in legacy recovery behavior.
+- GC and automatic sweeps now remove historical local session directories with symlink-safe boundaries and report a fourth `session_dir` resource. New session directories and generated harness files use owner-only permissions; previously completed agent issues are requeued once for session-file cleanup.
 
 ### Beta compatibility and upgrades
 

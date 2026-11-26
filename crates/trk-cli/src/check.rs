@@ -430,7 +430,7 @@ fn gc_lines(gc: Option<&Value>, seen_skips: &mut HashSet<String>, r: &Renderer) 
     if let Some(issues) = gc["issues"].as_array() {
         for issue in issues {
             let id = issue["id"].as_str().unwrap_or_default();
-            let removed: Vec<_> = ["session", "worktree", "branch"]
+            let removed: Vec<_> = ["session", "session_dir", "worktree", "branch"]
                 .into_iter()
                 .filter(|resource| issue[*resource]["status"] == "removed")
                 .collect();
@@ -447,7 +447,7 @@ fn gc_lines(gc: Option<&Value>, seen_skips: &mut HashSet<String>, r: &Renderer) 
                 ));
             }
             if !seen_skips.contains(id) {
-                let reasons = ["session", "worktree", "branch"]
+                let reasons = ["session", "session_dir", "worktree", "branch"]
                     .into_iter()
                     .filter(|resource| issue[*resource]["status"] == "skipped")
                     .map(|resource| {
