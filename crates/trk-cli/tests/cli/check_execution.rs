@@ -137,6 +137,8 @@ fn only_one_check_runs_at_a_time() {
         "echo second > \"$TRK_REPO/check-second\"; exit 75",
     ]);
     assert_check_busy(&e, first.child.id(), pgid);
+    let refused = e.err(&["check", "--unlock"], 4, "invalid_state");
+    assert_eq!(refused["holder"]["pid"], first.child.id());
     assert!(!e.repo().join("check-second").exists());
     std::fs::write(e.repo().join("check-release"), "").unwrap();
     assert!(first.wait().success());
@@ -227,6 +229,7 @@ fn check_sigkill_keeps_ownership_until_the_old_group_is_gone() {
         "echo second > \"$TRK_REPO/check-second\"; exit 75",
     ]);
     assert_check_busy(&e, runner.child.id(), pgid);
+    e.err(&["check", "--unlock"], 4, "invalid_state");
     assert!(!e.repo().join("check-second").exists());
 
     // Let the original shell reap its descendant itself. Recovery must not

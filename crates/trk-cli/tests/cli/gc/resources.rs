@@ -629,6 +629,11 @@ fn gc_worktreeless_run_never_collects_a_coincidentally_named_branch() {
         .assert()
         .success();
     let claim = fixture.e.ok(&["show", &id])["claim"].clone();
+    let session_dir = fixture
+        .e
+        .trk_dir()
+        .join("sessions")
+        .join(claim["actor"].as_str().unwrap().rsplit(':').next().unwrap());
     assert_eq!(claim["worktree"], Value::Null);
     assert!(!fixture.e.trk_dir().join("worktrees").join(&id).exists());
     assert!(!fixture.branch_exists(&id));
@@ -644,18 +649,25 @@ fn gc_worktreeless_run_never_collects_a_coincidentally_named_branch() {
     for args in [&["gc", &id, "--dry-run"][..], &["gc", &id][..]] {
         let data = fixture.run(args);
         let issue = gc_issue(&data, &id);
+        gc_status(issue, "session_dir", "removed");
         assert_eq!(issue["worktree"]["status"], "absent", "{issue:#}");
         gc_status(issue, "branch", "absent");
         assert!(fixture.branch_exists(&id));
         assert!(fixture.e.repo().is_dir());
-        assert_eq!(fixture.notes(&id), notes);
+        if args.contains(&"--dry-run") {
+            assert_eq!(fixture.notes(&id), notes);
+            assert!(session_dir.exists());
+        } else {
+            assert!(!session_dir.exists());
+        }
     }
+    let collected_notes = fixture.notes(&id);
 
     let sweep = check_gc_at(&fixture, "2026-11-20T12:00:00Z", &["check"]);
     assert!(sweep.get("gc").is_none(), "{sweep:#}");
     assert!(fixture.branch_exists(&id));
     assert!(fixture.e.repo().is_dir());
-    assert_eq!(fixture.notes(&id), notes);
+    assert_eq!(fixture.notes(&id), collected_notes);
 }
 
 #[test]

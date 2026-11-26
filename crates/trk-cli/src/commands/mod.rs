@@ -105,6 +105,7 @@ pub(super) fn dispatch(
             watch,
             dry_run,
             no_gc,
+            unlock,
         } => check::check(
             &env,
             check::CheckArgs {
@@ -113,6 +114,7 @@ pub(super) fn dispatch(
                 watch,
                 dry_run,
                 no_gc,
+                unlock,
             },
             completed,
             r,

@@ -12,6 +12,9 @@ mod legacy;
 #[path = "gc/concurrency.rs"]
 mod concurrency;
 
+#[path = "gc/sessions.rs"]
+mod sessions;
+
 struct GcEnv {
     e: Env,
     bin: PathBuf,
