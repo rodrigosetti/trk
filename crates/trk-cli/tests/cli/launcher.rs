@@ -131,6 +131,37 @@ esac
     }
 }
 
+fn hc_with_output(output: &str) -> Tmux {
+    let tmux = Tmux::new();
+    tmux.e
+        .set_config("use = [\"tmux\"]", "use = [\"herdr\", \"hc\"]");
+    std::fs::write(tmux.e.dir.path().join("hc-output"), output).unwrap();
+    std::fs::write(
+        tmux.bin.join("hc"),
+        r#"#!/bin/sh
+set -eu
+cd "$TRK_TEST_LAUNCHER"
+case "$1" in
+ls) exit 0 ;;
+run)
+    [ "$2" = "--json" ] && [ "$3" = "--bg" ] && [ "$4" = "--no-parent" ]
+    [ "$5" = "--name" ] && [ "$7" = "--cwd" ]
+    [ "$9" = "--" ] && [ "${10}" = "sh" ] && [ "${11}" = "-c" ]
+    printf '%s' "$6" > hc-generated
+    printf 'run\n' >> hc-starts
+    printf '{"address":"stderr-is-not-an-address"}\n' >&2
+    cat hc-output
+    ;;
+attach) printf '%s\n' "$2" >> hc-attachments ;;
+send) printf '%s\n%s\n' "$2" "$3" >> hc-messages ;;
+*) exit 9 ;;
+esac
+"#,
+    )
+    .unwrap();
+    tmux
+}
+
 #[test]
 fn named_tmux_run_binds_only_first_stdout_line_and_pins_send_and_attach() {
     let tmux = Tmux::new();
@@ -436,33 +467,80 @@ fn named_exists_nonzero_means_gone_and_prevents_resume() {
 
 #[test]
 fn named_seed_selects_hc_when_herdr_is_unavailable() {
-    let tmux = Tmux::new();
-    tmux.e
-        .set_config("use = [\"tmux\"]", "use = [\"herdr\", \"hc\"]");
-    std::fs::write(
-        tmux.bin.join("hc"),
-        r#"#!/bin/sh
-set -eu
-case "$1" in
-ls) exit 0 ;;
-run)
-    [ "$4" = "--name" ]
-    printf '%s' "$5" > "$TRK_TEST_LAUNCHER/hc-generated"
-    : > "$TRK_TEST_LAUNCHER/hc-started"
-    printf 'hc-session\n'
-    ;;
-*) exit 9 ;;
-esac
-"#,
-    )
-    .unwrap();
-    let id = tmux.launch();
-    let issue = tmux.e.ok(&["show", &id]);
-    assert_eq!(issue["claim"]["launcher"], "hc");
-    assert_eq!(issue["claim"]["terminal"], "hc-session");
-    assert!(tmux.e.dir.path().join("hc-started").exists());
-    assert_eq!(tmux.text("hc-generated"), format!("trk-{id}"));
-    assert_eq!(tmux.text("generated"), "");
+    for (output, address) in [
+        (r#"{"address":"t147","agent":"sh","state":"live"}"#, "t147"),
+        (
+            "{\n  \"address\": \"worker/t147\",\n  \"agent\": \"sh\"\n}\n",
+            "worker/t147",
+        ),
+    ] {
+        let tmux = hc_with_output(output);
+        let id = tmux.launch();
+        let issue = tmux.e.ok(&["show", &id]);
+        assert_eq!(issue["claim"]["launcher"], "hc");
+        assert_eq!(issue["claim"]["terminal"], address);
+        assert_eq!(tmux.text("hc-starts"), "run\n");
+        assert_eq!(tmux.text("hc-generated"), format!("trk-{id}"));
+        assert_eq!(tmux.text("generated"), "");
+
+        tmux.e
+            .set_config("use = [\"herdr\", \"hc\"]", "use = [\"tmux\"]");
+        tmux.ok(&["attach", &id]);
+        tmux.ok(&["send", &id, "continue"]);
+        assert_eq!(tmux.text("hc-attachments"), format!("{address}\n"));
+        assert_eq!(
+            tmux.text("hc-messages"),
+            format!(
+                "{address}\n[trk-delivery source=trk-send actor=\"human:alice@example.com\"]\ncontinue\n[/trk-delivery]\n"
+            )
+        );
+    }
+}
+
+#[test]
+fn named_hc_invalid_json_address_retains_claim_without_relaunching() {
+    for output in [
+        "",
+        "{",
+        "{}",
+        r#"{"address":null}"#,
+        r#"{"address":42}"#,
+        r#"{"address":""}"#,
+        r#"{"address":"  "}"#,
+    ] {
+        let tmux = hc_with_output(output);
+        let id = tmux
+            .e
+            .create(&["Unconfirmed hc launch", "--type", "research"]);
+        let out = tmux
+            .cmd()
+            .args(["--json", "run", &id, "--harness", "omp"])
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let response: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(response["error"]["code"], "internal");
+        assert!(
+            response["error"]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("claim retained")
+        );
+        let issue = tmux.e.ok(&["show", &id]);
+        assert_eq!(issue["state"], "claimed");
+        assert_eq!(issue["claim"]["terminal"], format!("trk-{id}"));
+        assert_eq!(tmux.text("hc-messages"), "");
+        assert!(
+            !tmux
+                .cmd()
+                .args(["run", &id, "--harness", "omp"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert_eq!(tmux.text("hc-starts"), "run\n");
+    }
 }
 
 #[test]

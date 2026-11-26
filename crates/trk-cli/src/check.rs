@@ -26,8 +26,9 @@ use trk_core::config::parse_duration;
 use trk_core::error::{Code, Error, Result};
 use trk_core::model::{CHECK_RETRY_EXIT, Issue, State};
 use trk_core::ops::{CHECK_OUTPUT_TAIL, CheckResult, CheckRun};
+use trk_core::system::{Liveness, group_liveness, hostname, process_liveness};
 
-use crate::env::{Env, git, hostname};
+use crate::env::{Env, git};
 use crate::render::{Out, Renderer, until};
 
 pub struct CheckArgs {
@@ -130,7 +131,7 @@ fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, V
         // Liveness probes may run ps. Never hold the SQLite writer while
         // waiting for an external command, even during stale-lock recovery.
         if let Some((p, h, started, pgid)) = &previous {
-            let here = host.is_some() && *h == host;
+            let here = host.is_some() && h.as_deref() == host;
             if !here || runner_alive(*p) || pgid.is_some_and(group_alive) {
                 return Ok(Err(json!({
                     "pid": p, "host": h, "started_at": started, "pgid": pgid,
@@ -141,7 +142,7 @@ fn lock<'a>(env: &'a Env, actor: &str) -> Result<std::result::Result<Lock<'a>, V
             if c.check_lock()? != previous {
                 return Ok(false);
             }
-            c.check_lock_take(pid, host.as_deref())?;
+            c.check_lock_take(pid, host)?;
             Ok(true)
         })?;
         if taken {
@@ -187,7 +188,7 @@ pub(crate) fn with_gc_lock<T>(
         let previous = env.store()?.read(None, |c| c.check_lock())?;
         if let Some((pid, holder_host, started, pgid)) = previous
             && (host.is_none()
-                || holder_host != host
+                || holder_host.as_deref() != host
                 || runner_alive(pid)
                 || pgid.is_some_and(group_alive))
         {
@@ -235,26 +236,16 @@ fn kill_group(pgid: u32, signal: i32) {
     unsafe { libc::kill(-(pgid as i32), signal) };
 }
 
-fn process_exists(pid: i32) -> bool {
-    // SAFETY: signal 0 probes existence without delivering a signal. Errors
-    // other than ESRCH (including permission errors) cannot establish safety.
-    (unsafe { libc::kill(pid, 0) }) == 0
-        || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-}
-
 fn runner_alive(pid: i64) -> bool {
-    match i32::try_from(pid) {
-        Ok(pid) if pid > 0 => process_exists(pid),
-        _ => true,
-    }
+    // Unknown liveness cannot establish that it is safe to take the lock.
+    process_liveness(pid) != Liveness::Gone
 }
 
 fn group_alive(pgid: i64) -> bool {
-    let Ok(pgid) = i32::try_from(pgid) else {
-        return true;
-    };
-    if !process_exists(-pgid) {
-        return false;
+    match group_liveness(pgid) {
+        Liveness::Gone => return false,
+        Liveness::Unknown => return true,
+        Liveness::Alive => {}
     }
     // Orphaned zombies cannot execute side effects, but kill(0) still sees
     // them on systems whose init does not promptly reap adopted descendants.
@@ -266,7 +257,7 @@ fn group_alive(pgid: i64) -> bool {
     }
     String::from_utf8_lossy(&out.stdout).lines().any(|line| {
         let mut fields = line.split_whitespace();
-        fields.next().and_then(|s| s.parse::<i32>().ok()) == Some(pgid)
+        fields.next().and_then(|s| s.parse::<i64>().ok()) == Some(pgid)
             && !fields.next().is_some_and(|s| s.starts_with('Z'))
     })
 }

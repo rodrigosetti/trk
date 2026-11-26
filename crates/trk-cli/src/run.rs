@@ -4,16 +4,20 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use trk_agent::harness::{self, LaunchInput};
 use trk_core::error::{Code, Error, Result};
 use trk_core::model::{ActorId, Claim, State};
 use trk_core::ops::ClaimOpts;
+use trk_core::system::{Liveness, hostname, process_liveness};
 use trk_core::view::With;
 
-use crate::env::{Env, git, hostname};
+use crate::env::{Env, git};
 use crate::render::Out;
 
 use crate::launcher::{self, Launcher, run_template};
@@ -100,6 +104,47 @@ fn trk_bin() -> String {
         .and_then(|p| std::fs::canonicalize(p).ok())
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| "trk".into())
+}
+
+/// Keep terminal ownership unchanged, but allow trk to clean up after interruption.
+fn foreground_status(shell_command: &str) -> std::io::Result<ExitStatus> {
+    struct Signals(Vec<signal_hook::SigId>);
+    impl Drop for Signals {
+        fn drop(&mut self) {
+            for handler in self.0.drain(..) {
+                signal_hook::low_level::unregister(handler);
+            }
+        }
+    }
+
+    let signal = Arc::new(AtomicUsize::new(0));
+    let mut handlers = Signals(Vec::with_capacity(3));
+    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        handlers.0.push(signal_hook::flag::register_usize(
+            sig,
+            Arc::clone(&signal),
+            sig as usize,
+        )?);
+    }
+    let mut child = Command::new("sh").arg("-c").arg(shell_command).spawn()?;
+    let mut interrupted = None;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        let sig = signal.load(Ordering::Relaxed);
+        if sig != 0 && interrupted.is_none() {
+            // The launch command execs the harness. It may already have received
+            // the terminal's signal; forwarding also covers signals sent only to trk.
+            unsafe { libc::kill(child.id() as libc::pid_t, sig as libc::c_int) };
+            interrupted = Some(Instant::now());
+        }
+        if interrupted.is_some_and(|at| at.elapsed() >= Duration::from_secs(2)) {
+            child.kill()?;
+            return child.wait();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
@@ -245,7 +290,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let claim_opts = ClaimOpts {
         lease: None,
         worktree: wt_str.clone(),
-        host: hostname(),
+        host: hostname().map(str::to_owned),
         agent: Some(agent_name.clone()),
         terminal: selected.as_ref().map(|_| terminal.clone()),
         launcher: selected.as_ref().and_then(|launcher| launcher.name.clone()),
@@ -367,16 +412,29 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
 
     // 6. Start.
     if a.fg {
-        let st = Command::new("sh")
-            .arg("-c")
-            .arg(&spec.shell_command)
-            .status()
+        let st = foreground_status(&spec.shell_command)
             .inspect_err(|error| undo(&mut store, &format!("launch failed: {error}")))?;
+        let released = store.write(&actor, false, |c| {
+            if c.active_claim(&id)?
+                .is_some_and(|claim| claim.actor == actor)
+            {
+                c.unclaim(
+                    &id,
+                    false,
+                    Some(&format!("foreground session exited ({st})")),
+                )?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })?;
+        let message = if released {
+            "Its claim was released."
+        } else {
+            "No active claim belonging to this session remains."
+        };
         return Ok(Out::Text(
-            format!(
-                "{} exited ({}). Its claim stays until the lease expires or `trk reap`.",
-                hname, st
-            ),
+            format!("{hname} exited ({st}). {message}"),
             json!({"issue": id, "actor": actor, "exit_code": st.code()}),
         ));
     }
@@ -414,15 +472,14 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
                 );
             }
         };
-        if let Some(address) = out
-            .stdout
-            .lines()
-            .next()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-        {
-            store.write(&actor, false, |c| c.bind_terminal(&id, address))?;
-            terminal = address.to_owned();
+        let address = l.start_address(&out.stdout).map_err(|error| {
+            error.with_issue(&id).with_hint(
+                "claim retained to avoid a duplicate launch; inspect the launcher before unclaiming",
+            )
+        })?;
+        if let Some(address) = address {
+            store.write(&actor, false, |c| c.bind_terminal(&id, &address))?;
+            terminal = address;
             vars.insert("name", terminal.clone());
         }
         (out.text, None)
@@ -458,18 +515,6 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     ))
 }
 
-pub fn pid_alive(pid: i64) -> bool {
-    // Reject process-group IDs and values an external kill may truncate.
-    if pid <= 0 || libc::pid_t::try_from(pid).is_err() {
-        return false;
-    }
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
 /// Liveness of a run's MCP server: Some(true) alive, Some(false) gone, None unknown.
 pub fn mcp_alive(meta: &Value) -> Option<bool> {
     if meta["mcp_exited_at"].is_string() {
@@ -477,10 +522,11 @@ pub fn mcp_alive(meta: &Value) -> Option<bool> {
     }
     let pid = meta["mcp_pid"].as_i64()?;
     let host = meta["mcp_host"].as_str();
-    if host.is_some() && host.map(String::from) != hostname() {
+    if host.is_some() && host != hostname() {
         return None;
     }
-    Some(pid_alive(pid))
+    // Preserve false for invalid IDs or other unknown probe failures.
+    Some(process_liveness(pid) == Liveness::Alive)
 }
 
 /// Session liveness comes only from a known local terminal, never its MCP server.
@@ -490,7 +536,7 @@ pub fn session_alive(
     terminal: Option<&str>,
 ) -> Option<bool> {
     let host = host.filter(|host| !host.trim().is_empty())?;
-    if hostname().as_deref() != Some(host) {
+    if hostname() != Some(host) {
         return None;
     }
     let terminal = terminal.filter(|name| !name.trim().is_empty())?;

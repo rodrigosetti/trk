@@ -1,17 +1,41 @@
 # Development
 
-For development: `cargo build`, `cargo test --workspace --locked`, and `cargo lint`.
-`cargo lint` runs `cargo clippy --workspace --all-targets -- -D warnings`, rejecting
-compiler and Clippy warnings in every workspace target, including tests and examples.
+For development: `cargo build`, `cargo test --workspace --locked`, `cargo lint`,
+and `cargo fmt-check`. `cargo lint` runs
+`cargo clippy --workspace --all-targets -- -D warnings`, rejecting compiler and
+Clippy warnings in every workspace target, including tests and examples.
+`cargo fmt-check` runs `cargo fmt --all -- --check`; use `cargo fmt --all` to fix
+formatting before committing.
 Keep build outputs local to each issue worktree; do not point `CARGO_TARGET_DIR`
 or `--target-dir` at the primary checkout. Seed-dependent tests materialize the
 installer's embedded defaults in temporary directories, so their binaries also
 work after the checkout they were compiled in has been removed.
 
 GitHub Actions runs the workspace tests, lint, and Herdr mod tests on
-`ubuntu-latest` and `macos-latest` for pushes and pull requests. CI reads the Rust
-toolchain version from `workspace.package.rust-version` in `Cargo.toml` and uses
-Node.js 24 for `node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
+`ubuntu-latest` and `macos-latest` for pushes and pull requests. The Rust matrix
+covers both the minimum supported Rust version (MSRV), read from
+`workspace.package.rust-version` in `Cargo.toml`, and current stable. Herdr mod
+tests use Node.js 24 and
+`node --experimental-vm-modules --test herdr/mods/trk/main.test.mjs`.
+
+Separate CI jobs check formatting with stable Rust and scan all dependency
+features against RustSec advisories. To run the dependency check locally:
+
+```sh
+cargo install cargo-deny --locked
+cargo deny --locked --all-features check advisories --warn unmaintained
+```
+
+Known vulnerabilities fail CI. Unmaintained-only advisories remain warnings:
+they report maintenance risk, not a known vulnerability (currently including
+transitive `chrono` through `rmcp` and `schemars`). This is an advisory check,
+not a license policy check.
+
+Rust dependency builds (including bundled SQLite) are cached by OS, toolchain,
+and Cargo manifests/lockfile; only `main` runs save caches, while pull requests
+can restore them. Third-party actions in both workflows use full commit SHAs.
+Dependabot checks Cargo dependencies and GitHub Actions weekly; review and land
+its update PRs to keep the lockfile and action pins current.
 
 ## Releasing 0.1.0
 

@@ -23,9 +23,10 @@ use serde_json::Value;
 use trk_core::dashboard::Dashboard;
 use trk_core::error::{Code, Error, Result};
 use trk_core::ops::Edit;
+use trk_core::system::{Liveness, hostname, process_liveness};
 use trk_core::{State, Store};
 
-use crate::env::{Env, hostname};
+use crate::env::Env;
 use crate::render::Out;
 use crate::run;
 use ui::{Confirm, Input, Mode, Status, Ui};
@@ -36,15 +37,6 @@ const ACTIVITY: usize = 30;
 const POLL: Duration = Duration::from_millis(250);
 const REFRESH: Duration = Duration::from_secs(2);
 const STATUS_TTL: Duration = Duration::from_secs(8);
-
-/// Whether a process exists on this host. EPERM means it does.
-fn pid_exists(pid: i64) -> bool {
-    let Ok(pid) = i32::try_from(pid) else {
-        return false;
-    };
-    (unsafe { libc::kill(pid, 0) }) == 0
-        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
 
 /// Hand a link to the desktop's opener. Links are http(s) only (core checks).
 fn open_url(url: &str) -> std::io::Result<()> {
@@ -95,7 +87,7 @@ struct Job {
 struct App<'a> {
     env: &'a Env,
     store: Store,
-    host: Option<String>,
+    host: Option<&'static str>,
     ui: Ui,
     data_version: i64,
     refreshed: Instant,
@@ -200,12 +192,11 @@ impl App<'_> {
     /// whether the check runner still exists.
     fn after_snapshot(&mut self) {
         self.ui.now = self.store.now();
-        self.ui.runner_alive = self
-            .ui
-            .snap
-            .check_runner
-            .as_ref()
-            .and_then(|r| (r.host.is_none() || r.host == self.host).then(|| pid_exists(r.pid)));
+        self.ui.runner_alive = self.ui.snap.check_runner.as_ref().and_then(|r| {
+            (r.host.is_none() || r.host.as_deref() == self.host)
+                // Preserve the display's false-on-unknown policy.
+                .then(|| process_liveness(r.pid) == Liveness::Alive)
+        });
         self.load_detail();
     }
 

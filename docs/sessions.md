@@ -65,6 +65,17 @@ The seed config prefers `omp` running `openai-codex/gpt-6-luna`.
 Model precedence is `--model`, then the agent's model for the selected harness, then
 the profile's `model`. With none set, the harness chooses its own default.
 
+`trk run <ID> --fg` runs the harness in the current terminal. When it exits,
+trk releases any active claim still owned by that session and records a note with
+the exit status, making unfinished work ready to run again. If the agent already
+closed, waited or handed back, or another actor owns the claim, nothing changes.
+Failure to spawn the foreground command also releases the claim. On SIGINT,
+SIGTERM or SIGHUP while waiting, trk forwards the signal to the harness, allows
+up to two seconds for it to exit, then kills it if necessary before releasing
+its claim. SIGKILL or a process crash cannot run this cleanup; normal lease
+expiry remains the fallback for those terminal-less claims, which `trk reap`
+cannot classify.
+
 The MCP server (`trk mcp --issue … --actor … --agent …`, started by the harness) serves exactly one
 issue with eight tools: `get_task`, `add_note`, `link`, `report_followup`, `hand_back`, `close`,
 `wait` and `resume`.
