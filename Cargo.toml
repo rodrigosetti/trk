@@ -35,7 +35,7 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 unicode-width = "0.2"
 anyhow = "1"
 libc = "0.2"
-signal-hook = "0.3"
+signal-hook = "0.4"
 assert_cmd = "2.2"
 insta = { version = "1.49", features = ["json"] }
 tempfile = "3"
