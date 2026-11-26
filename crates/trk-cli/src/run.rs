@@ -397,15 +397,14 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
                 );
             }
         };
-        if let Some(address) = out
-            .stdout
-            .lines()
-            .next()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-        {
-            store.write(&actor, false, |c| c.bind_terminal(&id, address))?;
-            terminal = address.to_owned();
+        let address = l.start_address(&out.stdout).map_err(|error| {
+            error.with_issue(&id).with_hint(
+                "claim retained to avoid a duplicate launch; inspect the launcher before unclaiming",
+            )
+        })?;
+        if let Some(address) = address {
+            store.write(&actor, false, |c| c.bind_terminal(&id, &address))?;
+            terminal = address;
             vars.insert("name", terminal.clone());
         }
         (out.text, None)
