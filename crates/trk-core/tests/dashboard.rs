@@ -144,3 +144,96 @@ fn dashboard_and_dependency_epics_preserve_default_order() {
         assert_eq!(shown["deps"]["blocks"][0].get("epic"), Some(&Value::Null));
     }
 }
+
+#[test]
+fn check_run_json_survives_reopen_and_bounds_retained_output() {
+    use trk_core::ops::{CHECK_OUTPUT_TAIL, CheckResult, CheckRun};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("trk.db");
+    let opts = StoreOpts {
+        now: Some("2026-11-20T10:00:00Z".parse().unwrap()),
+        ..Default::default()
+    };
+    let mut store = Store::install(&path, opts.clone()).unwrap();
+    let id = store
+        .write(HUMAN, false, |c| {
+            c.create(NewIssue {
+                title: "check history".into(),
+                ..Default::default()
+            })
+        })
+        .unwrap();
+    for (result, expected) in [
+        (CheckResult::Passed, "passed"),
+        (CheckResult::Retry, "retry"),
+        (CheckResult::Woken { claim: 1 }, "woken"),
+        (CheckResult::Failed, "failed"),
+        (CheckResult::Skipped, "skipped"),
+        (CheckResult::PassWoken { claim: 2 }, "woken"),
+        (CheckResult::PassReopened, "passed"),
+    ] {
+        store
+            .write(HUMAN, false, |c| {
+                c.check_run_record(
+                    &id,
+                    result,
+                    &CheckRun {
+                        exit: Some(0),
+                        timed_out: false,
+                        output: "stdout\nstderr\n".into(),
+                    },
+                    123,
+                )
+            })
+            .unwrap();
+        let recent = &snapshot(&store)["check_runs"][0];
+        assert_eq!(recent["issue_id"], id);
+        assert_eq!(recent["result"], expected);
+        assert_eq!(recent["at"], "2026-11-20T10:00:00Z");
+        assert_eq!(recent["duration_ms"], 123);
+        assert_eq!(recent["exit"], 0);
+        assert_eq!(recent["timed_out"], false);
+        assert_eq!(recent["output"], "stdout\nstderr\n");
+        assert_eq!(recent["output_truncated"], false);
+    }
+    let output = format!("{}tail", "λ".repeat(CHECK_OUTPUT_TAIL));
+    for n in 0..105 {
+        store
+            .write(HUMAN, false, |c| {
+                c.check_run_record(
+                    &id,
+                    CheckResult::Retry,
+                    &CheckRun {
+                        exit: Some(75),
+                        timed_out: false,
+                        output: output.clone(),
+                    },
+                    n,
+                )
+            })
+            .unwrap();
+    }
+    drop(store);
+    let store = Store::open(&path, opts).unwrap();
+    let dashboard = snapshot(&store);
+    let runs = dashboard["check_runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 100);
+    assert_eq!(runs[0]["duration_ms"], 104);
+    assert_eq!(runs[99]["duration_ms"], 5);
+    assert!(
+        runs.windows(2)
+            .all(|w| w[0]["seq"].as_i64() > w[1]["seq"].as_i64())
+    );
+    let text = runs[0]["output"].as_str().unwrap();
+    assert!(text.len() <= CHECK_OUTPUT_TAIL);
+    assert!(text.ends_with("λtail"));
+    assert_eq!(runs[0]["output_truncated"], true);
+    assert_eq!(
+        store
+            .conn()
+            .query_row("SELECT count(*) FROM check_run", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        100,
+    );
+}

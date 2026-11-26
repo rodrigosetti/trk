@@ -753,6 +753,7 @@ fn pass(
                 output: format!("[trk] {why}\n"),
             },
         };
+        let duration_ms = started.elapsed().as_millis() as u64;
         interrupt.check()?;
         let pass_wake = run.exit == Some(0) && !run.timed_out && i.waiting_on_pass == OnPass::Wake;
         let failure_wake = (run.timed_out || !matches!(run.exit, Some(0 | CHECK_RETRY_EXIT)))
@@ -839,6 +840,9 @@ fn pass(
             );
             let _ = crate::run::notify_waiting_session(env, &i.id, &message, true);
         }
+        store.write(&actor, false, |c| {
+            c.check_run_record(&i.id, result, &run, duration_ms)
+        })?;
         let now = store.read(None, |c| c.issue(&i.id))?;
         out.push(CheckView {
             issue: i.id.clone(),
@@ -848,7 +852,7 @@ fn pass(
                 CheckExecution {
                     exit: run.exit,
                     timed_out: run.timed_out,
-                    duration_ms: started.elapsed().as_millis() as u64,
+                    duration_ms,
                     state: now.state,
                     next_check_at: now.next_check_at,
                     output: matches!(result, CheckResult::Failed | CheckResult::Woken { .. })

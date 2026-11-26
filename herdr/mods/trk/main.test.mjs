@@ -42,6 +42,7 @@ async function dashboard(state) {
     "gpui-base": {
       v_flex: () => new Element("column"), h_flex: () => new Element("row"),
       h_resizable: () => new Element("split"), resizable_panel: () => new Element("panel"),
+      Tabs: { new: (id) => new Element("tabs").id(id) }, Tab: { new: (id) => new Element("tab").id(id) },
       InputState: { new: () => ({ on() {} }) }, Input() {}, TextView: {},
     },
     herdr: {
@@ -243,7 +244,7 @@ test("Run confirmation survives refresh and dispatches once after a stale action
   // Exercise the real snapshot/detail refresh, not just a repaint.
   state.exec = async (_command, args) => ({
     code: 0, stderr: "", stdout: JSON.stringify({
-      ok: true, schema_version: 4,
+      ok: true, schema_version: 5,
       data: args.includes("dashboard") ? { issues: [...issues].reverse() } : { id: "b" },
     }),
   });
@@ -269,7 +270,7 @@ test("Run confirmation survives refresh and dispatches once after a stale action
     code: args.includes("run") ? 5 : 0, stderr: "", stdout: JSON.stringify(
       args.includes("run")
         ? { ok: false, error: { message: "b is claimed, not ready", hint: "Refresh before retrying" } }
-        : { ok: true, schema_version: 4, data: args.includes("dashboard") ? { issues } : { id: "b" } }),
+        : { ok: true, schema_version: 5, data: args.includes("dashboard") ? { issues } : { id: "b" } }),
   });
   clickRun();
   clickRun();
@@ -390,7 +391,6 @@ test("sort row buttons and keyboard cycle, reverse and respect prompts and modif
   const { view } = await dashboard(spaceState());
   view.data = { issues: sortIssues() };
   let tree = view.render();
-  assert.equal(tree.nodes[1].elementId, "sort", "the sort row sits directly below the header");
   assert.equal(content(findElement(tree, "sort-priority")).join(""), "Priority ↑");
   findElement(tree, "sort-updated").click({}, sortContext);
   tree = view.render();
@@ -439,7 +439,7 @@ test("sort stays within groups and drives navigation and agent order without los
     assert.equal(view.selected, selected);
   }
   view.context = { root: "/current-project", cwd: "/current-project" };
-  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 4, data: { issues: [...issues, attention].reverse() } }) };
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 5, data: { issues: [...issues, attention].reverse() } }) };
   let pending;
   const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
   view.load(cx);
@@ -722,7 +722,7 @@ test("epic folds survive sorting, refresh, parent folding and grouping toggles w
   findElement(tree, "group-epic").click({}, sortContext);
   view.context = { root: "/current-project", cwd: "/current-project" };
   const refreshed = [...epicIssues().reverse(), { ...epicIssues()[0], id: "new-alpha" }];
-  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 4, data: { issues: refreshed } }) };
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 5, data: { issues: refreshed } }) };
   let pending;
   const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
   view.load(cx);
@@ -787,7 +787,7 @@ test("grouping and refresh cannot leave a selected issue inside a folded epic; a
   view.selected = "b";
   view.context = { root: "/current-project", cwd: "/current-project" };
   const issues = epicIssues().map((i) => i.id === "b" ? { ...i, epic: null } : i);
-  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 4, data: { issues } }) };
+  state.output = { code: 0, stderr: "", stdout: JSON.stringify({ ok: true, schema_version: 5, data: { issues } }) };
   let pending;
   const cx = { ...sortContext, spawn: (run) => { pending = run(cx); } };
   view.load(cx);
@@ -800,4 +800,127 @@ test("grouping and refresh cannot leave a selected issue inside a folded epic; a
   tree = view.render();
   assert.deepEqual(view.order, ["unassigned", "b"], "a remembered No epic fold must not hide a flat unassigned state");
   assert.equal(findElement(tree, "epic-ready-null"), undefined);
+});
+
+function checkRuns() {
+  return [
+    { seq: 8, issue_id: "a", result: "failed", exit: 2, output: "failed\n<raw output>", output_truncated: true },
+    { seq: 7, issue_id: "b", result: "woken", exit: 1, output: "repair needed" },
+    { seq: 6, issue_id: "c", result: "woken", exit: 0, output: "follow-up ready" },
+    { seq: 5, issue_id: "d", result: "retry", exit: 75, output: "pending" },
+    { seq: 4, issue_id: "closed", result: "passed", exit: 0, output: "passed output" },
+    { seq: 3, issue_id: "a", result: "skipped", exit: 0, output: "" },
+  ].map((r) => ({ at: "2026-11-25T12:30:00Z", duration_ms: 123, timed_out: false, ...r }));
+}
+
+test("Checks shows recorded results, expands literal output and filters failed wakes", async () => {
+  const { view } = await dashboard(spaceState());
+  view.data = { issues: sortIssues(), check_runs: checkRuns() };
+  let tree = view.render();
+  findElement(tree, "view-checks").click({}, sortContext);
+  tree = view.render();
+  const text = content(tree);
+  for (const label of ["failed", "woken (failed)", "woken", "retry", "passed", "skipped", "2026-11-25 12:30:00 UTC", "123 ms"]) {
+    assert.ok(text.includes(label), label);
+  }
+  assert.ok(!text.includes("failed\n<raw output>"), "output starts collapsed");
+  findElement(tree, "check-output-8").click({}, sortContext);
+  tree = view.render();
+  assert.ok(content(tree).includes("failed\n<raw output>"), "output is literal, not markdown/HTML");
+  assert.ok(content(tree).includes("Output truncated · showing tail"));
+  findElement(tree, "checks-failed").click({}, sortContext);
+  tree = view.render();
+  assert.ok(findElement(tree, "check-8"));
+  assert.ok(findElement(tree, "check-7"));
+  for (const seq of [6, 5, 4, 3]) assert.equal(findElement(tree, `check-${seq}`), undefined);
+  findElement(tree, "view-issues").click({}, sortContext);
+  assert.ok(findElement(view.render(), "row-a"));
+  findElement(view.render(), "view-checks").click({}, sortContext);
+  assert.ok(content(view.render()).includes("failed\n<raw output>"), "switching views retains expansion and filter");
+});
+
+test("check IDs copy without selecting and row clicks open closed issues exactly once", async () => {
+  for (const width of [400, 1000]) {
+    const state = spaceState();
+    const { view, executions } = await dashboard(state);
+    view.view = "checks";
+    view.size = { width };
+    view.data = { issues: sortIssues(), check_runs: [...checkRuns(), { ...checkRuns()[4], seq: 2 }] };
+    state.output = { code: 0, stderr: "", stdout: JSON.stringify({
+      ok: true, data: {
+        id: "closed", title: "Completed issue", type: "change", priority: "P2", state: "closed",
+        links: [], deps: { blocked_by: [], blocks: [] }, notes: [], events: [],
+      },
+    }) };
+    let copied, stopped = false, pending;
+    const cx = {
+      ...sortContext, write_to_clipboard: (id) => { copied = id; },
+      stop_propagation: () => { stopped = true; }, spawn: (run) => { pending = run(cx); },
+    };
+    let tree = view.render();
+    findElement(tree, "copy-check-4-closed").click({}, cx);
+    assert.equal(copied, "closed");
+    assert.equal(stopped, true);
+    assert.equal(view.selected, null);
+    findElement(tree, "check-row-4").click({}, cx);
+    await pending;
+    tree = view.render();
+    assert.equal(view.selected, "closed");
+    assert.equal(view.open, true);
+    assert.ok(content(tree).includes("Completed issue"));
+    assert.equal(content(tree).filter((s) => s === "Completed issue").length, 1, "repeated runs must not duplicate native detail IDs");
+    assert.deepEqual(executions[0].args, ["--json", "show", "closed", "--with", "notes,events,deps"]);
+    findElement(tree, "hide-detail").click({}, cx);
+    assert.equal(findElement(view.render(), "detail-closed"), undefined);
+  }
+});
+
+test("normal refresh supplies Checks in tab, split and fixed layout without a watch process", async () => {
+  for (const props of [{ folder: "/pinned" }, {}, { fixedTab: true }]) {
+    const state = { ...spaceState(), props, shared: new Map() };
+    state.shared.set("trk-tabs.project", { space: "current", cwd: "/current-project", on: null, epoch: 1 });
+    const { view, executions } = await dashboard(state);
+    const loc = view.location();
+    view.context = { ...loc, key: JSON.stringify(loc), root: loc.cwd };
+    view.enter(loc.cwd);
+    view.view = "checks";
+    view.render();
+    let pending;
+    const cx = { notify() {}, spawn: (run) => { pending = run(cx); } };
+    const refresh = async (runs) => {
+      state.output = { code: 0, stderr: "", stdout: JSON.stringify({
+        ok: true, schema_version: 5, data: { issues: [], check_runs: runs },
+      }) };
+      view.load(cx);
+      await pending;
+    };
+    await refresh([checkRuns()[0]]);
+    findElement(view.render(), "check-output-8").click({}, sortContext);
+    await refresh([checkRuns()[1], checkRuns()[0]]);
+    let tree = view.render();
+    assert.ok(findElement(tree, "check-7"), "another terminal's new run appears on refresh");
+    assert.ok(content(tree).includes("failed\n<raw output>"), "refresh preserves expanded output");
+    await refresh([]);
+    tree = view.render();
+    assert.ok(content(tree).includes("No recorded check runs yet."));
+    assert.equal(view.expandedChecks.has(8), false, "evicted runs release expansion state");
+    assert.ok(executions.every((e) => e.args.at(-1) === "dashboard"), "no buffered --watch command");
+    assert.equal(executions[0].options.cwd, loc.cwd);
+    if (props.fixedTab) assert.deepEqual(executions[0].args.slice(1, 3), ["--dir", `${loc.cwd}/.trk`]);
+  }
+});
+
+test("Checks has empty states and cannot dispatch hidden issue keyboard actions", async () => {
+  const { view } = await dashboard({ ...spaceState(), props: { view: "checks" } });
+  view.data = { issues: sortIssues(), check_runs: [] };
+  view.selected = "a";
+  view.open = true;
+  view.order = ["a", "b"];
+  assert.ok(content(view.render()).includes("No recorded check runs yet."));
+  for (const key_char of ["j", "k", "o", "O", "e", "x"]) view.key({ key_char }, sortContext);
+  assert.equal(view.selected, "a");
+  assert.equal(view.prompt, null);
+  assert.deepEqual(view.sort, { key: "priority", desc: false });
+  findElement(view.render(), "checks-failed").click({}, sortContext);
+  assert.ok(content(view.render()).includes("No failed check runs."));
 });

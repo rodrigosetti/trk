@@ -11,6 +11,23 @@ trk herdr open                   # the panel for this project, as a tab in this 
 trk herdr open --split right     # beside this terminal's pane instead (or: down)
 ```
 
+Native **Issues / Checks** tabs switch views in tabs, splits, and the fixed first tab in the **trk**
+layout. **Checks** lists the latest 100 completed executions, newest first: UTC timestamp,
+copyable issue ID, result, and duration in milliseconds. **Output** expands the captured
+combined stdout/stderr as literal text, including successful checks and retries.
+Truncated output is marked. Click the row to open issue details, including closed issues;
+ID and Output clicks do not select the issue. **Failed only** includes failed runs and
+failure wakes, but not successful wakes, retries, or stale/skipped results.
+
+The panel reads `check_runs` from the store-backed `trk dashboard --json` snapshot,
+on its normal database-change/10-second refresh (remote panels use the timer). A watcher
+in another terminal supplies the same records; the panel never starts or reads a
+`--watch` stream. Runs survive panel/watcher restarts. Only executions by an updated
+binary are recorded; earlier lifecycle events are not backfilled. The store retains
+100 runs globally per project, each with at most a 4096-byte UTF-8 output tail.
+View/filter/expansion choices are per-panel memory; set `"view": "checks"` in mod props
+to start on Checks after opening or restarting a panel.
+
 Each issue row and detail header shows a colored type badge, including `code-change`.
 Built-in types use consistent theme colors; custom types get a stable color from their name.
 The type text stays readable in the theme's foreground color, with a full-name tooltip.

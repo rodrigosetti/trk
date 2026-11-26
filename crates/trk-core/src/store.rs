@@ -280,7 +280,7 @@ fn migration_backup(conn: &Connection, path: &Path) -> Result<PathBuf> {
     Ok(backup)
 }
 
-fn migrations() -> [M<'static>; 7] {
+fn migrations() -> [M<'static>; 8] {
     [
         M::up(include_str!("schema_v1.sql")),
         M::up(include_str!("resume_chat.sql")).foreign_key_check(),
@@ -291,6 +291,7 @@ fn migrations() -> [M<'static>; 7] {
         M::up(
             "ALTER TABLE issue ADD COLUMN waiting_on_pass TEXT NOT NULL DEFAULT 'close' CHECK (waiting_on_pass IN ('close', 'wake'));",
         ),
+        M::up(include_str!("check_runs.sql")),
     ]
 }
 
@@ -748,6 +749,25 @@ mod tests {
                 .unwrap(),
             crate::ops::CheckResult::Passed,
         );
+    }
+
+    #[test]
+    fn check_runs_migration_preserves_issues_and_starts_an_empty_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let mut conn = Connection::open(&path).unwrap();
+        let steps = migrations();
+        Migrations::from_slice(&steps[..7])
+            .to_latest(&mut conn)
+            .unwrap();
+        seed_legacy_database(&conn);
+        drop(conn);
+        let store = Store::open(&path, StoreOpts::default()).unwrap();
+        let dashboard = store
+            .read(None, |c| c.dashboard(0, &|_, _, _| None, &|_| None))
+            .unwrap();
+        assert_eq!(dashboard.issues[0].id, "trk-old");
+        assert!(dashboard.check_runs.is_empty());
     }
 
     fn seed_legacy_database(conn: &Connection) {

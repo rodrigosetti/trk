@@ -36,6 +36,12 @@ fn check_large_output_keeps_a_bounded_tail_in_json_and_notes() {
             .as_str()
             .unwrap();
         assert!(note.contains(output), "JSON and note output differ: {note}");
+        let snapshot = e.ok(&["dashboard"]);
+        let run = &snapshot["check_runs"][0];
+        assert_eq!(run["issue_id"], id);
+        assert_eq!(run["result"], "failed");
+        assert_eq!(run["output"].as_str().unwrap().trim_end(), output);
+        assert_eq!(run["output_truncated"], true);
         assert_no_check_logs(&e);
     }
 }
@@ -129,4 +135,45 @@ fn check_failed_group_cleanup_leaves_no_log() {
     assert!(!check_group_alive(pgid));
     assert_eq!(e.ok(&["show", &id])["state"], "waiting");
     assert_no_check_logs(&e);
+}
+
+#[test]
+fn dashboard_records_external_watch_runs_across_restarts() {
+    let e = Env::new();
+    let retry = e.waiting(
+        "pending",
+        "printf 'pending stdout\\n'; printf 'pending stderr\\n' >&2; exit 75",
+    );
+    let passed = e.waiting("complete", "echo passed-output");
+    for count in [2, 3] {
+        let mut command = StdCommand::new(assert_cmd::cargo::cargo_bin("trk"));
+        command
+            .args(["check", "--all", "--watch", "1h", "--no-gc"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut watcher = CheckRunner::spawn_command(&e, command);
+        check_wait_until("external watcher runs in the dashboard snapshot", || {
+            e.ok(&["dashboard"])["check_runs"].as_array().unwrap().len() == count
+        });
+        watcher.signal("-TERM");
+        watcher.wait();
+        let snapshot = e.ok(&["dashboard"]);
+        let runs = snapshot["check_runs"].as_array().unwrap();
+        assert_eq!(runs.len(), count);
+        let pending = runs.iter().find(|r| r["issue_id"] == retry).unwrap();
+        assert_eq!(pending["result"], "retry");
+        assert_eq!(pending["output"], "pending stdout\npending stderr\n");
+        assert_eq!(pending["exit"], 75);
+        assert!(pending["duration_ms"].is_u64());
+        let complete = runs.iter().find(|r| r["issue_id"] == passed).unwrap();
+        assert_eq!(complete["result"], "passed");
+        assert_eq!(complete["output"], "passed-output\n");
+        assert!(
+            !snapshot["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["id"] == passed)
+        );
+    }
 }

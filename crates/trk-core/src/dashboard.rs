@@ -129,6 +129,20 @@ pub struct CheckRunner {
     pub busy: bool,
 }
 
+/// A completed check execution, including output even when it passed or retried.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecentCheckRun {
+    pub seq: i64,
+    pub issue_id: String,
+    pub result: String,
+    pub at: String,
+    pub duration_ms: u64,
+    pub exit: Option<i32>,
+    pub timed_out: bool,
+    pub output: String,
+    pub output_truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Dashboard {
     pub generated_at: String,
@@ -137,6 +151,8 @@ pub struct Dashboard {
     /// Every issue that is not closed: by group, then priority, then age.
     pub issues: Vec<DashIssue>,
     pub check_runner: Option<CheckRunner>,
+    /// The latest 100 executions, newest first, with at most 4096 output bytes each.
+    pub check_runs: Vec<RecentCheckRun>,
     /// The latest events of all issues, newest first.
     pub activity: Vec<Event>,
 }
@@ -399,12 +415,33 @@ impl Ctx<'_> {
             })?
             .collect::<std::result::Result<_, _>>()?;
 
+        let mut st = self.conn.prepare(
+            "SELECT seq, issue_id, result, at, duration_ms, exit, timed_out, output, output_truncated
+             FROM check_run ORDER BY seq DESC LIMIT 100",
+        )?;
+        let check_runs = st
+            .query_map([], |r| {
+                Ok(RecentCheckRun {
+                    seq: r.get(0)?,
+                    issue_id: r.get(1)?,
+                    result: r.get(2)?,
+                    at: r.get(3)?,
+                    duration_ms: r.get::<_, i64>(4)? as u64,
+                    exit: r.get(5)?,
+                    timed_out: r.get(6)?,
+                    output: r.get(7)?,
+                    output_truncated: r.get(8)?,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+
         Ok(Dashboard {
             generated_at: now,
             max_wakes: self.opts.max_wakes,
             counts,
             issues: out,
             check_runner,
+            check_runs,
             activity,
         })
     }

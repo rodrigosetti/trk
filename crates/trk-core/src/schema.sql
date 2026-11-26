@@ -159,6 +159,19 @@ CREATE TABLE check_lock (
   pgid        INTEGER
 );
 
+-- Recent executions are a bounded journal, separate from append-only lifecycle events.
+CREATE TABLE check_run (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_id TEXT NOT NULL REFERENCES issue(id),
+  result TEXT NOT NULL CHECK (result IN ('passed', 'retry', 'woken', 'failed', 'skipped')),
+  at TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  exit INTEGER,
+  timed_out INTEGER NOT NULL,
+  output TEXT NOT NULL,
+  output_truncated INTEGER NOT NULL
+);
+
 -- Destructive GC effects hold only this issue-scoped reservation, not a transaction.
 CREATE TABLE gc_reservation (
   issue_id TEXT PRIMARY KEY REFERENCES issue(id),

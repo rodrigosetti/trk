@@ -9,7 +9,8 @@ view of the same command result, not a separate query.
 This chapter covers ordinary CLI command results. The [MCP server](mcp.md) owns
 its stdio transport and does not use this envelope. `trk check --watch` prints
 human-readable progress lines as checks finish, even with a JSON format selected;
-use a single `trk check --json` pass for machine-readable results.
+use a single `trk check --json` pass for machine-readable results, or
+`trk dashboard --json` for bounded, persisted execution history.
 
 ## Envelope and version
 
@@ -47,6 +48,7 @@ The type of `data` depends on the command:
 | `epic ls [--all]` | Array of epic objects; active by default. |
 | `check` (one pass) | Object with `busy`, `results`, and optional `holder` or `gc`; see below. |
 | Other commands | The command's typed object/array. Even commands silent in pretty mode can return JSON data. |
+| `dashboard` | Snapshot with open `issues`, counts, activity, runner status, and recent `check_runs`; see below. |
 
 `--fields` changes object keys as well as pretty table columns. Saved views can
 also supply fields. For example, `--fields id,claimed-by,ready` emits exactly
@@ -162,6 +164,25 @@ a `busy` error. Optional `gc` describes the advisory cleanup sweep and its error
 A failed check is also a **result**, not a command error: a completed pass exits
 0 even if it reports `failed`, `woken`, or cleanup errors. Errors such as an
 invalid explicit issue/check request still use the error protocol below.
+
+### Recorded executions
+
+`trk dashboard --json` includes `check_runs`, a persisted journal separate from
+append-only issue activity. It contains the latest 100 completed executions across
+the project, ordered by descending `seq`, including retries and skipped/stale runs.
+Every entry has `seq`, `issue_id`, `result`, `at` (completion timestamp, RFC 3339 UTC),
+`duration_ms` (command execution time), `exit` (nullable), `timed_out`, `output`
+(combined stdout/stderr, including success/retry output), and `output_truncated`.
+The journal retains at most 100 records, each with a 4096-byte UTF-8 output tail.
+Truncation is explicit; empty output is `""`. Dry runs and busy queue responses
+do not create records. Runs from before this journal was installed are not backfilled.
+
+Journal `result` uses five values: `passed`, `retry`, `woken`, `failed`, `skipped`.
+Successful continuation wakes map to `woken` with exit 0; successful checks that
+reopen for unavailable continuation map to `passed`. Failed wakes use `woken` with
+a nonzero/null exit or `timed_out: true`. One-pass `check` results retain their
+more specific `pass_woken` / `pass_reopened` values above. The journal reflects the
+final delivery/recovery outcome, not just the initial lifecycle transition.
 
 ## Errors and process exits
 

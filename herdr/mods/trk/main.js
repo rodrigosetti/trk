@@ -2,23 +2,24 @@
 // you, live sessions and waiting checks. The data is `trk dashboard --json`
 // (the snapshot the terminal dashboard draws); every action runs `trk` itself.
 //
-// Props: { folder?: string, select?: string, focus?: "agent", fixedTab?: boolean, sort?: string, group?: "epic" }
+// Props: { folder?: string, select?: string, focus?: "agent", fixedTab?: boolean, sort?: string, group?: "epic", view?: "issues" | "checks" }
 //   folder  show this project instead of the shown space's.
 //   select  the issue to start on, with its detail open.
 //   focus   "agent": selecting an issue shows its session in an agent block.
 //   sort  priority (default), updated, created or type; "-" reverses the natural direction.
 //   group  "epic": bucket issues by epic inside each state group; flat by default.
+//   view  "checks": start on recorded check executions; issues by default.
 //   fixedTab  layout-owned dashboard; project/machine come from trk-tabs, never discovery.
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Input, TextView } from "gpui-base";
+import { v_flex, h_flex, h_resizable, resizable_panel, InputState, Input, TextView, Tabs, Tab } from "gpui-base";
 import {
   exec, spaces, panes, agents, terminals, theme, settings, props, run, notify, checking,
   shared, setShared, setBadge, setAgentOrder, nextCommand, watchFolder,
 } from "herdr";
 
 /** The envelope version of `trk --json` this mod was written against. */
-const SCHEMA = 4;
+const SCHEMA = 5;
 const GROUPS = [
   { id: "attention", label: "Needs you", color: "blocked" },
   { id: "running", label: "In flight", color: "working" },
@@ -140,6 +141,9 @@ export default class Trk extends View {
     this.foldedEpics = new Set();
     this.sort = initialSort(props()?.sort);
     this.group = props()?.group === "epic" ? "epic" : null;
+    this.view = props()?.view === "checks" ? "checks" : "issues";
+    this.failedOnly = false;
+    this.expandedChecks = new Set();
     this.busy = null;
     this.status = null;
     this.confirm = null;
@@ -262,6 +266,7 @@ export default class Trk extends View {
     this.selected = root ? props()?.select ?? null : null;
     this.open = Boolean(this.selected);
     this.prompt = null; this.confirm = null; this.status = null;
+    this.expandedChecks.clear();
   }
 
   load(cx, restart = false) {
@@ -280,10 +285,12 @@ export default class Trk extends View {
           this.watch(cx, context);
         }
         this.data = out.data;
+        const runs = new Set((this.data.check_runs ?? []).map((r) => r.seq));
+        this.expandedChecks = new Set([...this.expandedChecks].filter((seq) => runs.has(seq)));
         this.error = out.schema_version === SCHEMA ? null : `This mod reads trk's JSON version ${SCHEMA}; the installed trk writes ${out.schema_version}. Run \`trk install\` to refresh the mod.`;
         this.loadedAt = Date.now();
         this.announce(context);
-        if (this.selected && !this.data.issues.some((i) => i.id === this.selected)) { this.selected = null; this.detail = null; }
+        if (this.view === "issues" && this.selected && !this.data.issues.some((i) => i.id === this.selected)) { this.selected = null; this.detail = null; }
         if (this.selected && this.open) {
           cx.notify();
           await this.loadDetail(context);
@@ -510,6 +517,10 @@ export default class Trk extends View {
       return;
     }
     if (e.modifiers?.control || e.modifiers?.platform || e.modifiers?.alt) return;
+    if (this.view === "checks") {
+      if (e.key === "escape") { this.status = null; this.hideDetail(cx); cx.stop_propagation(); }
+      return;
+    }
     const order = this.order ?? [];
     const at = order.indexOf(this.selected);
     const issue = this.data?.issues.find((i) => i.id === this.selected);
@@ -770,6 +781,81 @@ export default class Trk extends View {
         .child(`Group: ${this.group === "epic" ? "Epic" : "Off"}`));
   }
 
+  viewRow(t) {
+    return h_flex().id("views").min_h(32).px(8).py(4).gap(6).flex_wrap().flex_none().items_center()
+      .child(Tabs.new("view-tabs").flex().flex_row().flex_none().border_b(1).border_color(t.border).children(["issues", "checks"].map((view) =>
+        Tab.new(`view-${view}`).selected(this.view === view).h(28).px(10).flex().items_center()
+          .border_b(2).border_color(this.view === view ? t.accent : t.border)
+          .text_size(12).font_medium().text_color(this.view === view ? t.foreground : t.muted)
+          .cursor_pointer().child(view === "issues" ? "Issues" : "Checks")
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            this.view = view;
+            this.prompt = null;
+            this.confirm = null;
+            this.handle.focus();
+            cx.notify();
+          }))))
+      .when(this.view === "checks", (el) => el.child(this.button(t, "checks-failed", this.failedOnly ? "Failed only: On" : "Failed only: Off", (cx) => {
+        this.failedOnly = !this.failedOnly;
+        cx.notify();
+      }, { primary: this.failedOnly })));
+  }
+
+  checkRow(t, check) {
+    const expanded = this.expandedChecks.has(check.seq);
+    const failed = check.result === "failed" || (check.result === "woken" && (check.timed_out || check.exit !== 0));
+    const color = failed ? t.blocked : check.result === "passed" || check.result === "woken" ? t.done : t.dim;
+    return v_flex().id(`check-${check.seq}`).min_w(0).flex_none().rounded(7)
+      .when(this.selected === check.issue_id && this.open, (el) => el.bg(t.selected))
+      .child(h_flex().id(`check-row-${check.seq}`).min_h(30).px(8).py(5).gap(7).items_center().flex_wrap().cursor_pointer().hover((s) => s.bg(t.hover))
+        .tooltip("Open issue details")
+        .on_click((_e, cx) => this.select(check.issue_id, cx))
+        .child(div().text_size(10.5).text_color(t.dim).child(check.at.replace("T", " ").replace(/Z$/, " UTC")))
+        .child(this.issueId(t, check.issue_id, `check-${check.seq}`))
+        .child(div().font_semibold().text_color(color).child(failed && check.result === "woken" ? "woken (failed)" : check.result))
+        .when(check.duration_ms != null, (el) => el.child(div().text_size(10.5).text_color(t.dim).child(`${check.duration_ms} ms`)))
+        .child(this.button(t, `check-output-${check.seq}`, expanded ? "▾ Output" : "▸ Output", (cx) => {
+          expanded ? this.expandedChecks.delete(check.seq) : this.expandedChecks.add(check.seq);
+          cx.notify();
+        })))
+      .when(expanded, (el) => el.child(v_flex().id(`check-output-body-${check.seq}`).min_w(0).px(10).pb(8).gap(4)
+        .when(check.output_truncated, (el) => el.child(div().text_size(10.5).text_color(t.dim).child("Output truncated · showing tail")))
+        .child(div().min_w(0).text_size(11.5).font_family("monospace").whitespace_normal().text_color(t.muted)
+          .child(check.output || "No output."))));
+  }
+
+  checksView(t, now) {
+    this.order = [];
+    const runs = this.data.check_runs ?? [];
+    const shown = this.failedOnly ? runs.filter((r) => r.result === "failed" || (r.result === "woken" && (r.timed_out || r.exit !== 0))) : runs;
+    const detailSeq = shown.find((r) => r.issue_id === this.selected)?.seq;
+    // Passed issues are closed and deliberately absent from dashboard.issues.
+    const d = this.detail?.id === this.selected ? this.detail : null;
+    const issue = this.data.issues.find((i) => i.id === this.selected) ?? (d && !d.failed ? {
+      ...d, attention: [], session: null, blocked_by: d.deps?.blocked_by ?? [], blocks: d.deps?.blocks ?? [],
+    } : null);
+    const details = this.open && issue ? this.detailView(t, issue, now)
+      : this.open && this.selected ? div().p(10).text_color(d?.failed ? t.blocked : t.dim).child(d?.failed ?? "Reading issue…") : null;
+    const list = v_flex().id("trk-checks").w_full().flex_1().min_w(0).min_h(0).px(6).pb(8).overflow_y_scrollbar()
+      .when(this.prompt?.kind === "create", (el) => el.child(div().pt(8).child(this.promptBox(t))))
+      .when(Boolean(this.error), (el) => el.child(div().p(10).text_color(t.blocked).child(this.error)))
+      .when(!shown.length, (el) => el.child(div().p(10).text_color(t.dim).child(this.failedOnly ? "No failed check runs." : "No recorded check runs yet.")))
+      .children(shown.flatMap((r) => [this.checkRow(t, r), ...(!this.wide && details && r.seq === detailSeq ? [details] : [])]));
+    if (!this.wide || !details) return list;
+    return h_resizable("trk-checks-details").w_full().flex_1().min_h(0)
+      .child(resizable_panel().size_range(280).child(v_flex().w_full().h_full().min_w(0).min_h(0).child(list)))
+      .child(resizable_panel().size_range(300).child(v_flex().w_full().h_full().min_w(0).min_h(0).p(10).overflow_y_scrollbar().child(details)));
+  }
+
+  statusFooter(t) {
+    return this.busy || this.status
+      ? h_flex().min_h(26).flex_none().px(12).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(11.5)
+        .when(Boolean(this.busy), (el) => el.child(svg("mods/trk/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)))
+        .child(div().flex_1().min_w(0).whitespace_normal().text_color(this.status?.level === "error" ? t.blocked : t.muted).child(this.busy ? `${this.busy}…` : this.status.text))
+      : null;
+  }
+
   render() {
     const t = theme();
     this.want = this.location();
@@ -790,7 +876,8 @@ export default class Trk extends View {
       .on_size_change((size, cx) => { this.size = size; cx.notify(); })
       .size_full().min_h(0).bg(t.chrome).text_color(t.foreground).text_size(12.8);
     const name = (props()?.fixedTab ? this.want.cwd ?? "" : this.context?.root ?? this.context?.cwd ?? "").split("/").filter(Boolean).pop() ?? "";
-    root.child(this.header(t, name)).child(this.sortRow(t));
+    root.child(this.header(t, name)).child(this.viewRow(t));
+    if (this.view === "issues") root.child(this.sortRow(t));
 
     if (!this.data) {
       const text = this.error ?? "Reading…";
@@ -798,6 +885,11 @@ export default class Trk extends View {
       return root.child(v_flex().p(14).gap(8)
         .child(div().text_size(12).text_color(this.error ? t.muted : t.dim).child(text))
         .when(Boolean(this.error) && missing, (el) => el.child(div().text_size(12).text_color(t.dim).child("Run `trk install` in the project's root to start tracking work here."))));
+    }
+
+    if (this.view === "checks") {
+      const footer = this.statusFooter(t);
+      return root.child(this.checksView(t, now)).when(Boolean(footer), (el) => el.child(footer));
     }
 
     const issues = this.data.issues;
@@ -868,11 +960,7 @@ export default class Trk extends View {
       .when(issues.length === 0, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Nothing open. New files an issue; `trk run` starts an agent on it.")))
       .children(rows);
 
-    const footer = this.busy || this.status
-      ? h_flex().min_h(26).flex_none().px(12).py(6).gap(8).items_center().border_t(1).border_color(t.border).text_size(11.5)
-        .when(Boolean(this.busy), (el) => el.child(svg("mods/trk/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)))
-        .child(div().flex_1().min_w(0).whitespace_normal().text_color(this.status?.level === "error" ? t.blocked : t.muted).child(this.busy ? `${this.busy}…` : this.status.text))
-      : null;
+    const footer = this.statusFooter(t);
 
     // Unsized panes share the initial width equally; this stable group keeps user resizing.
     const body = this.wide && this.open && selected

@@ -156,6 +156,46 @@ fn tail(s: &str, max: usize) -> &str {
 }
 
 impl Ctx<'_> {
+    /// Retain the final runner outcome, including retries and stale executions.
+    /// Keep this separate from lifecycle events so polling does not flood history.
+    pub fn check_run_record(
+        &self,
+        id: &str,
+        result: CheckResult,
+        run: &CheckRun,
+        duration_ms: u64,
+    ) -> Result<()> {
+        let result = match result {
+            CheckResult::Passed | CheckResult::PassReopened => "passed",
+            CheckResult::Woken { .. } | CheckResult::PassWoken { .. } => "woken",
+            other => other.as_str(),
+        };
+        let output = tail(&run.output, CHECK_OUTPUT_TAIL);
+        let truncated =
+            output.len() < run.output.len() || run.output.starts_with("[trk] output truncated;");
+        self.conn.execute(
+            "INSERT INTO check_run
+             (issue_id, result, at, duration_ms, exit, timed_out, output, output_truncated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                result,
+                self.ts(),
+                duration_ms.min(i64::MAX as u64) as i64,
+                run.exit,
+                run.timed_out,
+                output,
+                truncated
+            ],
+        )?;
+        self.conn.execute(
+            "DELETE FROM check_run WHERE seq NOT IN
+             (SELECT seq FROM check_run ORDER BY seq DESC LIMIT 100)",
+            [],
+        )?;
+        Ok(())
+    }
+
     fn save_issue(&self, i: &Issue) -> Result<()> {
         self.conn.execute(
             "UPDATE issue SET state = ?2, title = ?3, description = ?4, priority = ?5, type = ?6,
