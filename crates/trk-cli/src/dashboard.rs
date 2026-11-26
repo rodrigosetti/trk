@@ -367,6 +367,7 @@ impl App<'_> {
                 self.ui.zoom = false;
                 self.ui.mode = Mode::Filter;
             }
+            KeyCode::Char('E') => self.ui.toggle_epics(),
             KeyCode::Char('j') | KeyCode::Down if zoom => self.scroll(1),
             KeyCode::Char('k') | KeyCode::Up if zoom => self.scroll(-1),
             KeyCode::Char('j') | KeyCode::Down => self.select(self.ui.selected + 1),
@@ -730,6 +731,241 @@ mod tests {
         let detail = s.read(None, |c| c.dashboard_detail(&id)).unwrap();
         ui.detail = Some((id, detail));
         ui
+    }
+
+    /// Snapshot-shaped fixtures: core supplies state, priority, age, then ID order.
+    fn epic_ui() -> Ui {
+        let (_dir, store) = sample();
+        let mut ui = ui_of(&store);
+        let mut template = ui
+            .snap
+            .issues
+            .iter()
+            .find(|i| i.title == "Lay the foundation")
+            .unwrap()
+            .clone();
+        template.blocks.clear();
+        ui.snap.issues.clear();
+        ui.snap.activity.clear();
+        for (n, group) in trk_core::dashboard::Group::ALL.into_iter().enumerate() {
+            for (id, title, priority, epic, day) in [
+                ("00", "unassigned-top", "P0", None, "01"),
+                ("10", "zeta-top", "P1", Some("Zeta"), "01"),
+                ("11", "zeta-peer", "P1", Some("Zeta"), "01"),
+                ("20", "beta-top", "P1", Some("Beta"), "02"),
+                ("30", "alpha-top", "P1", Some("Alpha"), "02"),
+                ("40", "gamma-top", "P1", Some("Gamma"), "03"),
+                ("50", "aardvark-top", "P2", Some("Aardvark"), "01"),
+                ("60", "alpha-tail", "P3", Some("Alpha"), "01"),
+                ("70", "zeta-tail", "P3", Some("Zeta"), "02"),
+                ("80", "unassigned-tail", "P3", None, "03"),
+            ] {
+                let mut issue = template.clone();
+                issue.id = format!("t-{n}{id}");
+                issue.title = title.into();
+                issue.priority = priority.into();
+                issue.epic = epic.map(str::to_owned);
+                issue.group = group;
+                issue.created_at = format!("2026-11-{day}T00:00:00Z");
+                ui.snap.issues.push(issue);
+            }
+        }
+        ui.snap.issues.sort_by(|a, b| {
+            (&a.group, &a.priority, &a.created_at, &a.id).cmp(&(
+                &b.group,
+                &b.priority,
+                &b.created_at,
+                &b.id,
+            ))
+        });
+        ui.refilter(None);
+        ui
+    }
+
+    #[test]
+    fn epic_buckets_rank_by_priority_age_then_name_in_every_state() {
+        let mut ui = epic_ui();
+        ui.toggle_epics();
+        for group in trk_core::dashboard::Group::ALL {
+            ui.filter = group.label().into();
+            ui.refilter(None);
+            let titles: Vec<_> = ui
+                .rows
+                .iter()
+                .map(|idx| ui.snap.issues[*idx].title.as_str())
+                .collect();
+            assert_eq!(
+                titles,
+                [
+                    "zeta-top",
+                    "zeta-peer",
+                    "zeta-tail",
+                    "alpha-top",
+                    "alpha-tail",
+                    "beta-top",
+                    "gamma-top",
+                    "aardvark-top",
+                    "unassigned-top",
+                    "unassigned-tail",
+                ],
+                "{group:?}"
+            );
+            let text = screen(&mut ui, 100, 35);
+            let headings = [
+                "Zeta · 3",
+                "Alpha · 2",
+                "Beta · 1",
+                "Gamma · 1",
+                "Aardvark · 1",
+                "No epic · 2",
+            ];
+            let mut previous = 0;
+            for heading in headings {
+                let position = text
+                    .find(heading)
+                    .unwrap_or_else(|| panic!("missing {heading}:\n{text}"));
+                assert!(position > previous, "{text}");
+                previous = position;
+            }
+        }
+    }
+
+    #[test]
+    fn entirely_unassigned_state_groups_render_flat_when_grouped() {
+        let mut ui = epic_ui();
+        for issue in &mut ui.snap.issues {
+            issue.epic = None;
+        }
+        for group in trk_core::dashboard::Group::ALL {
+            ui.filter = group.label().into();
+            ui.refilter(None);
+            let flat = screen(&mut ui, 100, 35);
+            ui.toggle_epics();
+            let grouped = screen(&mut ui, 100, 35);
+            assert!(!grouped.contains("No epic"), "{grouped}");
+            // Only the footer's toggle indicator changes.
+            assert!(
+                flat.lines().take(34).eq(grouped.lines().take(34)),
+                "{grouped}"
+            );
+            ui.toggle_epics();
+        }
+    }
+
+    #[test]
+    fn epic_toggles_keep_selection_and_navigation_follows_visible_issues() {
+        let mut ui = epic_ui();
+        ui.selected = ui
+            .rows
+            .iter()
+            .position(|idx| ui.snap.issues[*idx].title == "alpha-tail")
+            .unwrap();
+        let keep = ui.issue().unwrap().id.clone();
+        ui.detail.as_mut().unwrap().0 = keep.clone();
+        ui.zoom = true;
+        ui.toggle_epics();
+        assert_eq!(ui.issue().unwrap().id, keep);
+        assert_eq!(ui.detail.as_ref().unwrap().0, keep);
+        assert!(ui.zoom);
+        ui.zoom = false;
+        for n in 0..ui.rows.len() {
+            ui.selected = n;
+            let keep = ui.issue().unwrap().id.clone();
+            let title = ui.issue().unwrap().title.clone();
+            let text = screen(&mut ui, 100, 9);
+            let selected = text.lines().find(|line| line.contains("▸ P")).unwrap();
+            assert!(selected.contains(&title), "{text}");
+            ui.toggle_epics();
+            assert_eq!(ui.issue().unwrap().id, keep);
+            ui.toggle_epics();
+            assert_eq!(ui.issue().unwrap().id, keep);
+            assert_eq!(ui.selected, n);
+        }
+        // Filtering and changed membership preserve the grouped selection too.
+        ui.filter = "unassigned-tail".into();
+        let keep = ui.issue().unwrap().id.clone();
+        ui.refilter(Some(&keep));
+        let idx = ui.rows[ui.selected];
+        ui.snap.issues[idx].epic = Some("New epic".into());
+        ui.refilter(Some(&keep));
+        assert_eq!(ui.issue().unwrap().id, keep);
+    }
+
+    #[test]
+    fn flat_epic_tags_give_way_before_the_title_or_status() {
+        let (_dir, store) = sample();
+        let mut ui = ui_of(&store);
+        let issue = ui
+            .snap
+            .issues
+            .iter_mut()
+            .find(|i| i.title == "Lay the foundation")
+            .unwrap();
+        issue.epic = Some("Architecture".into());
+        let wide = screen(&mut ui, 140, 40);
+        let row = wide
+            .lines()
+            .find(|line| line.contains("Lay the foundation"))
+            .unwrap();
+        assert!(row.contains("[Architecture]"), "{row}");
+        let narrow = screen(&mut ui, 54, 40);
+        let tagged = narrow
+            .lines()
+            .find(|line| line.contains("Lay the foundation"))
+            .unwrap()
+            .to_owned();
+        ui.snap
+            .issues
+            .iter_mut()
+            .find(|i| i.title == "Lay the foundation")
+            .unwrap()
+            .epic = None;
+        let untagged = screen(&mut ui, 54, 40);
+        let plain = untagged
+            .lines()
+            .find(|line| line.contains("Lay the foundation"))
+            .unwrap();
+        assert_eq!(tagged, plain);
+        assert!(tagged.contains("unblocks 1"), "{tagged}");
+    }
+
+    #[test]
+    fn blocked_hints_show_only_cross_epic_membership_in_both_modes() {
+        let (_dir, store) = sample();
+        let mut ui = ui_of(&store);
+        let blocked = ui
+            .snap
+            .issues
+            .iter()
+            .position(|i| i.title == "Build the roof")
+            .unwrap();
+        let blocker = ui.snap.issues[blocked].blocked_by[0].id.clone();
+        for grouped in [false, true] {
+            if grouped {
+                ui.toggle_epics();
+            }
+            for (own, other, tag) in [
+                (Some("Roof"), Some("Foundation"), Some("Foundation")),
+                (Some("Roof"), None, Some("No epic")),
+                (None, Some("Foundation"), Some("Foundation")),
+                (Some("Foundation"), Some("Foundation"), None),
+                (None, None, None),
+            ] {
+                ui.snap.issues[blocked].epic = own.map(str::to_owned);
+                ui.snap.issues[blocked].blocked_by[0].epic = other.map(str::to_owned);
+                ui.refilter(None);
+                let text = screen(&mut ui, 180, 40);
+                let hint = text
+                    .lines()
+                    .find(|line| line.contains("blocked by"))
+                    .unwrap();
+                let want = match tag {
+                    Some(tag) => format!("blocked by {blocker} [{tag}] Lay the foundation (open)"),
+                    None => format!("blocked by {blocker} Lay the foundation (open)"),
+                };
+                assert!(hint.contains(&want), "{text}");
+            }
+        }
     }
 
     #[test]

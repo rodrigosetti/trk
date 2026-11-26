@@ -1,6 +1,8 @@
 //! Drawing the dashboard. Everything here is a pure view of `Ui`: no store,
 //! no processes, so a test can render it into a buffer.
 
+use std::collections::BTreeMap;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -51,6 +53,8 @@ pub struct Ui {
     pub snap: Dashboard,
     pub now: jiff::Timestamp,
     pub filter: String,
+    /// Add epic buckets inside each state group; never changes the snapshot.
+    pub group_epics: bool,
     /// Indexes into `snap.issues` that pass the filter, in display order.
     pub rows: Vec<usize>,
     /// Index into `rows`.
@@ -76,6 +80,7 @@ impl Ui {
             snap,
             now,
             filter: String::new(),
+            group_epics: false,
             rows: vec![],
             selected: 0,
             detail: None,
@@ -97,6 +102,12 @@ impl Ui {
             .and_then(|i| self.snap.issues.get(*i))
     }
 
+    pub fn toggle_epics(&mut self) {
+        let keep = self.issue().map(|i| i.id.clone());
+        self.group_epics = !self.group_epics;
+        self.refilter(keep.as_deref());
+    }
+
     /// Recompute the visible rows, keeping the selection on `keep` when it
     /// is still visible.
     pub fn refilter(&mut self, keep: Option<&str>) {
@@ -115,6 +126,38 @@ impl Ui {
             })
             .map(|(n, _)| n)
             .collect();
+        if self.group_epics {
+            let mut buckets: BTreeMap<_, Vec<usize>> = BTreeMap::new();
+            for &idx in &self.rows {
+                let i = &self.snap.issues[idx];
+                buckets
+                    .entry((i.group, i.epic.as_deref()))
+                    .or_default()
+                    .push(idx);
+            }
+            let mut buckets: Vec<_> = buckets.into_iter().collect();
+            buckets.sort_unstable_by(|((ag, ae), a), ((bg, be), b)| {
+                ag.cmp(bg).then_with(|| match (ae, be) {
+                    (None, None) => std::cmp::Ordering::Equal,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (Some(ae), Some(be)) => {
+                        // The snapshot supplies priority, age, then ID order.
+                        // Bucket ranks use priority/age, not the fixed ID tie-break.
+                        let a = &self.snap.issues[a[0]];
+                        let b = &self.snap.issues[b[0]];
+                        a.priority
+                            .cmp(&b.priority)
+                            .then_with(|| a.created_at.cmp(&b.created_at))
+                            .then_with(|| ae.cmp(be))
+                    }
+                })
+            });
+            self.rows.clear();
+            for (_, members) in buckets {
+                self.rows.extend(members);
+            }
+        }
         let kept = keep.and_then(|id| self.rows.iter().position(|i| self.snap.issues[*i].id == id));
         self.selected = kept
             .unwrap_or(self.selected)
@@ -496,7 +539,19 @@ fn row_more(i: &DashIssue, ui: &Ui) -> String {
         .blocked_by
         .iter()
         .filter(|b| b.state != State::Closed)
-        .map(|b| format!("{} {} ({})", b.id, b.title, b.state))
+        .map(|b| {
+            if b.epic != i.epic {
+                format!(
+                    "{} [{}] {} ({})",
+                    b.id,
+                    b.epic.as_deref().unwrap_or("No epic"),
+                    b.title,
+                    b.state
+                )
+            } else {
+                format!("{} {} ({})", b.id, b.title, b.state)
+            }
+        })
         .collect();
     if !open.is_empty() {
         parts.push(format!("blocked by {}", open.join(", ")));
@@ -510,6 +565,7 @@ fn row_more(i: &DashIssue, ui: &Ui) -> String {
 
 enum Row {
     Group(Group, usize),
+    Epic(usize, usize),
     Issue(usize),
     /// The second line of an issue.
     More(String),
@@ -541,36 +597,48 @@ fn list(frame: &mut Frame, area: Rect, ui: &mut Ui) {
 
     let mut rows = vec![];
     let mut selected_line = 0;
-    let mut last = None;
-    for (n, idx) in ui.rows.iter().enumerate() {
-        let g = ui.snap.issues[*idx].group;
-        if last != Some(g) {
-            let count = ui
-                .rows
+    let mut n = 0;
+    for members in ui
+        .rows
+        .chunk_by(|a, b| ui.snap.issues[*a].group == ui.snap.issues[*b].group)
+    {
+        let g = ui.snap.issues[members[0]].group;
+        rows.push(Row::Group(g, members.len()));
+        let grouped = ui.group_epics
+            && members
                 .iter()
-                .filter(|i| ui.snap.issues[**i].group == g)
-                .count();
-            rows.push(Row::Group(g, count));
-            last = Some(g);
-        }
-        if n == ui.selected {
-            selected_line = rows.len();
-        }
-        rows.push(Row::Issue(n));
-        let more = row_more(&ui.snap.issues[*idx], ui);
-        if !more.is_empty() {
-            rows.push(Row::More(more));
+                .any(|idx| ui.snap.issues[*idx].epic.is_some());
+        for bucket in
+            members.chunk_by(|a, b| !grouped || ui.snap.issues[*a].epic == ui.snap.issues[*b].epic)
+        {
+            if grouped {
+                rows.push(Row::Epic(bucket[0], bucket.len()));
+            }
+            for idx in bucket {
+                if n == ui.selected {
+                    selected_line = rows.len();
+                }
+                rows.push(Row::Issue(n));
+                let more = row_more(&ui.snap.issues[*idx], ui);
+                if !more.is_empty() {
+                    rows.push(Row::More(more));
+                }
+                n += 1;
+            }
         }
     }
 
-    // Keep the selection in view: both of its lines, and its group heading
-    // when it is the first of its group.
+    // Keep both issue lines in view, plus its headings when they fit.
     let height = inner.height as usize;
-    let first_wanted = selected_line.saturating_sub(1);
+    let mut first_wanted = selected_line;
+    while first_wanted > 0 && matches!(rows[first_wanted - 1], Row::Group(..) | Row::Epic(..)) {
+        first_wanted -= 1;
+    }
     let last_wanted = match rows.get(selected_line + 1) {
         Some(Row::More(_)) => selected_line + 1,
         _ => selected_line,
     };
+    first_wanted = first_wanted.max((last_wanted + 1).saturating_sub(height));
     if last_wanted >= ui.list_top + height {
         ui.list_top = last_wanted + 1 - height;
     }
@@ -602,6 +670,22 @@ fn list(frame: &mut Frame, area: Rect, ui: &mut Ui) {
                 ),
                 Span::styled(format!("{count}"), dim()),
             ]),
+            Row::Epic(idx, count) => {
+                let count = format!(" · {count}");
+                Line::from(vec![
+                    Span::styled(
+                        fit(
+                            &format!(
+                                "  {}",
+                                ui.snap.issues[*idx].epic.as_deref().unwrap_or("No epic")
+                            ),
+                            width.saturating_sub(count.width()),
+                        ),
+                        dim(),
+                    ),
+                    Span::styled(count, dim()),
+                ])
+            }
             Row::Issue(n) => {
                 let i = &ui.snap.issues[ui.rows[*n]];
                 let selected = *n == ui.selected;
@@ -609,13 +693,22 @@ fn list(frame: &mut Frame, area: Rect, ui: &mut Ui) {
                 let st = |s: Style| if selected { Style::new() } else { s };
                 let info = fit(&row_info(i, ui.now), (width * 2 / 5).min(36));
                 let room = width.saturating_sub(title_indent + info.width() + 1);
-                // The chip gives way before the title does.
+                // The link chip gives way before the title does.
                 let chip = link_chip(i)
                     .map(|c| format!("  {c}"))
                     .filter(|c| room >= c.width() + 16)
                     .unwrap_or_default();
-                let title = fit(&i.title, room - chip.width());
-                let pad = room.saturating_sub(title.width() + chip.width()) + 1;
+                // Epic tags use only spare room: drop them before clipping
+                // the title, link chip, or right-hand status.
+                let tag_room = room.saturating_sub(i.title.width() + chip.width());
+                let tag = i
+                    .epic
+                    .as_deref()
+                    .filter(|_| !ui.group_epics && tag_room > 4)
+                    .map(|epic| format!("  [{}]", fit(epic, tag_room - 4)))
+                    .unwrap_or_default();
+                let title = fit(&i.title, room - chip.width() - tag.width());
+                let pad = room.saturating_sub(title.width() + chip.width() + tag.width()) + 1;
                 let info_style = if i.group == Group::Attention {
                     Style::new().fg(Color::Red)
                 } else {
@@ -631,6 +724,7 @@ fn list(frame: &mut Frame, area: Rect, ui: &mut Ui) {
                     Span::raw("  "),
                     Span::raw(title),
                     Span::styled(chip, st(Style::new().fg(Color::Cyan))),
+                    Span::styled(tag, st(dim())),
                     Span::raw(" ".repeat(pad)),
                     Span::styled(info, st(info_style)),
                 ]);
@@ -987,6 +1081,11 @@ fn activity(frame: &mut Frame, area: Rect, ui: &Ui) {
 fn hints(ui: &Ui) -> String {
     let mut keys = vec!["j/k move"];
     keys.push(if ui.zoom { "⏎ list" } else { "⏎ details" });
+    keys.push(if ui.group_epics {
+        "E epics:on"
+    } else {
+        "E epics:off"
+    });
     if let Some(i) = ui.issue() {
         if runnable(i) {
             keys.push("r run");
@@ -1098,6 +1197,10 @@ const HELP: &[(&str, &str)] = &[
     ),
     ("j k  PgDn PgUp", "scroll the details when they are open"),
     ("/", "filter by id, title, priority or group; Esc clears"),
+    (
+        "E",
+        "toggle epic grouping inside every state group (off by default)",
+    ),
     ("", ""),
     ("r", "run: start an agent session on a ready issue"),
     ("a", "go to the session's terminal (Herdr pane, or attach)"),
