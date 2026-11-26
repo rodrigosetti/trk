@@ -1127,6 +1127,45 @@ fn the_check_lock_group_persists_and_replacement_clears_it() {
     assert_eq!((lock.0, lock.1, lock.3), (42, None, None));
 }
 
+#[test]
+fn check_unlock_refuses_agents_and_changed_holders() {
+    let (_d, mut s) = setup();
+    assert_eq!(
+        s.write(AGENT, false, |c| c.check_lock_unlock(None))
+            .unwrap_err()
+            .code(),
+        Code::NotPermitted,
+    );
+    s.write(HUMAN, false, |c| c.check_lock_take(41, Some("host")))
+        .unwrap();
+    let original = s.read(None, |c| c.check_lock()).unwrap().unwrap();
+    s.write(HUMAN, false, |c| c.check_lock_group(41, Some(51)))
+        .unwrap();
+    assert_eq!(
+        s.write(HUMAN, false, |c| c.check_lock_unlock(Some(&original)))
+            .unwrap_err()
+            .code(),
+        Code::InvalidState,
+    );
+    let holder = s.read(None, |c| c.check_lock()).unwrap().unwrap();
+    assert_eq!(holder.3, Some(51));
+    assert!(s.read(None, |c| c.all_events()).unwrap().is_empty());
+    assert_eq!(
+        s.write(AGENT, false, |c| c.check_lock_unlock(Some(&holder)))
+            .unwrap_err()
+            .code(),
+        Code::NotPermitted,
+    );
+    assert!(
+        s.write(HUMAN, false, |c| c.check_lock_unlock(Some(&holder)))
+            .unwrap()
+    );
+    assert!(s.read(None, |c| c.check_lock()).unwrap().is_none());
+    let events = s.read(None, |c| c.all_events()).unwrap();
+    assert_eq!(events[0].actor, HUMAN);
+    assert_eq!(events[0].payload["check_unlock"]["pgid"], 51);
+}
+
 fn collected_at(s: &Store, id: &str) -> Option<String> {
     s.conn()
         .query_row(

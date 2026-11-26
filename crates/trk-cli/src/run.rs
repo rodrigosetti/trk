@@ -1,6 +1,8 @@
 //! `trk run` and friends: launcher profiles and persistent sessions.
 
 use std::collections::BTreeMap;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::sync::Arc;
@@ -277,7 +279,10 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
                 }
             }
         }
-        std::fs::create_dir_all(&session_dir)?;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&session_dir)?;
     }
 
     // 4. Claim.
@@ -376,9 +381,21 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
             for (path, content) in &spec.files {
                 let p = PathBuf::from(path);
                 if let Some(d) = p.parent() {
-                    std::fs::create_dir_all(d)?;
+                    std::fs::DirBuilder::new()
+                        .recursive(true)
+                        .mode(0o700)
+                        .create(d)?;
                 }
-                std::fs::write(&p, content)?;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .mode(0o600)
+                    .open(&p)?;
+                // Restrict existing files before replacing their contents.
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+                file.set_len(0)?;
+                file.write_all(content.as_bytes())?;
                 if checkout.is_some()
                     && let Ok(rel) = p.strip_prefix(&cwd)
                 {

@@ -202,12 +202,13 @@ fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<(
     }
 }
 
-fn migrations() -> [M<'static>; 5] {
+fn migrations() -> [M<'static>; 6] {
     [
         M::up(include_str!("schema_v1.sql")),
         M::up(include_str!("resume_chat.sql")).foreign_key_check(),
         M::up(include_str!("epics.sql")).foreign_key_check(),
         M::up(include_str!("gc.sql")).foreign_key_check(),
+        M::up(include_str!("gc_sessions.sql")),
         M::up(include_str!("drop_inbox.sql")).foreign_key_check(),
     ]
 }
@@ -684,7 +685,7 @@ mod tests {
         let path = dir.path().join("trk.db");
         let mut conn = Connection::open(&path).unwrap();
         let old = migrations();
-        Migrations::from_slice(&old[..4])
+        Migrations::from_slice(&old[..5])
             .to_latest(&mut conn)
             .unwrap();
         seed_legacy_database(&conn);
@@ -707,13 +708,6 @@ mod tests {
 
         let mut store = Store::open(&path, StoreOpts::default()).unwrap();
         assert_eq!(store.read(None, |c| c.events("trk-old")).unwrap(), before);
-        assert_eq!(
-            store
-                .conn
-                .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
-                .unwrap(),
-            5
-        );
         let removed_objects: i64 = store
             .conn
             .query_row(
@@ -792,6 +786,70 @@ mod tests {
             .unwrap();
         assert_eq!(reservations, 0);
         assert_eq!(store.read(None, |c| c.events("trk-old")).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn gc_sessions_migration_requeues_previously_collected_agent_issues_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let mut conn = Connection::open(&path).unwrap();
+        let old = migrations();
+        Migrations::from_slice(&old[..4])
+            .to_latest(&mut conn)
+            .unwrap();
+        seed_legacy_database(&conn);
+        let mut store = Store {
+            conn,
+            opts: StoreOpts::default(),
+        };
+        store
+            .write(
+                "agent:omp:7b9a08b0-1429-432b-bd07-a094f9016f3f",
+                false,
+                |c| {
+                    c.claim("trk-old", crate::ops::ClaimOpts::default())?;
+                    c.close("trk-old", "done", None, false)
+                },
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE issue SET gc_collected_at = '2026-11-20T10:00:00Z' WHERE id = 'trk-old'",
+                [],
+            )
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path, StoreOpts::default()).unwrap();
+        let completed = || {
+            store
+                .conn
+                .query_row(
+                    "SELECT gc_collected_at FROM issue WHERE id = 'trk-old'",
+                    [],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(completed(), None);
+        store
+            .conn
+            .execute(
+                "UPDATE issue SET gc_collected_at = '2026-11-20T11:00:00Z' WHERE id = 'trk-old'",
+                [],
+            )
+            .unwrap();
+        drop(store);
+        let store = Store::open(&path, StoreOpts::default()).unwrap();
+        let collected: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT gc_collected_at FROM issue WHERE id = 'trk-old'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(collected.as_deref(), Some("2026-11-20T11:00:00Z"));
     }
 
     #[test]

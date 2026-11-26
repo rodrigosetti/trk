@@ -1,6 +1,6 @@
 ## Cleaning up closed issues
 
-Closing retains the session, worktree and branch; use explicit garbage collection after work has landed:
+Closing retains the terminal, session directory, worktree and branch; use explicit garbage collection after work has landed:
 
 ```sh
 trk gc --dry-run --json                   # preview all closed-as-done issues
@@ -28,6 +28,9 @@ again. Any skipped resource or failed operation keeps the issue eligible for ret
 reopening clears completion. Explicit `trk gc ID` still re-inspects completed issues.
 Dry runs do not record completion or reserve issues.
 
+After upgrading from GC that did not collect session directories, previously completed
+issues with agent claims are made eligible for one more automatic sweep.
+
 Sessions use each historical claim's pinned launcher, never today's selection order.
 Terminals without a recorded launcher profile are normally skipped, including during
 `trk check --watch` sweeps; their independently owned Git resources remain eligible.
@@ -48,6 +51,23 @@ refused targets are reported as skipped. A missing directory's remaining Git reg
 can still prevent branch deletion; GC does not force or prune it.
 Runs without a recorded issue worktree have no worktree or branch resources for GC to
 collect; their recorded sessions remain eligible for normal session cleanup.
+
+GC also removes `.trk/sessions/<uuid>/` for every historical local agent claim,
+including runs without a terminal or worktree. Directory cleanup is independent of
+terminal and Git cleanup, but obeys the same issue eligibility, host, age, reservation
+and dry-run gates. Only UUID session IDs establish directory ownership. Symlinked
+session directories, paths resolving outside `.trk/sessions/` (including through a
+symlinked sessions root), and directories containing the current working directory
+are skipped. Symlinks inside a collected directory are removed without following
+their targets. Skipped directories keep the issue eligible for a later sweep.
+
+New session directories and newly created harness-file directories are owner-only
+(`0700`); generated files, including profile-specific files outside the session
+directory, are written owner-readable/writable only (`0600`), also when overwriting
+an existing file. This protects MCP configuration, which can contain secrets expanded
+from the launching environment. GC does not remove profile-specific files outside
+the session directory; legacy files retain their permissions until rewritten or
+collected.
 
 ### Recovering historical hc sessions
 
@@ -86,9 +106,9 @@ Failed or skipped recovery writes no receipt, and dry runs neither mutate resour
 write notes.
 
 JSON uses the normal envelope with `data: {dry_run, issues}`. Each issue has `id` and
-`session`, `worktree`, `branch` outcomes with `status` (`removed`, `absent`, `skipped`) and
-`reason`. Session and worktree outcomes also have `items`, identifying each `terminal` /
-`space` or `path` with its own status and reason. Dry runs write no notes and remove
+`session`, `session_dir`, `worktree`, `branch` outcomes with `status` (`removed`, `absent`, `skipped`) and
+`reason`. Session, session-directory and worktree outcomes also have `items`, identifying
+each `terminal` / `space` or `path` with its own status and reason. Dry runs write no notes and remove
 nothing: planned removals use `removed` with a `would remove ...` reason and
 `dry_run: true`. Real removals append caller-attributed notes; rerunning when resources
 are already absent adds no cleanup notes, except for the first successful legacy-hc

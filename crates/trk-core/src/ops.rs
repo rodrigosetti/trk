@@ -1043,7 +1043,8 @@ impl Ctx<'_> {
     pub fn check_lock_take(&self, pid: i64, host: Option<&str>) -> Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO check_lock (id, pid, host, started_at) VALUES (1, ?1, ?2, ?3)",
-            params![pid, host, self.ts()],
+            // Lock identity uses physical time, never the issue/test clock.
+            params![pid, host, jiff::Timestamp::now().to_string()],
         )?;
         Ok(())
     }
@@ -1062,6 +1063,38 @@ impl Ctx<'_> {
         self.conn
             .execute("DELETE FROM check_lock WHERE id = 1 AND pid = ?1", [pid])?;
         Ok(())
+    }
+
+    /// Human recovery after inspecting the holder outside the write transaction.
+    /// Refuse a changed holder rather than clearing a newly acquired lock.
+    pub fn check_lock_unlock(&self, expected: Option<&CheckLock>) -> Result<bool> {
+        if self.actor().is_agent() {
+            return Err(Error::new(
+                Code::NotPermitted,
+                "only a human may unlock the check queue",
+            )
+            .with_hint("ask the human to inspect the holder and run `trk check --unlock`"));
+        }
+        let holder = self.check_lock()?;
+        if holder.as_ref() != expected {
+            return Err(Error::new(
+                Code::InvalidState,
+                "check queue holder changed; inspect it and retry",
+            ));
+        }
+        let Some((pid, host, started, pgid)) = holder else {
+            return Ok(false);
+        };
+        self.event(
+            None,
+            "note",
+            json!({
+                "body": format!("Human unlocked the check queue (pid {pid}, host {host:?}, since {started}, pgid {pgid:?})."),
+                "check_unlock": {"pid": pid, "host": host, "started_at": started, "pgid": pgid},
+            }),
+        )?;
+        self.check_lock_release(pid)?;
+        Ok(true)
     }
 
     /// Reserve a still-closed lifecycle while the queue owner removes resources.
