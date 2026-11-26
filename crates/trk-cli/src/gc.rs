@@ -12,8 +12,9 @@ use trk_core::config::parse_duration;
 use trk_core::error::{Code, Error, Result};
 use trk_core::model::{Claim, State, parse_ts};
 use trk_core::store::Ctx;
+use trk_core::system::hostname;
 
-use crate::env::{Env, hostname};
+use crate::env::Env;
 use crate::herdr;
 use crate::render::Out;
 
@@ -482,7 +483,7 @@ fn collect_with_recovery(
                 if !dry_run && !c.gc_reserve(&id, revision, pid)? {
                     return Ok(None);
                 }
-                Ok(Some(protected_terminals(c, &id, host.as_deref())?))
+                Ok(Some(protected_terminals(c, &id, host)?))
             })?;
             let Some(protected) = protected else {
                 if !sweep {
@@ -506,7 +507,7 @@ fn collect_with_recovery(
                             env,
                             claim,
                             *recovered,
-                            host.as_deref(),
+                            host,
                             &protected,
                             dry_run,
                             &mut recovery,
@@ -524,7 +525,7 @@ fn collect_with_recovery(
                 if let Some(path) = &claim.worktree
                     && seen_paths.insert((claim.host.as_deref(), path))
                 {
-                    let resource = if !host_matches(claim, host.as_deref()) {
+                    let resource = if !host_matches(claim, host) {
                         Resource::new("skipped", "worktree belongs to another or unknown host")
                     } else if let Some(repo) = &repo {
                         match resolved(Path::new(path)) {

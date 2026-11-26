@@ -53,9 +53,7 @@ mod check_colors;
 mod epics;
 
 fn local_host() -> String {
-    let output = StdCommand::new("hostname").output().unwrap();
-    assert!(output.status.success());
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    trk_core::system::hostname().unwrap().to_owned()
 }
 
 struct Env {

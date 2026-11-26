@@ -37,6 +37,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Working-session spinners in the Herdr dashboard now prefix the issue title instead of occupying a separate row; titles still wrap and links and other statuses remain below.
 - The Herdr dashboard's wide list/details split now starts at 50/50 instead of a fixed list width, retaining user resizing and pane minimums.
 - Restored CI Clippy checks with narrowly scoped argument-count expectations on GC helpers, preserving cleanup safety gates and opt-in legacy recovery behavior.
+- Unified local PID probes without subprocesses; permission-denied processes count as alive. Hostname detection now uses a cached system call and treats unavailable or empty names as unknown.
 
 ### Beta compatibility and upgrades
 

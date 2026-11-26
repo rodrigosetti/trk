@@ -9,9 +9,10 @@ use trk_agent::harness::{self, LaunchInput};
 use trk_core::error::{Code, Error, Result};
 use trk_core::model::{ActorId, Claim, State};
 use trk_core::ops::ClaimOpts;
+use trk_core::system::{Liveness, hostname, process_liveness};
 use trk_core::view::With;
 
-use crate::env::{Env, git, hostname};
+use crate::env::{Env, git};
 use crate::render::Out;
 
 use crate::launcher::{self, Launcher, run_template};
@@ -240,7 +241,7 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     let claim_opts = ClaimOpts {
         lease: None,
         worktree: wt_str.clone(),
-        host: hostname(),
+        host: hostname().map(str::to_owned),
         agent: Some(agent_name.clone()),
         terminal: selected.as_ref().map(|_| terminal.clone()),
         launcher: selected.as_ref().and_then(|launcher| launcher.name.clone()),
@@ -441,18 +442,6 @@ pub fn run(env: &Env, a: RunArgs) -> Result<Out> {
     ))
 }
 
-pub fn pid_alive(pid: i64) -> bool {
-    // Reject process-group IDs and values an external kill may truncate.
-    if pid <= 0 || libc::pid_t::try_from(pid).is_err() {
-        return false;
-    }
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
 /// Liveness of a run's MCP server: Some(true) alive, Some(false) gone, None unknown.
 pub fn mcp_alive(meta: &Value) -> Option<bool> {
     if meta["mcp_exited_at"].is_string() {
@@ -460,10 +449,11 @@ pub fn mcp_alive(meta: &Value) -> Option<bool> {
     }
     let pid = meta["mcp_pid"].as_i64()?;
     let host = meta["mcp_host"].as_str();
-    if host.is_some() && host.map(String::from) != hostname() {
+    if host.is_some() && host != hostname() {
         return None;
     }
-    Some(pid_alive(pid))
+    // Preserve false for invalid IDs or other unknown probe failures.
+    Some(process_liveness(pid) == Liveness::Alive)
 }
 
 /// Session liveness comes only from a known local terminal, never its MCP server.
@@ -473,7 +463,7 @@ pub fn session_alive(
     terminal: Option<&str>,
 ) -> Option<bool> {
     let host = host.filter(|host| !host.trim().is_empty())?;
-    if hostname().as_deref() != Some(host) {
+    if hostname() != Some(host) {
         return None;
     }
     let terminal = terminal.filter(|name| !name.trim().is_empty())?;

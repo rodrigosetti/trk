@@ -15,6 +15,7 @@ jiff.workspace = true
 winnow.workspace = true
 rand.workspace = true
 thiserror.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

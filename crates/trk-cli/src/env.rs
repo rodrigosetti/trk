@@ -142,13 +142,6 @@ pub fn git_exclude(dir: &Path, pattern: &str) {
     let _ = std::fs::write(&ex, s);
 }
 
-pub fn hostname() -> Option<String> {
-    Command::new("hostname")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-}
-
 /// Where the project's `.trk/` is, or would be installed.
 pub struct Location {
     pub root: PathBuf,

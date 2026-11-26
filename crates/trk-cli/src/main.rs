@@ -757,7 +757,7 @@ fn dispatch(g: &Global, cmd: Cmd, completed: Vec<Value>, r: &Renderer) -> Result
                             lease,
                             steal,
                             worktree,
-                            host: env::hostname(),
+                            host: trk_core::system::hostname().map(str::to_owned),
                             ..Default::default()
                         },
                     )

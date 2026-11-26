@@ -1968,6 +1968,7 @@ name = "trk-core"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "libc",
  "rand",
  "rusqlite",
  "rusqlite_migration",
