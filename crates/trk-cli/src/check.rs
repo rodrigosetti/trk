@@ -7,6 +7,7 @@
 
 mod restart;
 mod view;
+mod watch;
 
 pub(crate) use view::CheckView;
 use view::{CheckExecution, CheckOutcome, CheckPreview};
@@ -247,54 +248,7 @@ fn runner_alive(pid: i64) -> bool {
 }
 
 fn holder_alive(pid: i64, started: &str) -> bool {
-    match process_liveness(pid) {
-        Liveness::Gone => return false,
-        Liveness::Unknown => return true,
-        Liveness::Alive => {}
-    }
-    // ps elapsed time is portable across macOS/Linux and avoids local-time
-    // ambiguity in lstart. Sample before ps and subtract another second for its
-    // rounding: only a process definitely newer than the lock proves PID reuse.
-    let observed = jiff::Timestamp::now().as_second();
-    let reused = || -> Option<bool> {
-        let locked = started.parse::<jiff::Timestamp>().ok()?.as_second();
-        let out = Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "etime="])
-            .env("LC_ALL", "C")
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let text = std::str::from_utf8(&out.stdout).ok()?.trim();
-        let (days, clock) = match text.split_once('-') {
-            Some((days, clock)) => (days.parse::<i64>().ok()?, clock),
-            None => (0, text),
-        };
-        let mut fields = clock.rsplit(':');
-        let seconds = fields.next()?.parse::<i64>().ok()?;
-        let minutes = fields.next()?.parse::<i64>().ok()?;
-        let hours = fields
-            .next()
-            .map(str::parse::<i64>)
-            .transpose()
-            .ok()?
-            .unwrap_or(0);
-        if fields.next().is_some()
-            || days < 0
-            || hours < 0
-            || !(0..60).contains(&minutes)
-            || !(0..60).contains(&seconds)
-        {
-            return None;
-        }
-        let elapsed = days
-            .checked_mul(86400)?
-            .checked_add(hours.checked_mul(3600)?)?
-            .checked_add(minutes * 60 + seconds)?;
-        Some(observed.checked_sub(elapsed)?.checked_sub(1)? > locked)
-    };
-    !reused().unwrap_or(false)
+    trk_core::system::process_started_before(pid, started)
 }
 
 fn group_alive(pgid: i64) -> bool {
@@ -1001,6 +955,7 @@ pub fn check(
     if let Some(pause) = &a.watch {
         let pause = parse_duration(pause.as_deref().unwrap_or(WATCH_PAUSE))?;
         let pause = Duration::from_secs(pause.as_secs().max(1) as u64);
+        let _watch = watch::Watch::register(env)?;
         // Runs until interrupted; each result is printed as it happens.
         loop {
             interrupt.check()?;

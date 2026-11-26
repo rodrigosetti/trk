@@ -67,8 +67,6 @@ pub struct Ui {
     pub status: Option<Status>,
     /// Labels of background commands still running.
     pub busy: Vec<String>,
-    /// Whether the check runner's process exists, when that can be told.
-    pub runner_alive: Option<bool>,
     /// First list line shown; kept so the selection scrolls smoothly.
     pub list_top: usize,
 }
@@ -89,7 +87,6 @@ impl Ui {
             mode: Mode::Normal,
             status: None,
             busy: vec![],
-            runner_alive: None,
             list_top: 0,
         };
         ui.refilter(None);
@@ -441,11 +438,11 @@ fn header(ui: &Ui) -> Line<'static> {
         .filter(|i| i.waiting.as_ref().is_some_and(|w| w.check.is_some()))
         .count();
     spans.push(Span::raw("   "));
-    match (&ui.snap.check_runner, ui.runner_alive) {
-        (Some(r), alive) if alive != Some(false) => spans.push(Span::styled(
+    match &ui.snap.check_runner {
+        Some(r) => spans.push(Span::styled(
             format!(
                 "checks: runner {} (pid {})",
-                if r.busy { "running a check" } else { "idle" },
+                if r.busy { "busy" } else { "idle" },
                 r.pid
             ),
             Style::new().fg(Color::Green),

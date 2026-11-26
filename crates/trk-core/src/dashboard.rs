@@ -119,13 +119,14 @@ pub struct Counts {
     pub closed: usize,
 }
 
-/// The process holding the check queue lock.
+/// A live watch process, including while it is between queue passes.
 #[derive(Debug, Clone, Serialize)]
 pub struct CheckRunner {
     pub pid: i64,
     pub host: Option<String>,
     pub started_at: String,
-    /// A check is running right now.
+    pub heartbeat_at: String,
+    /// The queue lock is held, possibly by another watcher or a one-shot runner.
     pub busy: bool,
 }
 
@@ -372,13 +373,33 @@ impl Ctx<'_> {
             }
         }
 
+        let lock = self.check_lock()?;
+        let owns_lock = |watch: &crate::ops::CheckWatch| {
+            lock.as_ref().is_some_and(|(pid, host, _, _)| {
+                watch.pid == *pid && watch.host == host.as_deref().unwrap_or("")
+            })
+        };
         let check_runner = self
-            .check_lock()?
-            .map(|(pid, host, started_at, pgid)| CheckRunner {
-                pid,
-                host,
-                started_at,
-                busy: pgid.is_some(),
+            .check_watch_live()?
+            .into_iter()
+            .min_by(|a, b| {
+                owns_lock(b)
+                    .cmp(&owns_lock(a))
+                    .then_with(|| {
+                        a.started_at
+                            .parse::<jiff::Timestamp>()
+                            .ok()
+                            .cmp(&b.started_at.parse::<jiff::Timestamp>().ok())
+                    })
+                    .then_with(|| a.host.cmp(&b.host))
+                    .then_with(|| a.pid.cmp(&b.pid))
+            })
+            .map(|watch| CheckRunner {
+                pid: watch.pid,
+                host: (!watch.host.is_empty()).then_some(watch.host),
+                started_at: watch.started_at,
+                heartbeat_at: watch.heartbeat_at,
+                busy: lock.is_some(),
             });
 
         let mut st = self.conn.prepare(

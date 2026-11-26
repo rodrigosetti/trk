@@ -9,6 +9,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Local, per-project SQLite issue tracking with a CLI and per-issue MCP server.
 - Agent launching in dedicated Git worktrees, with claims, leases, and session tracking.
 - Serialized waiting checks for verification and landing, plus a live dashboard and Herdr integration.
+- Persistent `trk check --watch` presence between passes, with heartbeats, bounded stale detection, re-exec continuity, independent multiple watchers, and shared dashboard liveness.
 - Per-wait `--on-pass wake` (MCP `on_pass: "wake"`) continues the same live session after a passing check for pending work, without consuming failure wakes; default checks still close, and unavailable continuation reopens with a pending-work note.
 - Embedded installation seeds, configurable agents, harnesses, launchers, and prompts.
 - Explicit ID-scoped `trk gc --legacy-hc` recovery for independently verified historical hc sessions missing launcher profiles, with finished-session identity checks and append-only GC receipts.
