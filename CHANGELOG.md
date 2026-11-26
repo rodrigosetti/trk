@@ -36,6 +36,7 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 
 ### Fixed
 
+- Restored the Herdr dashboard's compatibility with JSON schema 5, retaining incompatible-version warnings and covering real current CLI snapshots, issue details, and ordinary note submission.
 - Waiting checks now retain only a bounded 4096-byte stdout/stderr tail, mark truncated output in JSON and notes, avoid per-check log files on all exit paths, and remove legacy logs whose owner PID is gone.
 - Fixed Herdr Run confirmations silently refusing to launch after an earlier command completed across a project or fixed-tab context change; pending commands no longer arm another confirmation.
 - Launcher templates now expand placeholders only once, preserving literal placeholders in issue content and preventing re-expansion from corrupting shell quoting.
