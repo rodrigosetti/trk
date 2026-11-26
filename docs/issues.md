@@ -38,7 +38,7 @@ and launcher settings. It returns the run result (JSON `data.issue` is the new I
 the error identifies it so you can fix the cause and retry with `trk run <ID>`.
 
 Every command takes `--json` (or `--format pretty|json|jsonl`). Scripts should always pass `--json`;
-JSON output is the versioned API (`schema_version: 4`), and errors use the same envelope with a
+JSON output is the versioned API (`schema_version: 5`), and errors use the same envelope with a
 stable `code`, a `hint`, and exit codes 1–5.
 
 Pretty output colors priorities consistently (P0 red, P1 yellow, P2 cyan, P3 dim) and states

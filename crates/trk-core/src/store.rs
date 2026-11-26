@@ -202,12 +202,13 @@ fn migrate(conn: &mut Connection, path: &Path, migrations: &[M<'_>]) -> Result<(
     }
 }
 
-fn migrations() -> [M<'static>; 4] {
+fn migrations() -> [M<'static>; 5] {
     [
         M::up(include_str!("schema_v1.sql")),
         M::up(include_str!("resume_chat.sql")).foreign_key_check(),
         M::up(include_str!("epics.sql")).foreign_key_check(),
         M::up(include_str!("gc.sql")).foreign_key_check(),
+        M::up(include_str!("drop_inbox.sql")).foreign_key_check(),
     ]
 }
 
@@ -613,8 +614,7 @@ mod tests {
              VALUES (7, 'trk-old', 'human:alice@example.com', '2026-11-20T10:00:00Z', 'create');
              INSERT INTO event(seq, issue_id, actor, at, op, payload)
              VALUES (41, 'trk-old', 'human:alice@example.com', '2026-11-20T10:00:00Z',
-                     'note', '{\"body\":\"preserved searchable reply\"}');
-             INSERT INTO inbox(note_seq, issue_id) VALUES (41, 'trk-old');",
+                     'note', '{\"body\":\"preserved searchable reply\"}');",
         )
         .unwrap();
     }
@@ -631,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_event_migration_preserves_history_inbox_search_and_append_only_guards() {
+    fn chat_event_migration_preserves_history_search_and_append_only_guards() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trk.db");
         let mut conn = Connection::open(&path).unwrap();
@@ -650,15 +650,13 @@ mod tests {
         drop(store);
         let mut store = Store::open(&path, StoreOpts::default()).unwrap();
         assert_eq!(store.read(None, |c| c.events(&id)).unwrap(), before);
-        let inbox = store.write(human, false, |c| c.take_inbox(&id)).unwrap();
-        assert_eq!(inbox[0]["body"], "preserved searchable reply");
         assert_eq!(
             store.read(None, |c| c.notes(&id)).unwrap()[0]["body"],
-            inbox[0]["body"]
+            "preserved searchable reply"
         );
         store
             .write(human, false, |c| {
-                c.note(&id, "new searchable reply", None, false)?;
+                c.note(&id, "new searchable reply", None)?;
                 Ok(())
             })
             .unwrap();
@@ -678,15 +676,86 @@ mod tests {
                 .is_err()
         );
         assert!(store.conn.execute("DELETE FROM event", []).is_err());
+    }
+
+    #[test]
+    fn inbox_removal_preserves_legacy_notes_without_delivery_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trk.db");
+        let mut conn = Connection::open(&path).unwrap();
+        let old = migrations();
+        Migrations::from_slice(&old[..4])
+            .to_latest(&mut conn)
+            .unwrap();
+        seed_legacy_database(&conn);
+        conn.execute_batch(
+            "INSERT INTO event(seq, issue_id, actor, at, op, payload)
+             VALUES (42, 'trk-old', 'human:alice@example.com', '2026-11-20T10:00:00Z',
+                     'note', '{\"body\":\"legacy directed note\",\"to_agent\":true,\"amends\":41}');
+             INSERT INTO inbox(note_seq, issue_id) VALUES (41, 'trk-old');
+             INSERT INTO inbox(note_seq, issue_id, delivered_at, delivered_to)
+             VALUES (42, 'trk-old', '2026-11-20T10:01:00Z', 'human:alice@example.com');",
+        )
+        .unwrap();
+        let before = {
+            let store = Store {
+                conn,
+                opts: StoreOpts::default(),
+            };
+            store.read(None, |c| c.events("trk-old")).unwrap()
+        };
+
+        let mut store = Store::open(&path, StoreOpts::default()).unwrap();
+        assert_eq!(store.read(None, |c| c.events("trk-old")).unwrap(), before);
+        assert_eq!(
+            store
+                .conn
+                .pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+                .unwrap(),
+            5
+        );
+        let removed_objects: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name IN ('inbox', 'inbox_pending')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(removed_objects, 0);
+        let notes = store.read(None, |c| c.notes("trk-old")).unwrap();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0]["body"], "preserved searchable reply");
+        assert_eq!(notes[1]["body"], "legacy directed note");
+        assert_eq!(notes[1]["amends"], 41);
+        assert!(notes.iter().all(|note| note.get("to_agent").is_none()));
+        assert_eq!(
+            store
+                .read(None, |c| c.list("text~directed", None, None))
+                .unwrap()
+                .len(),
+            1
+        );
+        let seq = store
+            .write("human:alice@example.com", false, |c| {
+                c.note("trk-old", "new ordinary note", Some(42))
+            })
+            .unwrap();
+        let events = store.read(None, |c| c.events("trk-old")).unwrap();
+        assert_eq!(&events[..before.len()], before.as_slice());
+        let new_note = events.last().unwrap();
+        assert_eq!(new_note.seq, seq);
+        assert_eq!(
+            new_note.payload,
+            json!({"body": "new ordinary note", "amends": 42})
+        );
         assert!(
             store
                 .conn
-                .execute(
-                    "INSERT INTO inbox(note_seq, issue_id) VALUES (-1, ?1)",
-                    [&id],
-                )
+                .execute("UPDATE event SET payload = '{}'", [])
                 .is_err()
         );
+        assert!(store.conn.execute("DELETE FROM event", []).is_err());
     }
 
     #[test]
@@ -759,13 +828,9 @@ mod tests {
             store.read(None, |c| c.notes("trk-old")).unwrap()[0]["body"],
             "preserved searchable reply"
         );
-        let inbox = store
-            .write(human, false, |c| c.take_inbox("trk-old"))
-            .unwrap();
-        assert_eq!(inbox[0]["body"], "preserved searchable reply");
         store
             .write(human, false, |c| {
-                c.note("trk-old", "new searchable reply", None, false)?;
+                c.note("trk-old", "new searchable reply", None)?;
                 Ok(())
             })
             .unwrap();
@@ -787,17 +852,6 @@ mod tests {
                     "SELECT count(*) FROM search WHERE source = 'issue'",
                     [],
                     |r| { r.get::<_, i64>(0) }
-                )
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            store
-                .conn
-                .query_row(
-                    "SELECT count(*) FROM inbox WHERE note_seq = 41 AND delivered_at IS NOT NULL",
-                    [],
-                    |r| r.get::<_, i64>(0),
                 )
                 .unwrap(),
             1
@@ -855,15 +909,6 @@ mod tests {
             store
                 .conn
                 .execute("UPDATE issue SET epic = 'missing'", [])
-                .is_err()
-        );
-        assert!(
-            store
-                .conn
-                .execute(
-                    "INSERT INTO inbox(note_seq, issue_id) VALUES (-1, 'trk-old')",
-                    []
-                )
                 .is_err()
         );
         assert!(

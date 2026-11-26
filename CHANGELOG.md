@@ -43,6 +43,11 @@ First public beta; the release date and `v0.1.0` tag will be set by a human at r
 - Unified local PID probes without subprocesses; permission-denied processes count as alive. Hostname detection now uses a cached system call and treats unavailable or empty names as unknown.
 - Fixed Clippy's collapsible status check in Herdr layout migration without changing status parsing or offline fallback.
 
+### Removed
+
+- Removed the agent inbox: `trk note --to-agent`, MCP `messages_for_you`, the agent `inbox` setting, and both dashboards' note-to-agent actions. Use `trk send` for live steering or Resume to authorize continuation.
+- Output schema version 5 removes `to_agent` from note JSON and history markers; old note events remain ordinary notes. The database migration drops the inbox table. Remove `inbox` from existing `.trk/agents/*.toml` before starting sessions.
+
 ### Beta compatibility and upgrades
 
 - The versioned JSON envelope (`schema_version` and error codes) and MCP tool names are intended to be stable.

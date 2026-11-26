@@ -47,7 +47,7 @@ impl Env {
             .write(HUMAN, false, |c| {
                 c.create(NewIssue {
                     title: "Waiting MCP session".into(),
-                    description: "Keep the current session available for messages.".into(),
+                    description: "Keep the current session available while waiting.".into(),
                     ..Default::default()
                 })
             })
@@ -78,12 +78,6 @@ impl Env {
         .unwrap()
     }
 
-    fn send(&mut self, body: &str) {
-        self.store
-            .write(HUMAN, false, |c| c.note(&self.issue, body, None, true))
-            .unwrap();
-    }
-
     fn state(&self) -> State {
         self.store
             .read(None, |c| Ok(c.issue(&self.issue)?.state))
@@ -101,16 +95,10 @@ fn start_waiting(server: &TrkServer) {
     success(server, "wait", json!({"reason": "Awaiting review"}));
 }
 
-fn no_delivery(server: &TrkServer) {
-    let result = success(server, "get_task", json!({}));
-    assert!(result.get("messages_for_you").is_none(), "{result:#}");
-}
-
-fn delivered(result: &Value, body: &str) {
-    let messages = result["messages_for_you"].as_array().unwrap();
-    assert_eq!(messages.len(), 1, "{result:#}");
-    assert_eq!(messages[0]["body"], body);
-    assert_eq!(messages[0]["from"], HUMAN);
+fn cannot_resume(server: &TrkServer) {
+    let (ok, result) = server.call_sync("resume", json!({"message": "Please continue"}));
+    assert!(!ok, "{result:#}");
+    assert_eq!(result["error"]["code"], "not_permitted", "{result:#}");
 }
 
 #[test]
@@ -211,68 +199,41 @@ fn waiting_mcp_can_note_and_report_followups_but_cannot_end_again() {
 }
 
 #[test]
-fn waiting_mcp_inbox_is_delivered_once_only_to_its_actor() {
-    let mut e = Env::new();
-    let server = e.server(AGENT);
-    let unrelated = e.server(OTHER);
-    start_waiting(&server);
-    e.send("Review needs a small revision");
-
-    no_delivery(&unrelated);
-    let result = success(&server, "add_note", json!({"body": "Checking review"}));
-    delivered(&result, "Review needs a small revision");
-    no_delivery(&server);
-}
-
-#[test]
-fn waiting_mcp_inbox_is_delivered_on_the_next_failed_tool_result() {
-    let mut e = Env::new();
-    let server = e.server(AGENT);
-    start_waiting(&server);
-    e.send("Please read this before ending the session");
-
-    let (ok, result) = server.call_sync("close", json!({"reason": "done", "note": "No"}));
-    assert!(!ok, "{result:#}");
-    assert_eq!(result["error"]["code"], "not_permitted");
-    delivered(&result, "Please read this before ending the session");
-    no_delivery(&server);
-    assert_eq!(e.state(), State::Waiting);
-}
-
-#[test]
-fn stale_mcp_cannot_consume_after_close_reopen_or_replacement() {
+fn stale_mcp_cannot_resume_after_close_reopen_or_replacement() {
     let mut e = Env::new();
     let old = e.server(AGENT);
     start_waiting(&old);
-    e.send("Pending for the next valid session");
 
     e.store
         .write(HUMAN, false, |c| c.close(&e.issue, "done", None, false))
         .unwrap();
     assert_eq!(e.state(), State::Closed);
-    no_delivery(&old);
+    cannot_resume(&old);
     e.store
         .write(HUMAN, false, |c| c.reopen(&e.issue, None))
         .unwrap();
     assert_eq!(e.state(), State::Open);
-    no_delivery(&old);
+    cannot_resume(&old);
 
     e.store
         .write(OTHER, false, |c| c.claim(&e.issue, ClaimOpts::default()))
         .unwrap();
-    no_delivery(&old);
+    cannot_resume(&old);
     let replacement = e.server(OTHER);
-    let result = success(&replacement, "get_task", json!({}));
-    delivered(&result, "Pending for the next valid session");
-    no_delivery(&replacement);
+    success(
+        &replacement,
+        "add_note",
+        json!({"body": "Replacement is active"}),
+    );
 
     // Once the replacement waits, it remains the owner, not the older waiter.
     start_waiting(&replacement);
-    e.send("Only the replacement waiter should receive this");
-    no_delivery(&old);
-    let result = success(&replacement, "get_task", json!({}));
-    delivered(&result, "Only the replacement waiter should receive this");
-    no_delivery(&replacement);
+    cannot_resume(&old);
+    success(
+        &replacement,
+        "add_note",
+        json!({"body": "Replacement is waiting"}),
+    );
 }
 
 #[test]
@@ -280,7 +241,6 @@ fn human_waiting_does_not_resurrect_an_older_agent_mcp_session() {
     let mut e = Env::new();
     let old = e.server(AGENT);
     start_waiting(&old);
-    e.send("Keep pending until an agent claims again");
     e.store
         .write(HUMAN, false, |c| {
             c.reopen(&e.issue, None)?;
@@ -294,13 +254,17 @@ fn human_waiting_does_not_resurrect_an_older_agent_mcp_session() {
             )
         })
         .unwrap();
-    no_delivery(&old);
+    cannot_resume(&old);
     e.store
         .write(HUMAN, false, |c| c.reopen(&e.issue, None))
         .unwrap();
     e.store
         .write(OTHER, false, |c| c.claim(&e.issue, ClaimOpts::default()))
         .unwrap();
-    let result = success(&e.server(OTHER), "get_task", json!({}));
-    delivered(&result, "Keep pending until an agent claims again");
+    cannot_resume(&old);
+    success(
+        &e.server(OTHER),
+        "add_note",
+        json!({"body": "Replacement is active"}),
+    );
 }

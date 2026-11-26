@@ -59,7 +59,7 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
         }
         Action::AddNote => {
             let body = str_arg(&a, "body")?.to_string();
-            let seq = store.write(&sess.actor, false, |c| c.note(&id, &body, None, false))?;
+            let seq = store.write(&sess.actor, false, |c| c.note(&id, &body, None))?;
             json!({"note": seq})
         }
         Action::Link => {
@@ -91,12 +91,7 @@ pub fn call(store: &mut Store, sess: &Session, tool: &ToolDef, args: &Value) -> 
                     followup_of: Some(id.clone()),
                     ..Default::default()
                 })?;
-                c.note(
-                    &id,
-                    &format!("Filed follow-up {new_id}: {title}"),
-                    None,
-                    false,
-                )?;
+                c.note(&id, &format!("Filed follow-up {new_id}: {title}"), None)?;
                 Ok(new_id)
             })?;
             json!({"created": new_id, "blocks_this": blocks_this})

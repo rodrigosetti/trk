@@ -80,7 +80,6 @@ const CUSTOM_TYPE_TONES = ["working", "blocked", "done", "accent", "ansi5", "ans
 const PROMPTS = {
   create: { label: "New issue", placeholder: "Title", submit: "Create" },
   note: { label: "Note", placeholder: "What happened", submit: "Add note" },
-  agent: { label: "Note to the agent", placeholder: "Goes to the session's inbox", submit: "Send note" },
   send: { label: "Type into the session", placeholder: "Text for the session's terminal", submit: "Send" },
   resume: { label: "Resume the waiting session", placeholder: "Authorization and instructions (required)", submit: "Resume" },
   close: { label: "Close", placeholder: "Outcome (optional)", submit: "Done" },
@@ -439,7 +438,6 @@ export default class Trk extends View {
     const id = p.id;
     if (p.kind === "create") this.act(cx, "create", ["create", `--title=${text}`]);
     else if (p.kind === "note") this.act(cx, `note ${id}`, ["note", id, "--", text]);
-    else if (p.kind === "agent") this.act(cx, `note to agent ${id}`, ["note", "--to-agent", id, "--", text]);
     else if (p.kind === "send") this.act(cx, `send ${id}`, ["send", id, "--", text]);
     else if (p.kind === "resume") this.act(cx, `resume ${id}`, ["resume", id, `--message=${text}`]);
     else if (p.kind === "close") {
@@ -535,7 +533,6 @@ export default class Trk extends View {
     else if (k === "a") { this.go(issue); cx.notify(); }
     else if (k === "p" && issue.session?.terminal) run("terminal.peek", { terminal: issue.session.terminal });
     else if (k === "m") { this.open = true; this.ask({ kind: "note", id: issue.id }); cx.notify(); }
-    else if (k === "M") { this.open = true; this.ask({ kind: "agent", id: issue.id }); cx.notify(); }
     else if (k === "s" && issue.session?.terminal) { this.open = true; this.ask({ kind: "send", id: issue.id }); cx.notify(); }
     else if (k === "v" && issue.state === "waiting") { this.open = true; this.ask({ kind: "resume", id: issue.id }); cx.notify(); }
     else if (k === "x") { this.open = true; this.ask({ kind: "close", id: issue.id }); cx.notify(); }
@@ -670,7 +667,6 @@ export default class Trk extends View {
     if (issue.state === "waiting") list.push(this.button(t, `resume-${id}`, "Resume…", ask("resume"), { tip: "Authorize the waiting session to continue (v)" }));
     if (issue.state === "waiting" && issue.waiting?.check) list.push(this.button(t, `check-${id}`, "Check now", (cx) => this.act(cx, `check ${id}`, ["check", id], 600000), { tip: "Run this issue's check, due or not" }));
     list.push(this.button(t, `note-${id}`, "Note…", ask("note"), { tip: "Add a note (m)" }));
-    if (issue.session) list.push(this.button(t, `agent-${id}`, "Note to agent…", ask("agent"), { tip: "A note queued for the agent's inbox (M)" }));
     list.push(this.button(t, `edit-${id}`, "Edit", () => run("terminal.open", { argv: ["trk", "edit", id], folder: this.context.root, place: "down" }), { tip: "Open trk edit in a pane below" }));
     if (issue.state === "claimed") list.push(this.button(t, `unclaim-${id}`, "Unclaim", (cx) => { if (this.confirmed(`unclaim-${id}`, cx)) this.act(cx, `unclaim ${id}`, ["unclaim", id]); }, { danger: true }));
     if (issue.state === "waiting") list.push(this.button(t, `reopen-${id}`, "Reopen", (cx) => { if (this.confirmed(`reopen-${id}`, cx)) this.act(cx, `reopen ${id}`, ["reopen", id]); }, { danger: true }));
@@ -730,8 +726,8 @@ export default class Trk extends View {
       .when(Boolean(d?.description), (el) => el.child(div().pt(2).text_size(12.5).text_color(t.foreground).child(TextView.markdown(`desc-${issue.id}`, d.description).selectable(true))))
       .when(notes.length > 0, (el) => el.child(v_flex().gap(6)
         .child(div().text_size(11).text_color(t.dim).child("Notes"))
-        .children(notes.map((n) => v_flex().gap(1).pl(8).border_l(2).border_color(n.to_agent ? t.accent : t.border)
-          .child(div().text_size(10.5).text_color(t.dim).child(`${short(n.actor)} · ${ago(n.at, now)} ago${n.to_agent ? " · to agent" : ""}`))
+        .children(notes.map((n) => v_flex().gap(1).pl(8).border_l(2).border_color(t.border)
+          .child(div().text_size(10.5).text_color(t.dim).child(`${short(n.actor)} · ${ago(n.at, now)} ago`))
           .child(div().text_size(12).text_color(t.muted).child(TextView.markdown(`note-${issue.id}-${n.seq}`, n.body).selectable(true)))))))
       .when(events.length > 0, (el) => el.child(v_flex().gap(2)
         .child(div().text_size(11).text_color(t.dim).child("Timeline"))

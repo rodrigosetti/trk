@@ -621,7 +621,7 @@ impl Ctx<'_> {
         let forced = self.claimant_check(&issue, &claim, force, "unclaim")?;
         // The note goes first: it is written while the claim still exists.
         if let Some(n) = note {
-            self.note(&id, n, None, false)?;
+            self.note(&id, n, None)?;
         }
         self.to_open(&mut issue, &c, json!({"forced": forced}))
     }
@@ -632,7 +632,7 @@ impl Ctx<'_> {
             .active_claim(id)?
             .ok_or_else(|| not_found("active claim on", id))?;
         let mut issue = self.issue(id)?;
-        self.note(id, why, None, false)?;
+        self.note(id, why, None)?;
         self.to_open(&mut issue, &claim, json!({"reaped": true}))
     }
 
@@ -686,7 +686,7 @@ impl Ctx<'_> {
         }
         let forced = self.claimant_check(&issue, &claim, force, "close")?;
         if let Some(n) = note.filter(|n| !n.trim().is_empty()) {
-            self.note(&id, n, None, false)?;
+            self.note(&id, n, None)?;
         }
         let from = issue.state;
         issue.state = State::Closed;
@@ -801,7 +801,7 @@ impl Ctx<'_> {
                 )));
         }
         if let Some(n) = note.filter(|n| !n.trim().is_empty()) {
-            self.note(&id, n, None, false)?;
+            self.note(&id, n, None)?;
         }
         let from = issue.state;
         issue.state = State::Open;
@@ -852,7 +852,6 @@ impl Ctx<'_> {
                 message.trim()
             ),
             None,
-            false,
         )?;
         issue.state = State::Claimed;
         Self::clear_waiting(&mut issue);
@@ -910,7 +909,6 @@ impl Ctx<'_> {
             &id,
             &format!("Session reported a human reply in chat:\n\n{message}"),
             None,
-            false,
         )?;
         issue.state = State::Claimed;
         Self::clear_waiting(&mut issue);
@@ -1225,7 +1223,7 @@ impl Ctx<'_> {
         } else {
             body.push_str(&format!("\nOutput:\n\n```\n{out}\n```\n"));
         }
-        self.note(id, &body, None, false)?;
+        self.note(id, &body, None)?;
         issue.state = if resume.is_some() {
             State::Claimed
         } else {
@@ -1282,7 +1280,7 @@ impl Ctx<'_> {
             return Ok(false);
         };
         if let Some(note) = note {
-            self.note(id, note, None, false)?;
+            self.note(id, note, None)?;
         }
         self.to_open(&mut issue, &claim, extra)?;
         Ok(true)
@@ -1292,7 +1290,7 @@ impl Ctx<'_> {
     // Notes
     // ------------------------------------------------------------------
 
-    pub fn note(&self, id: &str, body: &str, amends: Option<i64>, to_agent: bool) -> Result<i64> {
+    pub fn note(&self, id: &str, body: &str, amends: Option<i64>) -> Result<i64> {
         let id = self.resolve_id(id)?;
         let claim = self.session_claim(&id)?;
         self.agent_gate(&id, &claim)?;
@@ -1318,47 +1316,13 @@ impl Ctx<'_> {
         if let Some(a) = amends {
             payload["amends"] = json!(a);
         }
-        if to_agent {
-            payload["to_agent"] = json!(true);
-        }
         let seq = self.event(Some(&id), "note", payload)?;
-        if to_agent {
-            self.conn.execute(
-                "INSERT INTO inbox (note_seq, issue_id) VALUES (?1, ?2)",
-                params![seq, id],
-            )?;
-        }
         self.conn.execute(
             "UPDATE issue SET updated_at = ?2 WHERE id = ?1",
             params![id, self.ts()],
         )?;
         self.touch_lease(&id)?;
         Ok(seq)
-    }
-
-    /// Undelivered `--to-agent` notes for the issue, marked delivered to the actor.
-    pub fn take_inbox(&self, id: &str) -> Result<Vec<Value>> {
-        let mut st = self.conn.prepare(
-            "SELECT e.seq, e.actor, e.at, json_extract(e.payload, '$.body')
-             FROM inbox x JOIN event e ON e.seq = x.note_seq
-             WHERE x.issue_id = ?1 AND x.delivered_at IS NULL ORDER BY e.seq",
-        )?;
-        let rows: Vec<Value> = st
-            .query_map([id], |r| {
-                Ok(
-                    json!({"seq": r.get::<_, i64>(0)?, "from": r.get::<_, String>(1)?,
-                          "at": r.get::<_, String>(2)?, "body": r.get::<_, Option<String>>(3)?}),
-                )
-            })?
-            .collect::<std::result::Result<_, _>>()?;
-        drop(st);
-        for r in &rows {
-            self.conn.execute(
-                "UPDATE inbox SET delivered_at = ?2, delivered_to = ?3 WHERE note_seq = ?1",
-                params![r["seq"].as_i64(), self.ts(), self.actor_str()],
-            )?;
-        }
-        Ok(rows)
     }
 
     // ------------------------------------------------------------------

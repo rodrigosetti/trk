@@ -189,15 +189,14 @@ impl Ctx<'_> {
 
     pub fn notes(&self, id: &str) -> Result<Vec<Value>> {
         let mut st = self.conn.prepare(
-            "SELECT n.seq, n.actor, n.at, n.body, n.amends, json_extract(e.payload, '$.to_agent')
-             FROM note n JOIN event e ON e.seq = n.seq WHERE n.issue_id = ?1 ORDER BY n.seq",
+            "SELECT seq, actor, at, body, amends
+             FROM note WHERE issue_id = ?1 ORDER BY seq",
         )?;
         let v = st
             .query_map([id], |r| {
                 Ok(json!({
                     "seq": r.get::<_, i64>(0)?, "actor": r.get::<_, String>(1)?, "at": r.get::<_, String>(2)?,
                     "body": r.get::<_, Option<String>>(3)?, "amends": r.get::<_, Option<i64>>(4)?,
-                    "to_agent": r.get::<_, Option<bool>>(5)?.unwrap_or(false),
                 }))
             })?
             .collect::<std::result::Result<_, _>>()?;

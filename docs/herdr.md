@@ -124,7 +124,7 @@ trk herdr uninstall              # remove mods and unedited layout; preserve per
 - Click an issue ID in the list or detail header to copy it to the clipboard. The status line
   confirms the copy; selection and detail visibility stay unchanged.
 - With the panel focused: `j`/`k` move, `Enter` opens, `a` goes to the session, `p` peeks,
-  `s` sends, `m`/`M` note (to the agent), `v` resumes, `x` closes, `c` creates, `l` opens the
+  `s` sends, `m` adds a note, `v` resumes, `x` closes, `c` creates, `l` opens the
   issue's first link. With no prompt open, `o` cycles sort keys in their natural direction,
   and `O` reverses the active key; `e` toggles epic grouping. Link chips on a row and in the details open in the browser on click.
 - `trk.new` and `trk.refresh` are mod commands for `keys.json`, for example

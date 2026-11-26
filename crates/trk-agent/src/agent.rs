@@ -19,19 +19,12 @@ pub struct AgentDef {
     /// Template path → initial prompt.
     #[serde(default)]
     pub briefing: Option<String>,
-    /// Attach queued `trk note --to-agent` messages to tool results.
-    #[serde(default = "yes")]
-    pub inbox: bool,
     #[serde(default)]
     pub trk_tools: TrkTools,
     #[serde(default)]
     pub mcp: Vec<McpServer>,
     #[serde(default)]
     pub harness: AgentHarness,
-}
-
-fn yes() -> bool {
-    true
 }
 
 /// Which of the fixed trk tools the agent gets. Empty means all of them.

@@ -31,7 +31,6 @@ name = "shared"
 description = "Shared agent"
 instructions = "prompts/instructions.md.j2"
 briefing = "prompts/briefing.md.j2"
-inbox = true
 [harness]
 builtin_tools = "default"
 "#,

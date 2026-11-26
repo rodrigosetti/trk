@@ -149,16 +149,6 @@ BEGIN SELECT RAISE(ABORT, 'event log is append-only'); END;
 CREATE TRIGGER issue_no_delete BEFORE DELETE ON issue
 BEGIN SELECT RAISE(ABORT, 'issues are closed, not deleted'); END;
 
--- Delivery state of `trk note --to-agent` messages. The note itself is an
--- event; this table only records when the MCP server handed it over.
-CREATE TABLE inbox (
-  note_seq      INTEGER PRIMARY KEY REFERENCES event(seq),
-  issue_id      TEXT NOT NULL REFERENCES issue(id),
-  delivered_at  TEXT,
-  delivered_to  TEXT REFERENCES actor(id)
-);
-CREATE INDEX inbox_pending ON inbox(issue_id) WHERE delivered_at IS NULL;
-
 -- At most one `trk check` runs at a time, so checks (merges above all) are serial.
 CREATE TABLE check_lock (
   id          INTEGER PRIMARY KEY CHECK (id = 1),

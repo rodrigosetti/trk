@@ -422,12 +422,6 @@ impl App<'_> {
                             text: String::new(),
                         }
                     }
-                    KeyCode::Char('M') => {
-                        self.ui.mode = Mode::Input {
-                            kind: Input::NoteToAgent,
-                            text: String::new(),
-                        }
-                    }
                     KeyCode::Char('l') => {
                         match self.ui.issue().and_then(|i| i.links.first()).cloned() {
                             None => self.fail(format!("{id} has no link")),
@@ -486,14 +480,10 @@ impl App<'_> {
             },
         };
         match kind {
-            Input::Note | Input::NoteToAgent => {
-                let to_agent = kind == Input::NoteToAgent;
-                let done = if to_agent {
-                    format!("note on {id} queued for the agent")
-                } else {
-                    format!("note added to {id}")
-                };
-                self.write(done, |c| c.note(&id, &text, None, to_agent).map(|_| ()));
+            Input::Note => {
+                self.write(format!("note added to {id}"), |c| {
+                    c.note(&id, &text, None).map(|_| ())
+                });
             }
             Input::Send => self.background(
                 format!("sending to {id}"),

@@ -371,7 +371,7 @@ fn gc_success(mut command: Command, args: &[&str]) -> Value {
     });
     assert!(output.status.success(), "{args:?}: {value:#}");
     assert_eq!(value["ok"], true, "{value:#}");
-    assert_eq!(value["schema_version"], 4);
+    assert_eq!(value["schema_version"], 5);
     assert!(value["data"]["dry_run"].is_boolean(), "{value:#}");
     assert!(value["data"]["issues"].is_array(), "{value:#}");
     value["data"].clone()
@@ -1713,7 +1713,7 @@ fn gc_paused_launcher_close_allows_unrelated_writes_but_reserves_its_target() {
         // This BEGIN IMMEDIATE must finish while launcher close is still paused.
         writer
             .write("human:alice@example.com", false, |context| {
-                context.note(&active, "written during launcher close", None, false)?;
+                context.note(&active, "written during launcher close", None)?;
                 Ok(())
             })
             .unwrap();
@@ -1733,7 +1733,7 @@ fn gc_paused_launcher_close_allows_unrelated_writes_but_reserves_its_target() {
         assert!(error.to_string().contains("garbage collection"), "{error}");
         writer
             .write("human:alice@example.com", false, |context| {
-                context.note(&active, "written after rejected reopen", None, false)?;
+                context.note(&active, "written after rejected reopen", None)?;
                 Ok(())
             })
             .unwrap();

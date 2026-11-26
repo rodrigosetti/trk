@@ -50,8 +50,7 @@ expression: snap
       "actor": "human:alice@example.com",
       "at": "<ts>",
       "body": "start with the sweep",
-      "amends": null,
-      "to_agent": false
+      "amends": null
     }
   ],
   "events": [
